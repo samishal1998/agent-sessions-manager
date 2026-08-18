@@ -1,8 +1,8 @@
 # asm — cross-agent session manager
 
 One inventory, one set of verbs, for the coding-agent sessions scattered across
-your machine. `asm` reads the on-disk stores that [Claude Code][cc] and
-[OpenCode][oc] keep for themselves, presents every session in one list, and lets
+your machine. `asm` reads the on-disk stores that [Claude Code][cc], [OpenCode][oc]
+and [jcode][jc] keep for themselves, presents every session in one list, and lets
 you rename, move, archive, delete, export — and **carry a conversation from one
 agent into the other**.
 
@@ -19,6 +19,7 @@ UI (`asm serve`).
 
 [cc]: https://claude.com/claude-code
 [oc]: https://opencode.ai
+[jc]: https://github.com/1jehuang/jcode
 
 ## Why
 
@@ -42,6 +43,9 @@ conversation in a different agent. `asm` is that layer.
 Verified against **Claude Code 2.1.234** and **OpenCode 1.17.18** on Linux —
 "verified" meaning a real session was imported and then resumed in the target
 agent's own CLI with its conversation intact.
+
+**jcode is supported read-only**, and has not been verified against a real
+install — see [Agent support](#agent-support).
 `asm doctor` warns when your installed versions have drifted from those.
 
 ## Build
@@ -75,7 +79,7 @@ asm import 4c93a826 --to opencode          # the flagship
 asm import 4c93a826 --to opencode --dry-run --mode seed
 asm export 4c93a826 -o session.ir.json     # versioned, agent-neutral JSON
 
-asm search "path encoder"    # full-text across every transcript, both agents
+asm search "path encoder"    # full-text across every transcript, every agent
 asm search --agent opencode "jsonrpc"
 asm index                    # refresh the index and report on it
 
@@ -150,6 +154,33 @@ duplicate.
 Some things cannot cross and `asm` says so rather than pretending:
 provider-signed reasoning blocks, tools the target does not have (the names are
 kept verbatim so the history still reads), and nested subagent transcripts.
+
+## Agent support
+
+| | Claude Code | OpenCode | jcode |
+|---|---|---|---|
+| List, show, search, projects | yes | yes | yes |
+| Liveness | yes | yes | yes |
+| Resume | yes | yes | yes |
+| Export to Session IR | yes | yes | yes |
+| Import **from** (source) | yes | yes | yes |
+| Import **into** (target) | yes | yes | no |
+| Rename / move / archive / delete | yes | yes | no |
+| Verified against a real install | yes | yes | **no** |
+
+jcode's adapter was written from its source rather than from a running copy,
+because jcode is not installed on the machine it was developed on. Reading is
+safe to get wrong — a misparse shows up as a missing or odd-looking session —
+so the read side ships. Writing is not: every write path in this tool has been
+signed off by mutating a real session and confirming the agent still lists and
+resumes it, and that check was not possible here. So jcode sessions can be
+read, searched, resumed and imported *into the other agents*, and every write
+verb refuses with a clear message rather than guessing. `asm doctor --json`
+reports each agent's capabilities, and the web UI greys out what an agent
+cannot do.
+
+Turning writes on is mostly a matter of running the same acceptance tests with
+jcode installed.
 
 ## What counts as a project
 

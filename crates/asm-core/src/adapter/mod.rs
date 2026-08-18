@@ -6,6 +6,7 @@
 //! adding an agent makes the compiler list every place that must handle it.
 
 pub mod claude;
+pub mod jcode;
 pub mod opencode;
 
 use std::path::{Path, PathBuf};
@@ -119,6 +120,7 @@ pub trait AgentWrite: AgentRead {
 pub enum Adapter {
     ClaudeCode(claude::ClaudeAdapter),
     OpenCode(opencode::OpenCodeAdapter),
+    JCode(jcode::JCodeAdapter),
 }
 
 impl Adapter {
@@ -131,6 +133,9 @@ impl Adapter {
         if let Some(opencode) = opencode::OpenCodeAdapter::detect_default() {
             adapters.push(Adapter::OpenCode(opencode));
         }
+        if let Some(jcode) = jcode::JCodeAdapter::detect_default() {
+            adapters.push(Adapter::JCode(jcode));
+        }
         adapters
     }
 }
@@ -140,6 +145,7 @@ macro_rules! dispatch {
         match $self {
             Adapter::ClaudeCode($a) => $body,
             Adapter::OpenCode($a) => $body,
+            Adapter::JCode($a) => $body,
         }
     };
 }

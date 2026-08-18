@@ -4,11 +4,13 @@ What each agent keeps on disk, and the traps that cost real debugging. Anything
 here that is load-bearing is also encoded as a comment next to the code that
 depends on it — this document is the map, not the source of truth.
 
-Verified against **Claude Code 2.1.234** and **OpenCode 1.17.18**, Linux.
-(The Claude Code internals quoted below were read from the 2.1.233 binary and
-re-verified behaviorally against 2.1.234.)
-Both formats are internal to their agents and may change without notice; that is
-exactly why `asm` keeps a tested-versions matrix
+Claude Code and OpenCode were verified against real installs (2.1.234 and
+1.17.18, Linux); the Claude Code internals quoted below were read from the
+2.1.233 binary and re-verified behaviorally against 2.1.234. **jcode was read
+from its source only** — see the note at the end of its section.
+
+These formats are internal to their agents and may change without notice; that
+is exactly why `asm` keeps a tested-versions matrix
 (`asm-core/src/import/tested_versions.rs`) and warns on drift.
 
 ---
@@ -240,3 +242,79 @@ so in the loss report; the original model stays recorded in the IR provenance.
 | Nested subagent transcripts | no equivalent container in the target format |
 | Cost and token rollups | recomputed by the target agent from its own usage |
 | Trust and permission state | a security decision that belongs to the user, not to a migration tool |
+
+---
+
+## jcode
+
+Read from the project's source rather than from a running install, so treat
+this section as "what the code says" rather than "what was observed".
+
+### Layout
+
+```
+$JCODE_HOME (default ~/.jcode)/
+  sessions/<id>.json              the whole session, metadata and conversation
+  sessions/<id>.journal.jsonl     append-only journal beside each snapshot
+  active_pids/<session-id>        one file per running session; contents = PID
+  streaming_pids/<session-id>     set only while a response is streaming
+  internal_pids/<session-id>      spawned/debug sessions, hidden from presence UIs
+```
+
+This is a third storage shape. Claude Code appends one JSONL per session and
+OpenCode keeps rows in SQLite; jcode rewrites a single JSON document.
+
+### Listing cannot take a shortcut
+
+The snapshot serializes in struct order, and the fields a listing needs —
+`working_dir`, `short_name`, `status` — come **after** the `messages` array.
+So there is no cheap head scan of the kind the Claude adapter uses. Reading
+deserializes the document with `messages` typed as serde's `IgnoredAny`, which
+walks the conversation without allocating it, then reads the metadata that
+follows.
+
+### Fields that matter
+
+| Field | Meaning |
+|---|---|
+| `id` | session id; also the filename stem |
+| `title` / `custom_title` | generated vs user-set. **`custom_title` wins**, as in Claude Code |
+| `short_name` | memorable name ("fox"); what `jcode --resume` takes and what the UI shows |
+| `working_dir` | the project directory |
+| `parent_id` | spawned child sessions |
+| `is_debug` | debug/test sessions, hidden like subagents elsewhere |
+| `status` | externally tagged: `"Active"`, `"Closed"`, `{"Crashed":{…}}`, `{"Error":{…}}` |
+| `last_pid` | the process that last owned the session |
+
+Timestamps are chrono RFC 3339, like Claude Code's and unlike OpenCode's epoch
+milliseconds.
+
+### Liveness
+
+A file per running session under `active_pids/`, named by session id, whose
+contents are the PID. As with every other agent, the file existing is not
+enough — a crashed process leaves it behind, so the PID must still resolve to a
+live process.
+
+### Content blocks
+
+`messages[].content[]` is internally tagged on `type`:
+
+| Block | Crosses to the IR as |
+|---|---|
+| `text` | text |
+| `reasoning`, `reasoning_trace` | reasoning, replayable |
+| `anthropic_thinking` | reasoning, opaque (signature is provider-bound) |
+| `open_ai_reasoning` | reasoning, opaque (encrypted content cannot travel) |
+| `tool_use` / `tool_result` | tool call / tool result |
+| `image` | file reference; the inline base64 is not copied |
+| `open_ai_compaction` | counted in the loss report, not carried |
+
+### Why writes are refused
+
+Nothing here was checked against a running jcode. Reading a format wrongly
+produces a visibly odd session; writing one wrongly damages someone's history,
+and the acceptance test this project uses for every other write path — mutate,
+then confirm the agent still lists and resumes the session — could not be run.
+So the adapter advertises the read side only and every write verb returns
+`NotSupported`.

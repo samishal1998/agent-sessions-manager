@@ -10,6 +10,8 @@ pub enum AgentKind {
     // serde must agree with Display/parse: "opencode", not "open-code".
     #[serde(rename = "opencode", alias = "open-code")]
     OpenCode,
+    #[serde(rename = "jcode")]
+    JCode,
 }
 
 impl AgentKind {
@@ -17,6 +19,7 @@ impl AgentKind {
         match self {
             AgentKind::ClaudeCode => "claude-code",
             AgentKind::OpenCode => "opencode",
+            AgentKind::JCode => "jcode",
         }
     }
 
@@ -25,6 +28,7 @@ impl AgentKind {
         match s.to_ascii_lowercase().as_str() {
             "claude-code" | "claude" | "claudecode" | "cc" => Some(AgentKind::ClaudeCode),
             "opencode" | "open-code" | "oc" => Some(AgentKind::OpenCode),
+            "jcode" | "jc" => Some(AgentKind::JCode),
             _ => None,
         }
     }

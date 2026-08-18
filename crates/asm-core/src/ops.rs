@@ -139,6 +139,9 @@ pub struct AgentHealth {
     /// poisons cross-project `--resume`.
     pub duplicate_session_ids: Vec<String>,
     pub warnings: Vec<String>,
+    /// What this adapter can actually do, so a UI can offer only those
+    /// verbs rather than letting the user discover the answer by error.
+    pub capabilities: crate::adapter::Capabilities,
 }
 
 pub fn doctor() -> Result<DoctorReport, CoreError> {
@@ -159,6 +162,10 @@ pub fn doctor() -> Result<DoctorReport, CoreError> {
                     duplicate_session_ids.push(id);
                 }
             }
+            // jcode keeps one snapshot per session id in one directory, so
+            // it has neither Claude's duplicate-id hazard nor OpenCode's
+            // single-writer lock.
+            Adapter::JCode(_) => {}
             Adapter::OpenCode(opencode) => {
                 for lock in opencode.locks() {
                     if lock.held {
@@ -183,6 +190,7 @@ pub fn doctor() -> Result<DoctorReport, CoreError> {
             session_count,
             duplicate_session_ids,
             warnings,
+            capabilities: adapter.capabilities(),
         });
     }
     Ok(DoctorReport { agents })

@@ -8,6 +8,7 @@ defineProps({
   icon: { type: [Object, Function], required: true },
   size: { type: Number, default: 16 },
   danger: { type: Boolean, default: false },
+  disabled: { type: Boolean, default: false },
   href: { type: String, default: null },
   download: { type: String, default: null },
 })
@@ -25,7 +26,14 @@ defineProps({
     >
       <component :is="icon" :size="size" />
     </a>
-    <button v-else type="button" class="icon-btn" :class="{ danger }" :aria-label="label">
+    <button
+      v-else
+      type="button"
+      class="icon-btn"
+      :class="{ danger, disabled }"
+      :disabled="disabled"
+      :aria-label="label"
+    >
       <component :is="icon" :size="size" />
     </button>
   </Tooltip>

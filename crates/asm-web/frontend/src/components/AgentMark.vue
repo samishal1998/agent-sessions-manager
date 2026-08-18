@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { Bot, Sparkles, SquareTerminal } from 'lucide-vue-next'
+import { Bot, Sparkles, SquareTerminal, Zap } from 'lucide-vue-next'
 import Tooltip from './Tooltip.vue'
 
 // An icon rather than a name badge: the list is scanned far more often than
@@ -13,6 +13,7 @@ const props = defineProps({
 const AGENTS = {
   'claude-code': { icon: Sparkles, name: 'Claude Code' },
   opencode: { icon: SquareTerminal, name: 'OpenCode' },
+  jcode: { icon: Zap, name: 'jcode' },
 }
 
 const meta = computed(() => AGENTS[props.agent] ?? { icon: Bot, name: props.agent })

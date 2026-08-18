@@ -22,6 +22,7 @@ fn binary_name(agent: AgentKind) -> &'static str {
     match agent {
         AgentKind::ClaudeCode => "claude",
         AgentKind::OpenCode => "opencode",
+        AgentKind::JCode => "jcode",
     }
 }
 

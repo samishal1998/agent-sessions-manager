@@ -400,6 +400,16 @@ button:hover,
   border-color: var(--border-strong);
   color: var(--fg);
 }
+.icon-btn.disabled,
+.icon-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+.icon-btn:disabled:hover {
+  background: transparent;
+  border-color: transparent;
+  color: var(--fg-muted);
+}
 .icon-btn.danger:hover {
   color: var(--red);
   border-color: rgba(240, 113, 111, 0.4);
@@ -423,6 +433,10 @@ button:hover,
 .agent-mark.opencode {
   color: var(--accent);
   background: var(--accent-soft);
+}
+.agent-mark.jcode {
+  color: var(--green);
+  background: rgba(91, 209, 140, 0.12);
 }
 .agent-mark.unknown {
   color: var(--fg-muted);

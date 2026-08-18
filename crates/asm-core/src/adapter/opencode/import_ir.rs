@@ -396,7 +396,9 @@ pub(crate) fn build_document(
 fn split_model(ir: &IrSession) -> (String, String) {
     let provider = match ir.source.agent {
         AgentKind::ClaudeCode => "anthropic",
-        AgentKind::OpenCode => "unknown",
+        // jcode is provider-agnostic and OpenCode records its own; neither
+        // tells us a provider we could assert here.
+        _ => "unknown",
     };
     (provider.to_string(), ir.model.clone().unwrap_or_else(|| "imported".to_string()))
 }

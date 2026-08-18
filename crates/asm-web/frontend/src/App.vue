@@ -18,6 +18,7 @@ import {
   SquareTerminal,
   Trash2,
   TriangleAlert,
+  Zap,
 } from 'lucide-vue-next'
 import api from './api.js'
 import TranscriptView from './TranscriptView.vue'
@@ -48,6 +49,7 @@ let pollTimer = null
 const AGENT_OPTIONS = [
   { value: 'claude-code', label: 'Claude Code', icon: Sparkles },
   { value: 'opencode', label: 'OpenCode', icon: SquareTerminal },
+  { value: 'jcode', label: 'jcode', icon: Zap },
 ]
 
 /* Data ---------------------------------------------------------------- */
@@ -111,6 +113,16 @@ const visible = computed(() => {
     )
   })
 })
+
+// Agents differ in what they support — jcode is read-only, for instance —
+// so the row offers only the verbs its agent can actually perform.
+const capabilities = computed(() =>
+  Object.fromEntries((doctor.value?.agents || []).map((a) => [a.agent, a.capabilities])),
+)
+function can(session, verb) {
+  // Unknown until doctor answers; assume yes so buttons do not flicker.
+  return capabilities.value[session.ref.agent]?.[verb] ?? true
+}
 
 const warnings = computed(() =>
   (doctor.value?.agents || []).flatMap((a) => a.warnings.map((w) => `${a.agent}: ${w}`)),
@@ -205,6 +217,7 @@ function doMove(s) {
 }
 
 function doImport(s) {
+  // jcode is read-only, so it is never an import destination.
   const to = s.ref.agent === 'claude-code' ? 'opencode' : 'claude-code'
   const name = to === 'opencode' ? 'OpenCode' : 'Claude Code'
   if (confirm(`Import ${shortId(s)} into ${name}?\n\nFull mode. Re-importing is a no-op.`))
@@ -216,11 +229,15 @@ function doImport(s) {
     })
 }
 
+const RESUME = {
+  'claude-code': (s) => `claude --resume ${s.ref.native_id}`,
+  opencode: (s) => `opencode -s ${s.ref.native_id}`,
+  // jcode resolves --resume by memorable short name or id.
+  jcode: (s) => `jcode --resume ${s.slug || s.ref.native_id}`,
+}
+
 function copyResume(s) {
-  const cmd =
-    s.ref.agent === 'claude-code'
-      ? `claude --resume ${s.ref.native_id}`
-      : `opencode -s ${s.ref.native_id}`
+  const cmd = RESUME[s.ref.agent]?.(s) ?? s.ref.native_id
   const full = `cd ${s.project_root} && ${cmd}`
   navigator.clipboard?.writeText(full)
   status.value = `Copied: ${full}`
@@ -475,16 +492,18 @@ function pickProject(root) {
 
               <div class="actions" @click.stop>
                 <IconButton label="Copy resume command" :icon="Play" @click="copyResume(s)" />
-                <IconButton label="Rename" :icon="Pencil" @click="doRename(s)" />
+                <IconButton label="Rename" :icon="Pencil" :disabled="!can(s, 'rename')" @click="doRename(s)" />
                 <IconButton
                   :label="statusOf(s) === 'archived' ? 'Restore from archive' : 'Archive'"
                   :icon="statusOf(s) === 'archived' ? ArchiveRestore : Archive"
+                  :disabled="!can(s, 'archive')"
                   @click="doArchive(s)"
                 />
-                <IconButton label="Move to another project" :icon="FolderInput" @click="doMove(s)" />
+                <IconButton label="Move to another project" :icon="FolderInput" :disabled="!can(s, 'relocate')" @click="doMove(s)" />
                 <IconButton
                   label="Import into the other agent"
                   :icon="ArrowLeftRight"
+                  :disabled="!can(s, 'export_ir')"
                   @click="doImport(s)"
                 />
                 <IconButton
@@ -493,7 +512,13 @@ function pickProject(root) {
                   :href="`/api/session/${s.ref.agent}/${s.ref.native_id}/ir`"
                   :download="`${shortId(s)}.ir.json`"
                 />
-                <IconButton label="Delete" :icon="Trash2" danger @click="doDelete(s)" />
+                <IconButton
+                  label="Delete"
+                  :icon="Trash2"
+                  danger
+                  :disabled="!can(s, 'delete')"
+                  @click="doDelete(s)"
+                />
               </div>
             </div>
           </div>
