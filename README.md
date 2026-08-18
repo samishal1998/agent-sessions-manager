@@ -336,3 +336,8 @@ index/sessions.db       the search index (derived; safe to delete)
 `asm sync init` turns `archive/` into a git repository so archived sessions can
 be versioned and pushed to a remote of your choosing. asm does not manage the
 transport — `sync status` prints the git command to run.
+
+## License
+
+MIT or Apache-2.0, at your option — [LICENSE-MIT](LICENSE-MIT),
+[LICENSE-APACHE](LICENSE-APACHE).
