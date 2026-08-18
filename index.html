@@ -1,0 +1,585 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>asm — one inventory for every coding agent's sessions</title>
+<meta name="description" content="asm reads the on-disk session stores that Claude Code, OpenCode and jcode keep for themselves, lists every session in one place, and carries a conversation from one agent into another." />
+<meta property="og:title" content="asm — cross-agent session manager" />
+<meta property="og:description" content="One inventory, one set of verbs, for the coding-agent sessions scattered across your machine." />
+<meta property="og:type" content="website" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%97%82%EF%B8%8F%3C/text%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #101216;
+  --bg-alt: #161920;
+  --bg-raised: #1d212a;
+  --bg-hover: #232833;
+  --fg: #dde3ee;
+  --fg-muted: #98a1b3;
+  --fg-faint: #6b7385;
+  --accent: #6cb6ff;
+  --accent-soft: rgba(108, 182, 255, 0.14);
+  --green: #5bd18c;
+  --amber: #e8c37a;
+  --red: #f0716f;
+  --violet: #b48ef5;
+  --border: #262c37;
+  --border-strong: #333b49;
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+  --font: 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --measure: 1120px;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre, .mono { font-family: var(--mono); }
+.wrap { width: 100%; max-width: var(--measure); margin: 0 auto; padding: 0 24px; }
+
+/* ---- nav ---- */
+header.nav {
+  position: sticky; top: 0; z-index: 20;
+  background: rgba(16, 18, 22, 0.82);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+.nav-in { display: flex; align-items: center; gap: 20px; height: 60px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--fg); }
+.brand:hover { text-decoration: none; }
+.brand svg { width: 22px; height: 22px; color: var(--accent); }
+.nav-links { margin-left: auto; display: flex; align-items: center; gap: 22px; font-size: 14px; }
+.nav-links a { color: var(--fg-muted); }
+.nav-links a:hover { color: var(--fg); text-decoration: none; }
+@media (max-width: 640px) { .nav-hide { display: none; } }
+
+/* ---- hero ---- */
+.hero { padding: 84px 0 64px; text-align: center; position: relative; overflow: hidden; }
+.hero::before {
+  content: ''; position: absolute; inset: -40% 20% auto; height: 420px;
+  background: radial-gradient(ellipse at center, rgba(108,182,255,.13), transparent 68%);
+  pointer-events: none;
+}
+.hero > * { position: relative; }
+.eyebrow {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--fg-muted);
+  border: 1px solid var(--border-strong); border-radius: 999px;
+  padding: 5px 14px; margin-bottom: 26px;
+}
+.eyebrow b { color: var(--fg); font-weight: 600; }
+h1 {
+  font-size: clamp(34px, 6vw, 58px); line-height: 1.08;
+  letter-spacing: -0.028em; font-weight: 700; margin: 0 0 22px;
+}
+h1 .grad {
+  background: linear-gradient(96deg, var(--accent), var(--violet));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.lede {
+  font-size: clamp(16px, 2.1vw, 19px); color: var(--fg-muted);
+  max-width: 660px; margin: 0 auto 34px;
+}
+.lede b { color: var(--fg); font-weight: 600; }
+
+/* ---- install command ---- */
+.cmd {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--bg-alt); border: 1px solid var(--border-strong);
+  border-radius: var(--radius); padding: 14px 14px 14px 18px;
+  max-width: 640px; margin: 0 auto; box-shadow: var(--shadow);
+  text-align: left;
+}
+.cmd code { font-size: 14px; color: var(--fg); overflow-x: auto; white-space: nowrap; flex: 1; }
+.cmd .dollar { color: var(--fg-faint); user-select: none; }
+.copy {
+  flex-shrink: 0; background: var(--bg-raised); color: var(--fg-muted);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+  padding: 6px 12px; font: 500 13px var(--font); cursor: pointer;
+}
+.copy:hover { background: var(--bg-hover); color: var(--fg); }
+.copy.done { color: var(--green); border-color: var(--green); }
+.hero-sub { margin-top: 16px; font-size: 14px; color: var(--fg-faint); }
+
+/* ---- sections ---- */
+section { padding: 76px 0; border-top: 1px solid var(--border); }
+.sec-head { max-width: 680px; margin-bottom: 42px; }
+.sec-head.center { margin-left: auto; margin-right: auto; text-align: center; }
+h2 { font-size: clamp(25px, 3.6vw, 34px); letter-spacing: -0.02em; margin: 0 0 14px; font-weight: 700; }
+h3 { font-size: 17px; margin: 0 0 8px; font-weight: 600; }
+.sec-head p { color: var(--fg-muted); margin: 0; font-size: 17px; }
+
+/* ---- problem ---- */
+.stores { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.store {
+  background: var(--bg-alt); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 22px;
+}
+.store .who { display: flex; align-items: center; gap: 9px; font-weight: 600; margin-bottom: 10px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.store p { margin: 0; color: var(--fg-muted); font-size: 14.5px; }
+.store .fmt {
+  display: inline-block; margin-top: 12px; font-family: var(--mono); font-size: 12.5px;
+  color: var(--fg-faint); background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 3px 9px;
+}
+
+/* ---- shot ---- */
+.shot {
+  border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
+  overflow: hidden; box-shadow: var(--shadow); background: var(--bg-alt);
+}
+.shot img { display: block; width: 100%; height: auto; }
+.shot-cap { color: var(--fg-faint); font-size: 14px; text-align: center; margin-top: 16px; }
+.phone {
+  max-width: 288px; margin: 0 auto;
+  border: 1px solid var(--border-strong); border-radius: 22px;
+  overflow: hidden; box-shadow: var(--shadow); background: var(--bg-alt);
+}
+.phone img { display: block; width: 100%; height: auto; }
+
+/* ---- features ---- */
+.feats { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 18px; }
+.feat {
+  background: var(--bg-alt); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 24px;
+}
+.feat .ico {
+  width: 34px; height: 34px; border-radius: 9px; margin-bottom: 14px;
+  display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent);
+}
+.feat .ico svg { width: 18px; height: 18px; }
+.feat p { margin: 0; color: var(--fg-muted); font-size: 14.5px; }
+
+/* ---- terminal ---- */
+.term {
+  background: #0b0d11; border: 1px solid var(--border-strong);
+  border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow);
+}
+.term-bar {
+  display: flex; align-items: center; gap: 7px;
+  padding: 11px 15px; border-bottom: 1px solid var(--border); background: var(--bg-alt);
+}
+.term-bar i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+.term-bar span { margin-left: 10px; font-size: 12.5px; color: var(--fg-faint); font-family: var(--mono); }
+.term pre {
+  margin: 0; padding: 18px 20px; overflow-x: auto;
+  font-size: 13px; line-height: 1.72; color: var(--fg);
+}
+.term .p { color: var(--green); }
+.term .h { color: var(--fg-faint); }
+.term .a { color: var(--accent); }
+.term .v { color: var(--violet); }
+.term .m { color: var(--fg-muted); }
+.term .w { color: var(--amber); }
+
+/* ---- split ---- */
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; }
+@media (max-width: 860px) { .split { grid-template-columns: 1fr; gap: 28px; } }
+.split ul { margin: 18px 0 0; padding-left: 20px; color: var(--fg-muted); }
+.split li { margin-bottom: 9px; }
+.split li b { color: var(--fg); font-weight: 600; }
+
+/* ---- keys ---- */
+.keys { display: grid; gap: 10px; }
+.keyrow { display: flex; align-items: baseline; gap: 14px; font-size: 14.5px; color: var(--fg-muted); }
+kbd {
+  font-family: var(--mono); font-size: 12.5px; color: var(--fg);
+  background: var(--bg-raised); border: 1px solid var(--border-strong);
+  border-bottom-width: 2px; border-radius: var(--radius-sm);
+  padding: 2px 8px; min-width: 26px; text-align: center; flex-shrink: 0;
+}
+
+/* ---- install grid ---- */
+.inst { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; }
+.inst .card {
+  background: var(--bg-alt); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 22px;
+}
+.inst pre {
+  margin: 12px 0 0; background: #0b0d11; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 13px 15px; overflow-x: auto;
+  font-size: 13px; color: var(--fg);
+}
+table.env { width: 100%; border-collapse: collapse; margin-top: 26px; font-size: 14.5px; }
+table.env th, table.env td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.env th { color: var(--fg-faint); font-weight: 500; font-size: 13px; text-transform: uppercase; letter-spacing: .05em; }
+table.env td:first-child { font-family: var(--mono); font-size: 13px; color: var(--accent); white-space: nowrap; }
+table.env td:last-child { color: var(--fg-muted); }
+
+/* ---- safety ---- */
+.safety { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 18px; }
+.safe { border-left: 2px solid var(--green); padding: 4px 0 4px 18px; }
+.safe h3 { margin-bottom: 6px; }
+.safe p { margin: 0; color: var(--fg-muted); font-size: 14.5px; }
+
+/* ---- support table ---- */
+.support { overflow-x: auto; }
+table.sup { width: 100%; border-collapse: collapse; font-size: 14.5px; min-width: 520px; }
+table.sup th, table.sup td { padding: 12px 14px; border-bottom: 1px solid var(--border); text-align: left; }
+table.sup th { color: var(--fg-faint); font-weight: 500; font-size: 13px; }
+table.sup td:not(:first-child) { text-align: center; }
+table.sup td:first-child { color: var(--fg-muted); }
+.yes { color: var(--green); }
+.no { color: var(--fg-faint); }
+
+/* ---- footer ---- */
+footer { border-top: 1px solid var(--border); padding: 44px 0; color: var(--fg-faint); font-size: 14px; }
+.foot-in { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; }
+.foot-in .sp { margin-left: auto; }
+</style>
+</head>
+<body>
+
+<header class="nav">
+  <div class="wrap nav-in">
+    <a class="brand" href="#top">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 3 7l9 5 9-5-9-5Z"/><path d="m3 17 9 5 9-5"/><path d="m3 12 9 5 9-5"/></svg>
+      asm
+    </a>
+    <nav class="nav-links">
+      <a class="nav-hide" href="#features">Features</a>
+      <a class="nav-hide" href="#import">Import</a>
+      <a href="#install">Install</a>
+      <a href="https://github.com/samishal1998/agent-sessions-manager">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<div id="top" class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Works with <b>Claude&nbsp;Code</b> · <b>OpenCode</b> · <b>jcode</b></div>
+    <h1>Every agent's sessions,<br /><span class="grad">in one inventory</span></h1>
+    <p class="lede">
+      Coding agents are good at keeping their own history and bad at everything around it.
+      <b>asm</b> reads the stores they keep for themselves, lists every session in one place,
+      and carries a conversation from one agent into another.
+    </p>
+    <div class="cmd">
+      <span class="dollar">$</span>
+      <code id="cmd">curl -fsSL https://raw.githubusercontent.com/samishal1998/agent-sessions-manager/main/install.sh | sh</code>
+      <button class="copy" id="copy" type="button">Copy</button>
+    </div>
+    <p class="hero-sub">Single self-contained binary · Linux and macOS · x86_64 and arm64</p>
+  </div>
+</div>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>Three agents, three incompatible stores</h2>
+      <p>
+        Each agent invented its own on-disk format and its own idea of what a session is.
+        None of them can see the others, so there is no list, no search, and no way back
+        into a conversation you started somewhere else.
+      </p>
+    </div>
+    <div class="stores">
+      <div class="store">
+        <div class="who"><span class="dot" style="background:var(--amber)"></span>Claude Code</div>
+        <p>Append-only JSONL per session, in a directory named by a lossy encoding of your working directory. Five sidecar locations across two roots.</p>
+        <span class="fmt">~/.claude/projects/…/&lt;uuid&gt;.jsonl</span>
+      </div>
+      <div class="store">
+        <div class="who"><span class="dot" style="background:var(--accent)"></span>OpenCode</div>
+        <p>One SQLite database for everything, with a live write-ahead log — copy it wrong and you silently read stale data.</p>
+        <span class="fmt">~/.local/share/opencode/opencode.db</span>
+      </div>
+      <div class="store">
+        <div class="who"><span class="dot" style="background:var(--green)"></span>jcode</div>
+        <p>A whole-conversation JSON snapshot rewritten on every turn, alongside a journal and a backup of the previous state.</p>
+        <span class="fmt">~/.jcode/sessions/session_&lt;name&gt;.json</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head center">
+      <h2>One list, whatever wrote it</h2>
+      <p>Sessions from every agent, grouped by the repository they belong to, with the disk each one costs.</p>
+    </div>
+    <div class="term">
+      <div class="term-bar">
+        <i style="background:#f0716f"></i><i style="background:#e8c37a"></i><i style="background:#5bd18c"></i>
+        <span>asm list</span>
+      </div>
+<pre><span class="p">$</span> asm list
+<span class="h">AGENT        ID             TITLE                                        PROJECT             BRANCH       UPDATED  SIZE    STATUS</span>
+<span class="a">jcode</span>        calm-meridian  Benchmark the new pool against the old one    ~/code/mercury                   2d ago   777 B   <span class="m">idle</span>
+<span class="a">claude-code</span>  4c0d9a71       Rewrite the auth guard tests                  ~/code/atlas-web    main         2d ago   1.2 KB  <span class="m">idle</span>
+<span class="a">claude-code</span>  b21e6f04       Port the retry middleware onto tower::Layer   ~/code/mercury-tls  tls-rewrite  3d ago   2.5 KB  <span class="m">idle</span>
+<span class="a">opencode</span>     ses_71bc       Design the billing webhook retry schema       ~/code/atlas-web                 4d ago   1.3 KB  <span class="m">idle</span>
+<span class="a">jcode</span>        bright-canyon  Draft the incident postmortem                 ~/code/notes                     5d ago   845 B   <span class="m">idle</span>
+<span class="a">claude-code</span>  7f3a1c88       Trace the connection-pool leak under load     ~/code/mercury      main         6d ago   4.2 KB  <span class="m">idle</span>
+<span class="a">opencode</span>     ses_9d2a       Migrate the dashboard build to Vite 7         ~/code/atlas-web                 7d ago   927 B   <span class="v">archived</span>
+
+<span class="p">$</span> asm projects
+<span class="h">PROJECT           AGENTS                 SESSIONS  SIZE    WORKTREES  UPDATED</span>
+~/code/mercury    claude-code, jcode     3         7.4 KB  2/2        2d ago
+~/code/atlas-web  claude-code, opencode  3         3.5 KB             2d ago
+~/code/notes      jcode                  1         845 B              5d ago</pre>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head center">
+      <h2>And a browser, if you'd rather</h2>
+      <p>
+        <code>asm serve</code> puts the same verbs behind a mouse — filters, full-text search,
+        and a transcript panel that renders reasoning, tool calls and their output.
+      </p>
+    </div>
+    <div class="shot"><img src="shots/transcript.png" alt="The asm web UI: a list of sessions from three agents on the left, and an open transcript on the right showing reasoning, tool calls and results." width="2880" height="1800" loading="lazy" /></div>
+    <p class="shot-cap">Everything runs locally. Nothing is uploaded anywhere.</p>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <div class="sec-head center">
+      <h2>What it does</h2>
+      <p>One set of verbs, applied to whichever agent happens to own the session.</p>
+    </div>
+    <div class="feats">
+      <div class="feat">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg></div>
+        <h3>List and inspect</h3>
+        <p>Every session from every agent in one table, with title, project, branch, model, size and whether it is running right now.</p>
+      </div>
+      <div class="feat">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></div>
+        <h3>Full-text search</h3>
+        <p>One index across every transcript, whatever wrote it, with highlighted snippets and the message each hit came from.</p>
+      </div>
+      <div class="feat">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3v16h16"/><path d="m5 19 6-6 4 4 6-6"/></svg></div>
+        <h3>Projects are repositories</h3>
+        <p>Not directories. A repository's worktrees and subdirectories are one project, so a session started in a checkout is not a separate thing.</p>
+      </div>
+      <div class="feat">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></div>
+        <h3>Rename, move, archive</h3>
+        <p>Retitle a session you can no longer identify. Move one after you renamed the directory. Archive what you are done with, and bring it back.</p>
+      </div>
+      <div class="feat">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v6h6"/><path d="M20 20v-6h-6"/><path d="M20 9A8 8 0 0 0 6 5.3L4 7"/><path d="M4 15a8 8 0 0 0 14 3.7l2-1.7"/></svg></div>
+        <h3>Cross-agent import</h3>
+        <p>Carry a conversation from one agent to another as a native session the target's own picker lists and its own resume opens.</p>
+      </div>
+      <div class="feat">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg></div>
+        <h3>Backed up, never in the way</h3>
+        <p>Every destructive verb writes a backup first, and refuses outright on a session whose process is still alive.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="import">
+  <div class="wrap">
+    <div class="split">
+      <div>
+        <h2>Move a conversation<br />between agents</h2>
+        <p style="color:var(--fg-muted);margin:0">
+          The flagship. <code>asm import</code> converts through a documented, versioned
+          intermediate representation and writes a <b style="color:var(--fg)">native</b> session in
+          the target — not an export file, but a real session the target lists and resumes.
+        </p>
+        <ul>
+          <li><b>Full mode</b> translates the transcript into the target's own records.</li>
+          <li><b>Seed mode</b> distils it into a handoff document that starts a fresh session — lower fidelity, immune to format churn.</li>
+          <li><b>A loss report every time.</b> Nothing degrades silently: what could not cross is printed.</li>
+          <li><b>Idempotent.</b> Target ids are derived from the source, so re-importing is a no-op, not a duplicate.</li>
+        </ul>
+      </div>
+      <div class="term">
+        <div class="term-bar">
+          <i style="background:#f0716f"></i><i style="background:#e8c37a"></i><i style="background:#5bd18c"></i>
+          <span>asm import</span>
+        </div>
+<pre><span class="p">$</span> asm import 36405fad --to opencode
+
+Imported as <span class="a">opencode:ses_7bdfed0f167b6c50</span>.
+
+<span class="h">Loss report:</span>
+2 of 3 messages converted
+<span class="w">1 opaque reasoning block dropped</span>
+  <span class="m">(provider-bound; summaries only)</span>
+<span class="w">conversation re-attributed to</span>
+  <span class="m">openai/gpt-5.6-sol</span>
+
+Resume with:
+  <span class="a">opencode -s ses_7bdfed0f167b6c50</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="split">
+      <div class="phone"><img src="shots/mobile.png" alt="The asm web UI on a narrow phone-sized viewport, with the session list filling the screen." width="840" height="1720" loading="lazy" /></div>
+      <div>
+        <h2>Three frontends,<br />one core</h2>
+        <p style="color:var(--fg-muted);margin:0 0 22px">
+          The same operations wherever you are: a CLI that pipes, a terminal UI where every
+          verb is a keystroke, and a local web UI that works down to a phone.
+        </p>
+        <div class="keys">
+          <div class="keyrow"><kbd>⏎</kbd><span>resume in the native agent — the TUI steps aside and comes back</span></div>
+          <div class="keyrow"><kbd>r</kbd><span>rename · <kbd>a</kbd> archive · <kbd>d</kbd> delete, confirmed and backed up</span></div>
+          <div class="keyrow"><kbd>m</kbd><span>move to another project · <kbd>i</kbd> import · <kbd>e</kbd> export</span></div>
+          <div class="keyrow"><kbd>s</kbd><span>search across transcripts · <kbd>/</kbd> filter the list</span></div>
+          <div class="keyrow"><kbd>D</kbd><span>store health — the same report as <code>asm doctor</code></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>Agent support</h2>
+      <p>Verified means a real session was changed, then the agent's own CLI still listed and resumed it.</p>
+    </div>
+    <div class="support">
+      <table class="sup">
+        <thead><tr><th></th><th>Claude&nbsp;Code</th><th>OpenCode</th><th>jcode</th></tr></thead>
+        <tbody>
+          <tr><td>List, show, search</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>Resume natively</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>Rename</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>Archive · unarchive</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>Delete, with backup</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>Move to another project</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td></tr>
+          <tr><td>Import into</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td></tr>
+          <tr><td>Export to IR</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td class="mono" style="font-size:13px">tested against</td><td class="mono" style="font-size:13px">2.1.234</td><td class="mono" style="font-size:13px">1.17.18</td><td class="mono" style="font-size:13px">0.78.0</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <div class="sec-head center">
+      <h2>Install</h2>
+      <p>One binary, no runtime. SQLite is bundled and the web UI is embedded.</p>
+    </div>
+    <div class="inst">
+      <div class="card">
+        <h3>Script</h3>
+        <p style="color:var(--fg-muted);margin:0;font-size:14.5px">
+          Downloads the build for your platform, checks it against the release's
+          <code>SHA256SUMS</code>, and installs to <code>~/.local/bin</code>. A bad
+          download stops before anything is written.
+        </p>
+        <pre>curl -fsSL https://raw.githubusercontent.com\
+/samishal1998/agent-sessions-manager\
+/main/install.sh | sh</pre>
+      </div>
+      <div class="card">
+        <h3>From source</h3>
+        <p style="color:var(--fg-muted);margin:0;font-size:14.5px">
+          Needs a recent stable Rust, and Bun or Node to build the embedded
+          web assets first.
+        </p>
+        <pre>git clone https://github.com/samishal1998/\
+agent-sessions-manager
+cd agent-sessions-manager/crates/asm-web/frontend
+bun install &amp;&amp; bun run build &amp;&amp; cd -
+cargo build --release</pre>
+      </div>
+    </div>
+    <table class="env">
+      <thead><tr><th>Variable</th><th>Effect</th></tr></thead>
+      <tbody>
+        <tr><td>ASM_VERSION</td><td>Install a specific tag instead of the latest release.</td></tr>
+        <tr><td>ASM_INSTALL_DIR</td><td>Where the binary goes. Defaults to <code>~/.local/bin</code>.</td></tr>
+        <tr><td>ASM_BASE_URL</td><td>Fetch the assets from a mirror or a local directory instead of GitHub.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>What it will not do to your data</h2>
+      <p>asm edits stores that other programs own. The rules that follow from that are not optional.</p>
+    </div>
+    <div class="safety">
+      <div class="safe">
+        <h3>Never touches a live session</h3>
+        <p>Every mutation checks whether the owning process is still running, and refuses if it is.</p>
+      </div>
+      <div class="safe">
+        <h3>Backup before every change</h3>
+        <p>Destructive verbs write a copy first. Delete backs up the transcript and its sidecars together.</p>
+      </div>
+      <div class="safe">
+        <h3>Local only</h3>
+        <p>Nothing leaves your machine. The web UI binds to loopback and refuses cross-origin mutations.</p>
+      </div>
+      <div class="safe">
+        <h3>The index is disposable</h3>
+        <p>Search is a derived cache that can be deleted and rebuilt. The agents' own files stay the source of truth.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-in">
+    <span>MIT or Apache-2.0</span>
+    <span class="sp"><a href="https://github.com/samishal1998/agent-sessions-manager">Source</a></span>
+    <span><a href="https://github.com/samishal1998/agent-sessions-manager/issues">Issues</a></span>
+    <span><a href="https://github.com/samishal1998/agent-sessions-manager/blob/main/docs/agent-formats.md">Format notes</a></span>
+  </div>
+</footer>
+
+<script>
+  const btn = document.getElementById('copy')
+  btn.addEventListener('click', async () => {
+    const text = document.getElementById('cmd').textContent
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      ta.remove()
+    }
+    btn.textContent = 'Copied'
+    btn.classList.add('done')
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('done') }, 1800)
+  })
+</script>
+</body>
+</html>
