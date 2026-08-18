@@ -14,7 +14,7 @@ pub fn list_sessions(filter: &SessionFilter) -> Result<Vec<Session>, CoreError> 
     for adapter in Adapter::available() {
         sessions.extend(adapter.sessions(filter)?);
     }
-    sessions.sort_by(|a, b| b.updated.cmp(&a.updated));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
     Ok(sessions)
 }
 
@@ -120,7 +120,7 @@ pub fn group_projects(
         })
         .collect();
 
-    projects.sort_by(|a, b| b.last_updated.cmp(&a.last_updated));
+    projects.sort_by_key(|p| std::cmp::Reverse(p.last_updated));
     projects
 }
 

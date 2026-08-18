@@ -48,7 +48,7 @@ impl Project {
     pub fn active_worktrees(&self) -> Vec<&ProjectWorktree> {
         let mut active: Vec<&ProjectWorktree> =
             self.worktrees.iter().filter(|w| w.session_count > 0).collect();
-        active.sort_by(|a, b| b.session_count.cmp(&a.session_count));
+        active.sort_by_key(|w| std::cmp::Reverse(w.session_count));
         active
     }
 }
