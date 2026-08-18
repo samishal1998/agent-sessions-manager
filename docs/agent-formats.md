@@ -310,11 +310,36 @@ live process.
 | `image` | file reference; the inline base64 is not copied |
 | `open_ai_compaction` | counted in the loss report, not carried |
 
-### Why writes are refused
+### Writing
 
-Nothing here was checked against a running jcode. Reading a format wrongly
-produces a visibly odd session; writing one wrongly damages someone's history,
-and the acceptance test this project uses for every other write path — mutate,
-then confirm the agent still lists and resumes the session — could not be run.
-So the adapter advertises the read side only and every write verb returns
-`NotSupported`.
+`jcode session rename <session|short-name> <title>` is jcode's own rename and
+the path `asm rename` takes. It writes `custom_title` and leaves the generated
+`title` alone — the same split Claude Code makes — so asm's title precedence
+and jcode's agree by construction rather than by luck. It needs no credentials,
+which is what makes it usable as a verification probe.
+
+Archive and delete only move or remove whole files: the snapshot, the `.bak`
+jcode writes beside it, and the journal. Nothing rewrites the document.
+
+`cache/session-picker-list-v2.json` caches jcode's picker list (including, as
+it happens, sessions belonging to *other* agents — jcode reads those too). It
+is derived from the sessions directory and regenerates, so asm drops it after
+adding or removing a session rather than leaving a stale picker.
+
+Two verbs stay unsupported. **Moving** a session means editing `working_dir`
+inside the snapshot, and **importing** means writing a whole snapshot; jcode
+has a command for neither. The entire conversation lives in that one document,
+so rewriting it to change a field would rewrite all of someone's history with
+no sanctioned path and no way to check the result.
+
+### Verifying a write without credentials
+
+jcode needs a configured provider to hold a conversation, but not to manage
+sessions — which makes `jcode session rename <id> …` a clean existence probe.
+It succeeds when jcode can resolve the session and fails when it cannot, so
+archive and delete can both be checked against jcode's own view:
+
+```
+before archive → jcode resolves it       after archive → jcode does not
+after unarchive → jcode resolves it      after delete  → jcode does not
+```

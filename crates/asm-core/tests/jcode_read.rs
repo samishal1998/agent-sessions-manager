@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use asm_core::adapter::jcode::JCodeAdapter;
 use asm_core::adapter::{AgentRead, AgentWrite, SessionFilter};
 use asm_core::ir::IrPart;
+use asm_core::CoreError;
 use asm_core::model::{AgentKind, SessionStatus};
 
 const MAIN: &str = "01HQ8ZK7MAIN0000000000";
@@ -227,17 +228,78 @@ fn exports_every_content_block_kind_to_the_ir() {
 }
 
 #[test]
-fn writing_is_refused_rather_than_guessed() {
-    // The adapter is read-only until its writes can be checked against a
-    // real jcode install; the refusal must be explicit, not a silent no-op.
+fn archive_and_delete_move_the_snapshot_and_its_siblings() {
+    let dir = tempfile::tempdir().unwrap();
+    // Archive and delete write into asm's own data dir, not jcode's.
+    let data = tempfile::tempdir().unwrap();
+    unsafe { std::env::set_var("ASM_DATA_DIR", data.path()) };
+    write_store(dir.path());
+    let sessions = dir.path().join("sessions");
+    // jcode leaves a .bak beside the snapshot and appends a journal; both
+    // belong to the session and must travel with it.
+    fs::write(sessions.join(format!("{MAIN}.bak")), "{}").unwrap();
+    fs::write(sessions.join(format!("{MAIN}.journal.jsonl")), "{}\n").unwrap();
+
+    let session = only(dir.path());
+    let outcome = adapter(dir.path()).archive(&session).unwrap();
+    let archived = outcome.archived_to.unwrap();
+    for name in ["snapshot.json", "snapshot.bak", "journal.jsonl"] {
+        assert!(archived.join("native").join(name).is_file(), "missing {name}");
+    }
+    assert!(!sessions.join(format!("{MAIN}.json")).exists(), "moved, not copied");
+
+    // Restoring puts every file back exactly where jcode expects it.
+    let restored = asm_core::archive::unarchive_by_id(MAIN).unwrap();
+    assert_eq!(restored, sessions.join(format!("{MAIN}.json")));
+    assert!(sessions.join(format!("{MAIN}.bak")).is_file());
+    assert!(sessions.join(format!("{MAIN}.journal.jsonl")).is_file());
+
+    // Delete backs all three up first.
+    let session = only(dir.path());
+    let report = adapter(dir.path()).delete(&session).unwrap();
+    let backup = report.backup_dir.unwrap();
+    for name in ["snapshot.json", "snapshot.bak", "journal.jsonl"] {
+        assert!(backup.join(name).is_file(), "missing backup of {name}");
+    }
+    assert!(adapter(dir.path()).sessions(&SessionFilter::default()).unwrap().is_empty());
+}
+
+#[test]
+fn a_live_session_is_never_mutated() {
+    let dir = tempfile::tempdir().unwrap();
+    write_store(dir.path());
+    let pids = dir.path().join("active_pids");
+    fs::create_dir_all(&pids).unwrap();
+    fs::write(pids.join(MAIN), std::process::id().to_string()).unwrap();
+
+    let sessions = adapter(dir.path()).sessions(&SessionFilter::default()).unwrap();
+    let session = sessions.into_iter().find(|s| s.handle.native_id == MAIN).unwrap();
+    let adapter = adapter(dir.path());
+    assert!(matches!(adapter.delete(&session), Err(CoreError::SessionLive { .. })));
+    assert!(matches!(adapter.archive(&session), Err(CoreError::SessionLive { .. })));
+}
+
+#[test]
+fn operations_that_would_rewrite_the_snapshot_are_refused() {
+    // The whole conversation lives in one JSON document and jcode ships no
+    // command for these, so asm does not invent one.
     let dir = tempfile::tempdir().unwrap();
     write_store(dir.path());
     let session = only(dir.path());
     let adapter = adapter(dir.path());
 
-    let err = adapter.rename(&session, "new").unwrap_err().to_string();
-    assert!(err.contains("jcode"), "{err}");
-    assert!(adapter.delete(&session).is_err());
-    assert!(adapter.archive(&session).is_err());
-    assert!(adapter.relocate(&session, &PathBuf::from("/tmp")).is_err());
+    let moved = adapter.relocate(&session, &PathBuf::from("/tmp")).unwrap_err().to_string();
+    assert!(moved.contains("jcode"), "{moved}");
+    let imported = adapter
+        .import_ir(
+            &adapter.export_ir(&session).unwrap(),
+            &asm_core::import::ImportOpts {
+                mode: asm_core::import::ImportMode::Full,
+                project: None,
+                dry_run: true,
+            },
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(imported.contains("jcode"), "{imported}");
 }

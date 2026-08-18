@@ -18,6 +18,7 @@
 
 mod export_ir;
 mod store;
+mod write;
 
 use std::path::{Path, PathBuf};
 
@@ -70,6 +71,9 @@ impl AgentRead for JCodeAdapter {
             liveness: true,
             resume_native: true,
             export_ir: true,
+            rename: true,
+            archive: true,
+            delete: true,
             ..Capabilities::default()
         }
     }
@@ -100,26 +104,27 @@ impl AgentRead for JCodeAdapter {
     }
 }
 
-/// jcode is read-only for now.
+/// What jcode can be asked to do, and what it cannot.
 ///
-/// Every write path in this tool has been signed off by a behavioural test —
-/// mutate a real session, then confirm the agent itself still lists and
-/// resumes it. jcode is not installed on the machine this adapter was
-/// written on, so none of that could be checked, and rewriting another
-/// tool's session store on the strength of reading its source is exactly
-/// the kind of confidence this project does not extend. `Capabilities`
-/// advertises the read side only; these refuse rather than guess.
+/// Rename goes through `jcode session rename` — jcode's own command, which
+/// writes the `custom_title` its picker reads. Archive and delete move or
+/// remove whole files. What stays unsupported is anything needing the
+/// snapshot itself rewritten: the whole conversation lives in that one
+/// document, and there is no sanctioned command for moving a session to a
+/// different directory or materializing an imported one.
 impl AgentWrite for JCodeAdapter {
-    fn rename(&self, _session: &Session, _title: &str) -> Result<(), CoreError> {
-        Err(unsupported("rename"))
+    fn rename(&self, session: &Session, title: &str) -> Result<(), CoreError> {
+        write::rename(self, session, title)
     }
 
-    fn archive(&self, _session: &Session) -> Result<super::ArchiveOutcome, CoreError> {
-        Err(unsupported("archive"))
+    fn archive(&self, session: &Session) -> Result<super::ArchiveOutcome, CoreError> {
+        write::archive(self, session)
     }
 
     fn unarchive(&self, _session: &Session) -> Result<(), CoreError> {
-        Err(unsupported("unarchive"))
+        // Archived sessions leave jcode's store entirely, so they no longer
+        // resolve as sessions; restoring goes through the archive by id.
+        Err(unsupported("unarchive-by-ref"))
     }
 
     fn relocate(
@@ -127,11 +132,11 @@ impl AgentWrite for JCodeAdapter {
         _session: &Session,
         _new_dir: &Path,
     ) -> Result<super::RelocateOutcome, CoreError> {
-        Err(unsupported("move"))
+        Err(unsupported("move (the working directory lives inside the snapshot)"))
     }
 
-    fn delete(&self, _session: &Session) -> Result<super::DeleteReport, CoreError> {
-        Err(unsupported("delete"))
+    fn delete(&self, session: &Session) -> Result<super::DeleteReport, CoreError> {
+        write::delete(self, session)
     }
 
     fn import_ir(
@@ -139,7 +144,7 @@ impl AgentWrite for JCodeAdapter {
         _ir: &crate::ir::IrSession,
         _opts: &crate::import::ImportOpts,
     ) -> Result<crate::import::ImportOutcome, CoreError> {
-        Err(unsupported("import into jcode"))
+        Err(unsupported("import into jcode (no sanctioned import command)"))
     }
 }
 

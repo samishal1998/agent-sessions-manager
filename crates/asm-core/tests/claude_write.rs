@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use asm_core::CoreError;
-use asm_core::adapter::claude::{ClaudeAdapter, encode_project_dir, unarchive_by_id};
+use asm_core::adapter::claude::{ClaudeAdapter, encode_project_dir};
+use asm_core::archive::unarchive_by_id;
 use asm_core::adapter::{AgentRead, AgentWrite, SessionFilter};
 use asm_core::model::Session;
 

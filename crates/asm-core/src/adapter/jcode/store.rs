@@ -145,6 +145,10 @@ fn read_snapshot(path: &Path) -> Option<Snapshot> {
 /// jcode writes one file per running session under `active_pids/`, named by
 /// session id, containing the owning PID. A file whose process is gone is
 /// stale and must not mark the session live.
+pub(super) fn live_pid(root: &Path, session_id: &str) -> Option<u32> {
+    live_pids(root).remove(session_id)
+}
+
 fn live_pids(root: &Path) -> HashMap<String, u32> {
     let mut live = HashMap::new();
     let Ok(entries) = std::fs::read_dir(root.join("active_pids")) else {

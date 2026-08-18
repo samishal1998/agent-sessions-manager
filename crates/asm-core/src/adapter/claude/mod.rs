@@ -18,7 +18,6 @@ mod store;
 mod write;
 
 pub use path_encode::encode_project_dir;
-pub use write::unarchive_by_id;
 
 use std::path::{Path, PathBuf};
 

@@ -239,7 +239,7 @@ pub fn unarchive(query: &str, filter: &SessionFilter) -> Result<Option<PathBuf>,
         // Not resolvable as a live session — try the Claude archive store.
         Err(ResolveError::NotFound { .. }) => {
             let id_query = query.split_once(':').map(|(_, rest)| rest).unwrap_or(query);
-            crate::adapter::claude::unarchive_by_id(id_query).map(Some)
+            crate::archive::unarchive_by_id(id_query).map(Some)
         }
     }
 }
@@ -287,9 +287,15 @@ pub fn resolve_ref(query: &str, filter: &SessionFilter) -> Result<Session, Resol
     };
 
     let sessions = list_sessions(&filter)?;
+    // An id prefix, or the memorable name the agent itself uses — jcode
+    // calls a session "hog", never `session_hog_1787…`, and its own
+    // `--resume` takes that name.
     let mut matches: Vec<Session> = sessions
         .into_iter()
-        .filter(|s| s.handle.native_id.starts_with(id_query))
+        .filter(|s| {
+            s.handle.native_id.starts_with(id_query)
+                || s.slug.as_deref().is_some_and(|slug| slug == id_query)
+        })
         .collect();
 
     match matches.len() {

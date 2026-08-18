@@ -64,8 +64,20 @@ pub struct Session {
 }
 
 impl Session {
+    /// A short, human-usable handle for the session.
+    ///
+    /// Truncating the raw id is not enough: every jcode id begins
+    /// `session_`, so eight characters of one is eight characters of all of
+    /// them. jcode's own handle is the memorable name it embeds in that id
+    /// ("hog"), so use it; otherwise drop a known prefix before truncating.
     pub fn short_id(&self) -> &str {
-        let id = &self.handle.native_id;
+        if self.handle.agent == AgentKind::JCode
+            && let Some(name) = self.slug.as_deref()
+            && !name.is_empty()
+        {
+            return name;
+        }
+        let id = self.handle.native_id.strip_prefix("session_").unwrap_or(&self.handle.native_id);
         &id[..id.len().min(8)]
     }
 }

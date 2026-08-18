@@ -4,14 +4,19 @@
 
 use crate::model::AgentKind;
 
-/// (agent, exact version the import path was last verified against)
+/// (agent, exact version asm's writes were last verified against)
 ///
-/// "Verified" means a real session was imported and then resumed in the
-/// target agent's own CLI with its conversation intact — not that the code
-/// compiled.
+/// "Verified" never means the code compiled. For Claude Code and OpenCode
+/// it means a real session was imported and then resumed in that agent's
+/// own CLI with its conversation intact. jcode is not an import target, so
+/// there it means the write verbs were exercised against a real store and
+/// the agent's own view was checked afterwards: rename read back through
+/// `jcode session rename --json`, and archive/delete confirmed by jcode no
+/// longer being able to resolve the session.
 pub const TESTED: &[(AgentKind, &str)] = &[
     (AgentKind::ClaudeCode, "2.1.234"),
     (AgentKind::OpenCode, "1.17.18"),
+    (AgentKind::JCode, "0.78.0"),
 ];
 
 pub fn tested_version(agent: AgentKind) -> Option<&'static str> {

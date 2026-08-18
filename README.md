@@ -44,8 +44,8 @@ Verified against **Claude Code 2.1.234** and **OpenCode 1.17.18** on Linux —
 "verified" meaning a real session was imported and then resumed in the target
 agent's own CLI with its conversation intact.
 
-**jcode is supported read-only**, and has not been verified against a real
-install — see [Agent support](#agent-support).
+jcode 0.78.0 is supported too, with two exceptions noted in
+[Agent support](#agent-support).
 `asm doctor` warns when your installed versions have drifted from those.
 
 ## Build
@@ -163,24 +163,26 @@ kept verbatim so the history still reads), and nested subagent transcripts.
 | Liveness | yes | yes | yes |
 | Resume | yes | yes | yes |
 | Export to Session IR | yes | yes | yes |
+| Rename | yes | yes | yes |
+| Archive / unarchive | yes | yes | yes |
+| Delete | yes | yes | yes |
+| Move to another directory | yes | yes | no |
 | Import **from** (source) | yes | yes | yes |
 | Import **into** (target) | yes | yes | no |
-| Rename / move / archive / delete | yes | yes | no |
-| Verified against a real install | yes | yes | **no** |
+| Verified against a real install | 2.1.234 | 1.17.18 | 0.78.0 |
 
-jcode's adapter was written from its source rather than from a running copy,
-because jcode is not installed on the machine it was developed on. Reading is
-safe to get wrong — a misparse shows up as a missing or odd-looking session —
-so the read side ships. Writing is not: every write path in this tool has been
-signed off by mutating a real session and confirming the agent still lists and
-resumes it, and that check was not possible here. So jcode sessions can be
-read, searched, resumed and imported *into the other agents*, and every write
-verb refuses with a clear message rather than guessing. `asm doctor --json`
-reports each agent's capabilities, and the web UI greys out what an agent
-cannot do.
+Two jcode verbs are missing, for the same reason: its whole session — metadata
+*and* the entire conversation — is one JSON document, and jcode ships no
+command for either job. Moving a session means editing `working_dir` inside
+that document, and importing means writing a whole one. Rewriting another
+tool's file to change one field, with no sanctioned path and no way to check
+the result, is not a trade this project makes. Everything else goes through
+jcode's own `session rename` or moves whole files without touching their
+contents.
 
-Turning writes on is mostly a matter of running the same acceptance tests with
-jcode installed.
+`asm doctor --json` reports each agent's capabilities, and the web UI greys out
+what an agent cannot do, so the limits are visible rather than discovered by
+error.
 
 ## What counts as a project
 

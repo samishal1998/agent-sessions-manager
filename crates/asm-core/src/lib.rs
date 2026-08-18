@@ -2,6 +2,7 @@
 //! cross-agent session manager. No UI or CLI dependencies live here.
 
 pub mod adapter;
+pub mod archive;
 pub mod error;
 pub mod fsutil;
 pub mod git;

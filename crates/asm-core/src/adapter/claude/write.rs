@@ -227,22 +227,6 @@ fn rehome_jobs(
     }
 }
 
-/// Manifest describing an archived session so it can be restored exactly.
-fn manifest(session: &Session, entries: &[(String, PathBuf)]) -> Value {
-    json!({
-        "schema": 1,
-        "agent": AGENT,
-        "id": session.handle.native_id,
-        "title": session.title,
-        "project_root": session.project_root,
-        "archived_at": jiff::Timestamp::now().to_string(),
-        "entries": entries
-            .iter()
-            .map(|(name, original)| json!({ "name": name, "original_path": original }))
-            .collect::<Vec<_>>(),
-    })
-}
-
 pub(super) fn archive(
     adapter: &ClaudeAdapter,
     session: &Session,
@@ -250,20 +234,12 @@ pub(super) fn archive(
     let id = &session.handle.native_id;
     guard_not_live(adapter, id)?;
 
-    let archive_dir = paths::archive_dir(AGENT, id)
-        .ok_or_else(|| CoreError::Invalid { msg: "cannot determine archive directory".into() })?;
-    if archive_dir.exists() {
-        return Err(CoreError::DestinationExists { path: archive_dir });
-    }
-    let native = archive_dir.join("native");
-    fs::create_dir_all(&native).map_err(|e| CoreError::io(&native, e))?;
-
     let transcript = transcript_path(session)?;
     let project_dir = transcript.parent().unwrap().to_path_buf();
 
     // Everything that belongs to this session, moved as-is so unarchive is
-    // an exact restore. (name, original_path) pairs drive both directions.
-    let mut entries: Vec<(String, PathBuf)> = vec![("transcript.jsonl".into(), transcript.clone())];
+    // an exact restore.
+    let mut entries: Vec<(String, PathBuf)> = vec![("transcript.jsonl".into(), transcript)];
     let sidecar = project_dir.join(id.as_str());
     if sidecar.is_dir() {
         entries.push(("session-dir".into(), sidecar));
@@ -273,60 +249,7 @@ pub(super) fn archive(
         entries.push((name, dir));
     }
 
-    let manifest_value = manifest(session, &entries);
-    fs::write(archive_dir.join("manifest.json"), serde_json::to_string_pretty(&manifest_value).unwrap())
-        .map_err(|e| CoreError::io(&archive_dir, e))?;
-
-    for (name, original) in &entries {
-        fsutil::move_path(original, &native.join(name))?;
-    }
-    Ok(ArchiveOutcome { archived_to: Some(archive_dir) })
-}
-
-/// Restore a previously archived session by id (it no longer resolves as a
-/// normal session, so this takes the raw id).
-pub fn unarchive_by_id(id: &str) -> Result<PathBuf, CoreError> {
-    let archive_dir = paths::archive_dir(AGENT, id)
-        .ok_or_else(|| CoreError::Invalid { msg: "cannot determine archive directory".into() })?;
-    let manifest_path = archive_dir.join("manifest.json");
-    let bytes = fs::read(&manifest_path)
-        .map_err(|_| CoreError::NotArchived { id: id.to_string() })?;
-    let manifest: Value = serde_json::from_slice(&bytes)
-        .map_err(|_| CoreError::NotArchived { id: id.to_string() })?;
-
-    let entries = manifest
-        .get("entries")
-        .and_then(Value::as_array)
-        .ok_or_else(|| CoreError::Invalid { msg: "malformed archive manifest".into() })?;
-
-    // Refuse if anything would be overwritten.
-    let mut moves: Vec<(PathBuf, PathBuf)> = Vec::new();
-    for entry in entries {
-        let (Some(name), Some(original)) = (
-            entry.get("name").and_then(Value::as_str),
-            entry.get("original_path").and_then(Value::as_str),
-        ) else {
-            return Err(CoreError::Invalid { msg: "malformed archive manifest entry".into() });
-        };
-        let from = archive_dir.join("native").join(name);
-        let to = PathBuf::from(original);
-        if to.exists() {
-            return Err(CoreError::DestinationExists { path: to });
-        }
-        moves.push((from, to));
-    }
-    let mut restored_transcript = None;
-    for (from, to) in moves {
-        if let Some(parent) = to.parent() {
-            fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
-        }
-        fsutil::move_path(&from, &to)?;
-        if to.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            restored_transcript = Some(to);
-        }
-    }
-    fsutil::remove_recursive(&archive_dir)?;
-    restored_transcript.ok_or(CoreError::NotArchived { id: id.to_string() })
+    crate::archive::archive_entries(session, &entries)
 }
 
 pub(super) fn delete(
