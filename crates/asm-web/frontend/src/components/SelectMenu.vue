@@ -1,3 +1,10 @@
+<script>
+let instances = 0
+function nextId() {
+  return ++instances
+}
+</script>
+
 <script setup>
 import { computed, onBeforeUnmount, onMounted, nextTick, ref, watch } from 'vue'
 import { Check, ChevronDown } from 'lucide-vue-next'
@@ -13,6 +20,9 @@ const props = defineProps({
   multiple: { type: Boolean, default: false },
   // Shown when nothing is selected.
   placeholder: { type: String, default: 'Any' },
+  // What the control filters — the summary alone ("2 selected") says
+  // nothing about the control's purpose once a value is chosen.
+  label: { type: String, default: 'Options' },
   icon: { type: [Object, Function], default: null },
 })
 const emit = defineEmits(['update:modelValue'])
@@ -21,6 +31,12 @@ const open = ref(false)
 const activeIndex = ref(-1)
 const root = ref(null)
 const menu = ref(null)
+
+// Focus stays on the listbox container, so the active option has to be
+// named through aria-activedescendant — which needs real DOM ids.
+const uid = `select-${nextId()}`
+const optionId = (i) => `${uid}-option-${i}`
+const activeId = computed(() => (activeIndex.value >= 0 ? optionId(activeIndex.value) : undefined))
 
 const selected = computed(() =>
   props.multiple ? props.modelValue : props.modelValue ? [props.modelValue] : [],
@@ -73,24 +89,35 @@ function onTriggerKey(event) {
   }
 }
 
+// A long list can scroll the active option out of sight.
+function revealActive() {
+  nextTick(() => {
+    document.getElementById(optionId(activeIndex.value))?.scrollIntoView({ block: 'nearest' })
+  })
+}
+
 function onMenuKey(event) {
   const last = props.options.length - 1
   switch (event.key) {
     case 'ArrowDown':
       event.preventDefault()
       activeIndex.value = activeIndex.value >= last ? 0 : activeIndex.value + 1
+      revealActive()
       break
     case 'ArrowUp':
       event.preventDefault()
       activeIndex.value = activeIndex.value <= 0 ? last : activeIndex.value - 1
+      revealActive()
       break
     case 'Home':
       event.preventDefault()
       activeIndex.value = 0
+      revealActive()
       break
     case 'End':
       event.preventDefault()
       activeIndex.value = last
+      revealActive()
       break
     case 'Enter':
     case ' ':
@@ -123,6 +150,8 @@ watch(() => props.options.length, close)
       type="button"
       class="select-trigger control"
       :aria-expanded="open"
+      :aria-label="`${label}: ${summary}`"
+      :aria-controls="open ? `${uid}-listbox` : undefined"
       aria-haspopup="listbox"
       @click="open ? close() : openMenu()"
       @keydown="onTriggerKey"
@@ -135,15 +164,19 @@ watch(() => props.options.length, close)
 
     <div
       v-if="open"
+      :id="`${uid}-listbox`"
       ref="menu"
       class="select-menu"
       role="listbox"
       tabindex="-1"
+      :aria-label="label"
       :aria-multiselectable="multiple"
+      :aria-activedescendant="activeId"
       @keydown="onMenuKey"
     >
       <button
         v-for="(option, i) in options"
+        :id="optionId(i)"
         :key="option.value"
         type="button"
         class="select-option"

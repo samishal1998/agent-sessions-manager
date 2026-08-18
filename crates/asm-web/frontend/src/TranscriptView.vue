@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, nextTick, ref, watch } from 'vue'
 import {
   Brain,
   ChevronDown,
@@ -14,8 +14,25 @@ import api from './api.js'
 import AgentMark from './components/AgentMark.vue'
 import IconButton from './components/IconButton.vue'
 
-const props = defineProps({ session: { type: Object, required: true } })
-defineEmits(['close'])
+const props = defineProps({
+  session: { type: Object, required: true },
+  // When the drawer covers the page rather than sitting beside it, it is a
+  // modal dialog and has to say so.
+  modal: { type: Boolean, default: false },
+})
+const emit = defineEmits(['close'])
+
+const root = ref(null)
+// Opening the drawer must move focus into it, or the keyboard is left
+// behind on the page underneath; closing must hand focus back.
+let previouslyFocused = null
+onMounted(() => {
+  previouslyFocused = document.activeElement
+  nextTick(() => root.value?.focus())
+})
+onBeforeUnmount(() => {
+  if (previouslyFocused?.isConnected) previouslyFocused.focus()
+})
 
 const ir = ref(null)
 const error = ref('')
@@ -88,7 +105,15 @@ function when(ts) {
 </script>
 
 <template>
-  <aside class="drawer">
+  <aside
+    ref="root"
+    class="drawer"
+    tabindex="-1"
+    :role="modal ? 'dialog' : 'complementary'"
+    :aria-modal="modal ? 'true' : undefined"
+    :aria-label="`Transcript of ${session.title || 'untitled session'}`"
+    @keydown.esc="emit('close')"
+  >
     <header class="drawer-head">
       <AgentMark :agent="session.ref.agent" />
       <div class="drawer-title">

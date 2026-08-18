@@ -37,6 +37,11 @@ const showArchived = ref(true)
 const status = ref('')
 const selected = ref(null)
 const sidebarOpen = ref(false)
+// Below this width the transcript covers the list instead of splitting it,
+// which also makes it a modal dialog rather than a side panel.
+const narrowQuery = window.matchMedia('(max-width: 1100px)')
+const isNarrow = ref(narrowQuery.matches)
+const onNarrowChange = (e) => (isNarrow.value = e.matches)
 let pollTimer = null
 
 const AGENT_OPTIONS = [
@@ -64,11 +69,15 @@ async function loadDoctor() {
 onMounted(() => {
   refresh()
   loadDoctor()
+  narrowQuery.addEventListener('change', onNarrowChange)
   pollTimer = setInterval(() => {
     if (!document.hidden) refresh()
   }, 5000)
 })
-onUnmounted(() => clearInterval(pollTimer))
+onUnmounted(() => {
+  clearInterval(pollTimer)
+  narrowQuery.removeEventListener('change', onNarrowChange)
+})
 
 /* Derived ------------------------------------------------------------- */
 const projects = computed(() => {
@@ -330,6 +339,7 @@ function pickProject(root) {
           v-model="selectedAgents"
           :options="AGENT_OPTIONS"
           multiple
+          label="Filter by agent"
           placeholder="All agents"
         />
 
@@ -368,7 +378,17 @@ function pickProject(root) {
           </div>
 
           <div class="rows">
-            <div v-for="(h, i) in hits" :key="i" class="row" @click="openHit(h)">
+            <div
+              v-for="(h, i) in hits"
+              :key="i"
+              class="row"
+              role="button"
+              tabindex="0"
+              :aria-label="`Open ${h.title || 'untitled session'}, match ${h.seq}`"
+              @click="openHit(h)"
+              @keydown.enter.prevent="openHit(h)"
+              @keydown.space.prevent="openHit(h)"
+            >
               <AgentMark :agent="h.agent" />
               <div class="row-body">
                 <div class="hit-head">
@@ -391,7 +411,13 @@ function pickProject(root) {
               :key="s.ref.agent + s.ref.native_id"
               class="row"
               :class="{ selected: selected === s }"
+              role="button"
+              tabindex="0"
+              :aria-current="selected === s"
+              :aria-label="`Open transcript of ${s.title || 'untitled session'}`"
               @click="selected = s"
+              @keydown.enter.prevent="selected = s"
+              @keydown.space.prevent="selected = s"
             >
               <AgentMark :agent="s.ref.agent" />
 
@@ -442,11 +468,17 @@ function pickProject(root) {
         </template>
       </div>
 
-      <div class="statusbar">
+      <!-- Kept mounted so updates are announced as changes, not new content. -->
+      <div class="statusbar" role="status" aria-live="polite">
         {{ status || `${visible.length} session${visible.length === 1 ? '' : 's'}` }}
       </div>
     </main>
 
-    <TranscriptView v-if="selected" :session="selected" @close="selected = null" />
+    <TranscriptView
+      v-if="selected"
+      :session="selected"
+      :modal="isNarrow"
+      @close="selected = null"
+    />
   </div>
 </template>
