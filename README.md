@@ -82,6 +82,8 @@ asm doctor                   # store health, duplicate ids, stale locks
 asm worktrees                # git worktrees of a repo, with the sessions in each
 asm sync init && asm sync status
 asm serve                    # web UI on http://127.0.0.1:7433
+asm serve --port 8080
+asm serve --host 0.0.0.0     # every interface — read the warning it prints
 ```
 
 Every command takes `--json`.
@@ -195,8 +197,14 @@ This tool writes into stores owned by other programs, so the rules are strict:
 - **Only ever write through sanctioned paths where they exist** — imports into
   OpenCode go through `opencode import`, not raw SQL.
 
-The web UI binds to localhost only and has no authentication; it is a personal
-dashboard, not a service.
+The web UI has **no authentication** and is a personal dashboard, not a service.
+It binds `127.0.0.1` by default. `--host` accepts any IP or hostname, and
+`0.0.0.0` / `::` bind every interface — but anyone who can reach that address
+can read every conversation and rename, move, archive, import, or delete
+sessions, so `serve` prints a warning whenever it binds outside loopback. On a
+machine with a public IP, "every interface" means the internet, not just your
+LAN. Mutating endpoints do reject cross-origin browser requests, but that only
+stops other web pages; it does not stop a direct request.
 
 ## Layout
 

@@ -116,10 +116,15 @@ enum Command {
     Sync(SyncCommand),
     /// Open the interactive TUI browser.
     Tui,
-    /// Serve the local web UI (localhost only).
+    /// Serve the web UI (loopback by default).
     Serve {
         #[arg(long, default_value_t = 7433)]
         port: u16,
+        /// Address to bind. An IP or hostname; `0.0.0.0` / `::` bind every
+        /// interface. Anything outside loopback exposes an unauthenticated
+        /// API to your network.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
     },
 }
 
@@ -143,7 +148,7 @@ enum SyncCommand {
 /// crate stays free of TUI/web dependencies).
 pub enum Frontend {
     Tui,
-    Serve { port: u16 },
+    Serve { host: String, port: u16 },
 }
 
 pub fn run() -> anyhow::Result<Option<Frontend>> {
@@ -160,7 +165,7 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
 
     match cli.command.unwrap_or(default_command) {
         Command::Tui => return Ok(Some(Frontend::Tui)),
-        Command::Serve { port } => return Ok(Some(Frontend::Serve { port })),
+        Command::Serve { port, host } => return Ok(Some(Frontend::Serve { host, port })),
         Command::List => list(&filter, cli.json),
         Command::Projects => projects(cli.json),
         Command::Show { r#ref } => show(&r#ref, &filter, cli.json),
