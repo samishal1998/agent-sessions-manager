@@ -498,9 +498,7 @@ Resume with:
           <code>SHA256SUMS</code>, and installs to <code>~/.local/bin</code>. A bad
           download stops before anything is written.
         </p>
-        <pre>curl -fsSL https://raw.githubusercontent.com\
-/samishal1998/agent-sessions-manager\
-/main/install.sh | sh</pre>
+        <pre>curl -fsSL https://raw.githubusercontent.com/samishal1998/agent-sessions-manager/main/install.sh | sh</pre>
       </div>
       <div class="card">
         <h3>From source</h3>
@@ -508,8 +506,7 @@ Resume with:
           Needs a recent stable Rust, and Bun or Node to build the embedded
           web assets first.
         </p>
-        <pre>git clone https://github.com/samishal1998/\
-agent-sessions-manager
+        <pre>git clone https://github.com/samishal1998/agent-sessions-manager
 cd agent-sessions-manager/crates/asm-web/frontend
 bun install &amp;&amp; bun run build &amp;&amp; cd -
 cargo build --release</pre>
