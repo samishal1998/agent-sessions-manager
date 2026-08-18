@@ -48,7 +48,37 @@ jcode 0.78.0 is supported too, with two exceptions noted in
 [Agent support](#agent-support).
 `asm doctor` warns when your installed versions have drifted from those.
 
-## Build
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/samishal1998/agent-sessions-manager/main/install.sh | sh
+```
+
+That downloads the binary for your platform from the latest release, checks it
+against the release's `SHA256SUMS`, and installs it to `~/.local/bin`. A failed
+download or a checksum mismatch stops before anything is written, so an
+existing install is never left broken.
+
+**While this repository is private** the installer needs a token with `repo`
+scope, since both the release API and the asset bytes are authenticated:
+
+```sh
+GITHUB_TOKEN=ghp_... curl -fsSL .../install.sh | sh
+```
+
+| Variable | |
+|---|---|
+| `ASM_VERSION` | install a specific tag instead of the latest |
+| `ASM_INSTALL_DIR` | where the binary goes (default `~/.local/bin`) |
+| `ASM_BASE_URL` | fetch assets from a mirror or a local directory instead |
+| `GITHUB_TOKEN` | required while the repository is private |
+
+Releases are cut by tagging: `git tag v0.1.0 && git push origin v0.1.0` builds
+Linux and macOS binaries for x86_64 and arm64, publishes them with checksums,
+and is what `install.sh` reads. The workflow can also be dispatched without a
+tag to dry-run the build.
+
+## Build from source
 
 ```sh
 # The web UI's assets are embedded at compile time, so build them first.
