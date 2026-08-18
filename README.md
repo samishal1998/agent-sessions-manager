@@ -61,6 +61,7 @@ is embedded.
 ```sh
 asm                          # interactive TUI on a terminal; plain table when piped
 asm list --agent opencode    # filter by agent, --project, --all (include subagents)
+asm projects --worktrees     # projects are repositories; show each one's checkouts
 asm show 4c93a826            # metadata card; refs are unique id prefixes or agent:prefix
 asm resume 4c93a826          # hands off to the native agent, in the right directory
 
@@ -149,6 +150,33 @@ duplicate.
 Some things cannot cross and `asm` says so rather than pretending:
 provider-signed reasoning blocks, tools the target does not have (the names are
 kept verbatim so the history still reads), and nested subagent transcripts.
+
+## What counts as a project
+
+A project is a **git repository**, not a directory. Every worktree of a
+repository is the same project, and so is a session started in a subdirectory
+of one — an agent whose working directory wandered into `crates/foo` has not
+started working on a different codebase. Sessions from different agents in the
+same repository share one project too.
+
+Identity comes from `git rev-parse --git-common-dir`, which every worktree of a
+repository agrees on. Directories outside any repository stand alone. Worktrees
+with no sessions are still listed, so an idle checkout is visible rather than
+missing.
+
+## Reading transcripts
+
+Agents embed XML-ish envelopes in message text — injected context, slash-command
+echoes, background-task notifications, subagent results, tool errors. The web UI
+parses the ones it knows into labelled, collapsible blocks, and renders anything
+else as a nested tree rather than a wall of angle brackets.
+
+Detection is deliberately narrow, because transcripts are mostly tool output and
+tool output is mostly code: a scan of the transcripts on this machine found 400
+distinct "tags", nearly all of them generics like `Vec<T>` and `Option<String>`.
+So a tag counts only if it is known or lowercase-with-a-separator, starts a line,
+and has a matching close tag. Everything else stays plain text, and nothing is
+ever dropped.
 
 ## Search
 

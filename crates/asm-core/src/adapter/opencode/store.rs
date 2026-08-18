@@ -1,6 +1,5 @@
 //! Read-only queries over OpenCode's SQLite store.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use jiff::Timestamp;
@@ -8,9 +7,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 
 use crate::CoreError;
-use crate::model::{
-    AgentKind, Project, Session, SessionLocation, SessionRef, SessionStatus, Usage,
-};
+use crate::model::{AgentKind, Session, SessionLocation, SessionRef, SessionStatus, Usage};
 
 use super::super::SessionFilter;
 use super::OpenCodeAdapter;
@@ -139,54 +136,6 @@ pub(super) fn sessions(
     Ok(sessions)
 }
 
-pub(super) fn projects(adapter: &OpenCodeAdapter) -> Result<Vec<Project>, CoreError> {
-    let conn = open_ro(adapter)?;
-    let sql_err =
-        |e: rusqlite::Error| CoreError::Sqlite { db: adapter.db().to_path_buf(), source: Box::new(e) };
-
-    // Session counts and recency grouped by project (root sessions only).
-    let mut counts: HashMap<String, (usize, Option<i64>)> = HashMap::new();
-    let mut stmt = conn
-        .prepare(
-            "SELECT project_id, COUNT(*), MAX(time_updated) FROM session
-             WHERE parent_id IS NULL GROUP BY project_id",
-        )
-        .map_err(sql_err)?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, Option<i64>>(2)?))
-        })
-        .map_err(sql_err)?;
-    for row in rows {
-        let (project_id, count, updated) = row.map_err(sql_err)?;
-        counts.insert(project_id, (count.max(0) as usize, updated));
-    }
-
-    let mut stmt = conn
-        .prepare("SELECT id, worktree FROM project WHERE id != 'global'")
-        .map_err(sql_err)?;
-    let rows = stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
-        .map_err(sql_err)?;
-
-    let mut projects = Vec::new();
-    for row in rows {
-        let (id, worktree) = row.map_err(sql_err)?;
-        let (session_count, updated) = counts.get(&id).copied().unwrap_or((0, None));
-        if session_count == 0 {
-            continue;
-        }
-        projects.push(Project {
-            agent: AgentKind::OpenCode,
-            root: PathBuf::from(worktree),
-            native_id: Some(id),
-            session_count,
-            last_updated: updated.map(from_millis),
-        });
-    }
-    projects.sort_by(|a, b| b.last_updated.cmp(&a.last_updated));
-    Ok(projects)
-}
 
 fn from_millis(ms: i64) -> Timestamp {
     Timestamp::from_millisecond(ms).unwrap_or(Timestamp::UNIX_EPOCH)

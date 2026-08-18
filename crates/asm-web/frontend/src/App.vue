@@ -8,6 +8,7 @@ import {
   Boxes,
   Download,
   FolderInput,
+  GitBranch,
   Menu,
   Pencil,
   Play,
@@ -52,7 +53,9 @@ const AGENT_OPTIONS = [
 /* Data ---------------------------------------------------------------- */
 async function refresh() {
   try {
-    sessions.value = await api.sessions(false)
+    const [loaded, grouped] = await Promise.all([api.sessions(false), api.projects()])
+    sessions.value = loaded
+    projects.value = grouped
   } catch (e) {
     status.value = `Could not load sessions: ${e.message}`
   }
@@ -80,19 +83,25 @@ onUnmounted(() => {
 })
 
 /* Derived ------------------------------------------------------------- */
-const projects = computed(() => {
-  const map = new Map()
-  for (const s of sessions.value) map.set(s.project_root, (map.get(s.project_root) || 0) + 1)
-  return [...map.entries()]
-    .map(([root, count]) => ({ root, count }))
-    .sort((a, b) => b.count - a.count)
-})
+// A project is a git repository — every worktree of it, and sessions
+// started in subdirectories — so the grouping comes from the server rather
+// than from bucketing sessions by their working directory.
+const projects = ref([])
+const selectedProject = computed(() =>
+  projects.value.find((p) => p.root === projectFilter.value),
+)
+
+function inProject(session, project) {
+  return project.worktrees.some(
+    (w) => session.project_root === w.path || session.project_root.startsWith(`${w.path}/`),
+  )
+}
 
 const visible = computed(() => {
   const needle = filter.value.trim().toLowerCase()
   return sessions.value.filter((s) => {
     if (selectedAgents.value.length && !selectedAgents.value.includes(s.ref.agent)) return false
-    if (projectFilter.value && s.project_root !== projectFilter.value) return false
+    if (selectedProject.value && !inProject(s, selectedProject.value)) return false
     if (!showArchived.value && statusOf(s) === 'archived') return false
     if (!needle) return true
     return (
@@ -226,10 +235,15 @@ async function runSearch() {
     // The search endpoint narrows to one agent; with none or several
     // selected, ask for everything and narrow the results here.
     const single = selectedAgents.value.length === 1 ? selectedAgents.value[0] : ''
-    const found = await api.search(query, single, projectFilter.value)
-    hits.value = selectedAgents.value.length
-      ? found.filter((h) => selectedAgents.value.includes(h.agent))
-      : found
+    const found = await api.search(query, single, '')
+    hits.value = found.filter(
+      (h) =>
+        (!selectedAgents.value.length || selectedAgents.value.includes(h.agent)) &&
+        // A project spans worktrees, which the single-directory search
+        // parameter cannot express — narrow here instead.
+        (!selectedProject.value ||
+          inProject({ project_root: h.project_root ?? '' }, selectedProject.value)),
+    )
     searchedFor.value = query
     status.value = `${hits.value.length} match${hits.value.length === 1 ? '' : 'es'}.`
   } catch (e) {
@@ -297,12 +311,30 @@ function pickProject(root) {
             :key="p.root"
             class="side-item"
             :class="{ active: projectFilter === p.root }"
-            :title="p.root"
+            :title="p.repo ? `${p.root} — ${p.worktrees.length} worktrees` : p.root"
             @click="pickProject(p.root)"
           >
+            <GitBranch v-if="p.worktrees.length > 1" :size="13" class="faint" />
             <span class="label">{{ shortProject(p.root) }}</span>
-            <span class="count">{{ p.count }}</span>
+            <span class="count">{{ p.session_count }}</span>
           </button>
+        </div>
+      </div>
+
+      <!-- A project spans checkouts; show them when there is more than one. -->
+      <div v-if="selectedProject && selectedProject.worktrees.length > 1">
+        <div class="side-heading">Worktrees</div>
+        <div class="side-list">
+          <div
+            v-for="w in selectedProject.worktrees"
+            :key="w.path"
+            class="side-item"
+            :title="w.path"
+          >
+            <GitBranch v-if="!w.is_main" :size="13" class="faint" />
+            <span class="label">{{ w.branch || 'detached' }}</span>
+            <span class="count">{{ w.session_count }}</span>
+          </div>
         </div>
       </div>
 

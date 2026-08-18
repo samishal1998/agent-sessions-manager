@@ -21,7 +21,7 @@ mod write;
 use std::path::{Path, PathBuf};
 
 use crate::CoreError;
-use crate::model::{AgentKind, Project, Session};
+use crate::model::{AgentKind, Session};
 
 use super::{
     AgentRead, AgentWrite, ArchiveOutcome, Capabilities, DeleteReport, DetectResult,
@@ -214,10 +214,6 @@ impl AgentRead for OpenCodeAdapter {
             store_found: self.db.is_file(),
             store_root: self.db.clone(),
         }
-    }
-
-    fn projects(&self) -> Result<Vec<Project>, CoreError> {
-        store::projects(self)
     }
 
     fn sessions(&self, filter: &SessionFilter) -> Result<Vec<Session>, CoreError> {

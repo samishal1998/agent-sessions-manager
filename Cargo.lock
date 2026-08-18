@@ -90,6 +90,7 @@ dependencies = [
  "asm-cli",
  "asm-tui",
  "asm-web",
+ "libc",
 ]
 
 [[package]]

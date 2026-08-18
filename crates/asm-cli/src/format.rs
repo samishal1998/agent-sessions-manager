@@ -29,15 +29,40 @@ pub fn project_table(projects: &[Project]) {
     let rows: Vec<Vec<String>> = projects
         .iter()
         .map(|p| {
+            let active = p.active_worktrees().len();
             vec![
-                p.agent.to_string(),
                 home_relative(&p.root.display().to_string()),
+                p.agents.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", "),
                 p.session_count.to_string(),
+                // Only interesting once a repository has more than one
+                // checkout; a plain directory has nothing to say here.
+                match p.worktrees.len() {
+                    0 | 1 => String::new(),
+                    total => format!("{active}/{total}"),
+                },
                 p.last_updated.map(humanize).unwrap_or_default(),
             ]
         })
         .collect();
-    print_table(&["AGENT", "PROJECT", "SESSIONS", "UPDATED"], &rows);
+    print_table(&["PROJECT", "AGENTS", "SESSIONS", "WORKTREES", "UPDATED"], &rows);
+}
+
+/// Worktrees of a project, indented beneath it.
+pub fn project_worktrees(project: &Project) {
+    if project.worktrees.len() <= 1 {
+        return;
+    }
+    for worktree in &project.worktrees {
+        let branch = worktree.branch.as_deref().unwrap_or("detached");
+        let marker = if worktree.is_main { "main" } else { "linked" };
+        println!(
+            "    {:<44} {:<10} {:<7} {} session(s)",
+            home_relative(&worktree.path.display().to_string()),
+            branch,
+            marker,
+            worktree.session_count
+        );
+    }
 }
 
 pub fn session_card(s: &Session) {

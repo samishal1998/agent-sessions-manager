@@ -38,8 +38,14 @@ pub struct Cli {
 enum Command {
     /// List sessions across all agents (default command).
     List,
-    /// List projects with session counts.
-    Projects,
+    /// List projects with session counts. A project is a git repository —
+    /// every worktree of it, plus sessions started in subdirectories — not
+    /// a single directory.
+    Projects {
+        /// Also list each repository's worktrees.
+        #[arg(long)]
+        worktrees: bool,
+    },
     /// Show one session's metadata. REF is a native id, a unique id prefix,
     /// or `agent:id-prefix`.
     Show { r#ref: String },
@@ -167,7 +173,7 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
         Command::Tui => return Ok(Some(Frontend::Tui)),
         Command::Serve { port, host } => return Ok(Some(Frontend::Serve { host, port })),
         Command::List => list(&filter, cli.json),
-        Command::Projects => projects(cli.json),
+        Command::Projects { worktrees } => projects(cli.json, worktrees),
         Command::Show { r#ref } => show(&r#ref, &filter, cli.json),
         Command::Resume { r#ref } => resume(&r#ref, &filter),
         Command::Rename { r#ref, title } => rename(&r#ref, &title, &filter),
@@ -556,7 +562,7 @@ fn list(filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn projects(json: bool) -> anyhow::Result<()> {
+fn projects(json: bool, show_worktrees: bool) -> anyhow::Result<()> {
     let projects = ops::list_projects()?;
     if json {
         println!("{}", serde_json::to_string_pretty(&projects)?);
@@ -566,7 +572,14 @@ fn projects(json: bool) -> anyhow::Result<()> {
         println!("No projects found.");
         return Ok(());
     }
-    format::project_table(&projects);
+    if !show_worktrees {
+        format::project_table(&projects);
+        return Ok(());
+    }
+    for project in &projects {
+        format::project_table(std::slice::from_ref(project));
+        format::project_worktrees(project);
+    }
     Ok(())
 }
 

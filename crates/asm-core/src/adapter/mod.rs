@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::CoreError;
-use crate::model::{AgentKind, Project, Session};
+use crate::model::{AgentKind, Session};
 
 /// What an adapter supports. Flags flip on as milestones land.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -72,7 +72,6 @@ pub trait AgentRead {
     fn kind(&self) -> AgentKind;
     fn capabilities(&self) -> Capabilities;
     fn detect(&self) -> DetectResult;
-    fn projects(&self) -> Result<Vec<Project>, CoreError>;
     fn sessions(&self, filter: &SessionFilter) -> Result<Vec<Session>, CoreError>;
     /// Command that resumes this session interactively in its own agent,
     /// with the working directory already set to the session's project.
@@ -156,10 +155,6 @@ impl AgentRead for Adapter {
 
     fn detect(&self) -> DetectResult {
         dispatch!(self, a => a.detect())
-    }
-
-    fn projects(&self) -> Result<Vec<Project>, CoreError> {
-        dispatch!(self, a => a.projects())
     }
 
     fn sessions(&self, filter: &SessionFilter) -> Result<Vec<Session>, CoreError> {

@@ -7,7 +7,7 @@ use crate::CoreError;
 use crate::adapter::{
     Adapter, AgentRead, AgentWrite, ArchiveOutcome, DeleteReport, RelocateOutcome, SessionFilter,
 };
-use crate::model::{AgentKind, Project, Session};
+use crate::model::{AgentKind, Project, ProjectWorktree, Session};
 
 pub fn list_sessions(filter: &SessionFilter) -> Result<Vec<Session>, CoreError> {
     let mut sessions = Vec::new();
@@ -19,12 +19,108 @@ pub fn list_sessions(filter: &SessionFilter) -> Result<Vec<Session>, CoreError> 
 }
 
 pub fn list_projects() -> Result<Vec<Project>, CoreError> {
-    let mut projects = Vec::new();
-    for adapter in Adapter::available() {
-        projects.extend(adapter.projects()?);
+    let sessions = list_sessions(&SessionFilter::default())?;
+    Ok(group_projects(&sessions, crate::git::repo_of, |root| {
+        crate::git::worktrees(root).unwrap_or_default()
+    }))
+}
+
+/// Group sessions into projects by the repository that contains them.
+///
+/// Split out with its resolvers injected so the grouping rules can be
+/// tested without real repositories on disk. `repo_of` identifies the
+/// repository containing a directory; `worktrees_of` lists a repository's
+/// checkouts given its main worktree.
+pub fn group_projects(
+    sessions: &[Session],
+    repo_of: impl Fn(&Path) -> Option<crate::git::Repo>,
+    worktrees_of: impl Fn(&Path) -> Vec<crate::git::Worktree>,
+) -> Vec<Project> {
+    use std::collections::HashMap;
+
+    // Resolving a repository shells out to git, so do it once per distinct
+    // directory rather than once per session.
+    let mut repo_cache: HashMap<PathBuf, Option<crate::git::Repo>> = HashMap::new();
+    let mut groups: HashMap<PathBuf, Vec<&Session>> = HashMap::new();
+    let mut repos: HashMap<PathBuf, Option<crate::git::Repo>> = HashMap::new();
+
+    for session in sessions {
+        let dir = session.project_root.clone();
+        let repo = repo_cache.entry(dir.clone()).or_insert_with(|| repo_of(&dir)).clone();
+        // Identity: the repository's common dir, or the bare directory.
+        let key = repo.as_ref().map_or(dir.clone(), |r| r.common_dir.clone());
+        groups.entry(key.clone()).or_default().push(session);
+        repos.entry(key).or_insert(repo);
     }
+
+    let mut projects: Vec<Project> = groups
+        .into_iter()
+        .map(|(key, group)| {
+            let repo = repos.get(&key).cloned().flatten();
+            let root = repo
+                .as_ref()
+                .map_or_else(|| key.clone(), |r| r.main_worktree.clone());
+
+            let mut agents: Vec<AgentKind> = group.iter().map(|s| s.handle.agent).collect();
+            agents.sort_by_key(|a| a.as_str());
+            agents.dedup();
+
+            // Every checkout git knows about, so an empty worktree is still
+            // visible, plus any session directory git did not list.
+            let mut worktrees: Vec<ProjectWorktree> = if repo.is_some() {
+                worktrees_of(&root)
+                    .into_iter()
+                    .map(|w| ProjectWorktree {
+                        path: w.path,
+                        branch: w.branch,
+                        is_main: w.is_main,
+                        session_count: 0,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            if worktrees.is_empty() {
+                worktrees.push(ProjectWorktree {
+                    path: root.clone(),
+                    branch: None,
+                    is_main: true,
+                    session_count: 0,
+                });
+            }
+
+            for session in &group {
+                // A session in a subdirectory belongs to the checkout that
+                // contains it — the longest matching path, so nested
+                // worktrees attribute to the innermost one.
+                let best = worktrees
+                    .iter_mut()
+                    .filter(|w| session.project_root.starts_with(&w.path))
+                    .max_by_key(|w| w.path.as_os_str().len());
+                match best {
+                    Some(worktree) => worktree.session_count += 1,
+                    None => worktrees.push(ProjectWorktree {
+                        path: session.project_root.clone(),
+                        branch: session.git_branch.clone(),
+                        is_main: false,
+                        session_count: 1,
+                    }),
+                }
+            }
+
+            Project {
+                root,
+                repo: repo.map(|r| r.common_dir),
+                agents,
+                session_count: group.len(),
+                last_updated: group.iter().filter_map(|s| s.updated).max(),
+                worktrees,
+            }
+        })
+        .collect();
+
     projects.sort_by(|a, b| b.last_updated.cmp(&a.last_updated));
-    Ok(projects)
+    projects
 }
 
 /// Health report for `asm doctor`.

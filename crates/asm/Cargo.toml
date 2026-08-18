@@ -14,3 +14,6 @@ asm-cli = { workspace = true }
 asm-tui = { workspace = true }
 asm-web = { workspace = true }
 anyhow = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

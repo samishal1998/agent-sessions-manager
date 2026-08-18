@@ -14,9 +14,7 @@ use jiff::Timestamp;
 use serde_json::Value;
 
 use crate::CoreError;
-use crate::model::{
-    AgentKind, Project, Session, SessionLocation, SessionRef, SessionStatus, Usage,
-};
+use crate::model::{AgentKind, Session, SessionLocation, SessionRef, SessionStatus, Usage};
 
 use super::super::SessionFilter;
 use super::{ClaudeAdapter, liveness};
@@ -78,35 +76,6 @@ pub(super) fn sessions(
     Ok(sessions)
 }
 
-pub(super) fn projects(adapter: &ClaudeAdapter) -> Result<Vec<Project>, CoreError> {
-    let sessions = sessions(adapter, &SessionFilter::default())?;
-    let mut by_root: HashMap<PathBuf, Project> = HashMap::new();
-    for session in &sessions {
-        let native_id = match &session.handle.location {
-            SessionLocation::JsonlFile { path } => path
-                .parent()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().into_owned()),
-            _ => None,
-        };
-        let entry = by_root
-            .entry(session.project_root.clone())
-            .or_insert_with(|| Project {
-                agent: AgentKind::ClaudeCode,
-                root: session.project_root.clone(),
-                native_id,
-                session_count: 0,
-                last_updated: None,
-            });
-        entry.session_count += 1;
-        if session.updated > entry.last_updated {
-            entry.last_updated = session.updated;
-        }
-    }
-    let mut projects: Vec<Project> = by_root.into_values().collect();
-    projects.sort_by(|a, b| b.last_updated.cmp(&a.last_updated));
-    Ok(projects)
-}
 
 /// A top-level `<uuid>.jsonl` transcript? Returns the session id (= filename
 /// stem). Anything else — `memory/`, `<uuid>/` sidecar dirs, stray files —

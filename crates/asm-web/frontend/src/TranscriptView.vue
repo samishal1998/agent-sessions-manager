@@ -11,8 +11,10 @@ import {
   X,
 } from 'lucide-vue-next'
 import api from './api.js'
+import { hasMarkup, parseMarkup } from './markup.js'
 import AgentMark from './components/AgentMark.vue'
 import IconButton from './components/IconButton.vue'
+import MarkupBlock from './components/MarkupBlock.vue'
 
 const props = defineProps({
   session: { type: Object, required: true },
@@ -102,6 +104,21 @@ function inputSummary(input) {
 function when(ts) {
   return ts ? ts.slice(0, 19).replace('T', ' ') : ''
 }
+
+// Agents embed XML-ish envelopes in message text. Parsing is memoised
+// because a long transcript re-renders on every scroll and filter change.
+const markupCache = new Map()
+function markup(text) {
+  if (!markupCache.has(text)) markupCache.set(text, parseMarkup(text))
+  return markupCache.get(text)
+}
+function isStructured(text) {
+  return hasMarkup(markup(text))
+}
+watch(
+  () => props.session,
+  () => markupCache.clear(),
+)
 </script>
 
 <template>
@@ -146,7 +163,10 @@ function when(ts) {
         </div>
 
         <template v-for="(p, pi) in m.parts" :key="pi">
-          <div v-if="p.type === 'text'" class="message-text">{{ p.text }}</div>
+          <template v-if="p.type === 'text'">
+            <MarkupBlock v-if="isStructured(p.text)" :nodes="markup(p.text)" />
+            <div v-else class="message-text">{{ p.text }}</div>
+          </template>
 
           <div v-else-if="p.type === 'reasoning'" class="part-reasoning">
             <Brain :size="14" style="flex-shrink: 0; margin-top: 3px" />
@@ -173,7 +193,14 @@ function when(ts) {
               :size="14"
               style="flex-shrink: 0; margin-top: 3px"
             />
-            <pre v-if="expanded.has(`${mi}:${pi}`)">{{ p.output }}</pre>
+            <template v-if="expanded.has(`${mi}:${pi}`)">
+              <MarkupBlock
+                v-if="isStructured(p.output)"
+                :nodes="markup(p.output)"
+                style="width: 100%"
+              />
+              <pre v-else>{{ p.output }}</pre>
+            </template>
             <span v-else>{{ p.is_error ? 'Failed' : 'Result' }}: {{ firstLine(p.output) }}</span>
           </div>
 

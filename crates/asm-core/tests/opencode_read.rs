@@ -10,8 +10,6 @@ use asm_core::adapter::opencode::OpenCodeAdapter;
 use asm_core::adapter::{AgentRead, SessionFilter};
 use asm_core::model::SessionStatus;
 
-const PROJECT_ID: &str = "9a2186bccac610043bfe58e9bdedcbaf59dbf7f1";
-
 fn write_store(db: &Path) {
     let conn = Connection::open(db).unwrap();
     conn.execute_batch(
@@ -134,10 +132,10 @@ fn archived_and_children_flags() {
 #[test]
 fn projects_report_root_session_counts() {
     let dir = tempfile::tempdir().unwrap();
-    let projects = adapter(dir.path()).projects().unwrap();
+    let sessions = adapter(dir.path()).sessions(&SessionFilter::default()).unwrap();
+    let projects = asm_core::ops::group_projects(&sessions, |_| None, |_| Vec::new());
 
-    assert_eq!(projects.len(), 1, "'global' pseudo-project excluded");
+    assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].root, Path::new("/home/user/projects/openrpc"));
-    assert_eq!(projects[0].native_id.as_deref(), Some(PROJECT_ID));
     assert_eq!(projects[0].session_count, 3, "root sessions only");
 }

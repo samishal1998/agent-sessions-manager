@@ -22,6 +22,7 @@ const sessionPath = (s, action) =>
 
 export default {
   sessions: (all) => request(`/api/sessions?all=${all ? 'true' : 'false'}`),
+  projects: () => request('/api/projects'),
   doctor: () => request('/api/doctor'),
   search: (q, agent, project) => {
     const params = new URLSearchParams({ q })

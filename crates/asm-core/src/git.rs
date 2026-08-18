@@ -3,6 +3,7 @@
 //! (so far) a read-only need.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use serde::Serialize;
 
@@ -16,6 +17,47 @@ pub struct Worktree {
     pub detached: bool,
     pub locked: bool,
     pub prunable: bool,
+}
+
+/// The identity of a git repository, shared by all of its worktrees.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Repo {
+    /// The common `.git` directory. Every worktree of a repository reports
+    /// the same one, which is what makes it usable as an identity.
+    pub common_dir: PathBuf,
+    /// The primary checkout — the directory holding `common_dir`.
+    pub main_worktree: PathBuf,
+}
+
+/// Identify the repository containing `dir`, if any.
+///
+/// This is what makes a project more than a directory: linked worktrees and
+/// subdirectories of one checkout all resolve to the same repository, so
+/// sessions started in any of them belong together.
+pub fn repo_of(dir: &Path) -> Option<Repo> {
+    if !dir.is_dir() {
+        return None;
+    }
+    let output = Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let common_dir = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    if common_dir.as_os_str().is_empty() {
+        return None;
+    }
+    let common_dir = common_dir.canonicalize().unwrap_or(common_dir);
+    // `<repo>/.git` → `<repo>`; a bare repository is its own worktree.
+    let main_worktree = if common_dir.file_name().is_some_and(|n| n == ".git") {
+        common_dir.parent().unwrap_or(&common_dir).to_path_buf()
+    } else {
+        common_dir.clone()
+    };
+    Some(Repo { common_dir, main_worktree })
 }
 
 pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>, CoreError> {

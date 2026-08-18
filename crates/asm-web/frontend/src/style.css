@@ -664,6 +664,104 @@ button:hover,
   word-break: break-word;
   line-height: 1.6;
 }
+/* Parsed message markup ---------------------------------------------- */
+.markup {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  margin: var(--space-2) 0;
+  overflow: hidden;
+}
+.markup.nested {
+  margin: var(--space-1) 0;
+  background: transparent;
+}
+.markup.tone-note {
+  border-color: rgba(108, 182, 255, 0.28);
+}
+.markup.tone-error {
+  border-color: rgba(240, 113, 111, 0.35);
+  background: rgba(240, 113, 111, 0.06);
+}
+
+.markup-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  background: none;
+  border: none;
+  border-radius: 0;
+  color: var(--fg-muted);
+  text-align: left;
+  min-width: 0;
+}
+.markup-head:hover {
+  background: var(--bg-hover);
+}
+.markup-label {
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--fg);
+  white-space: nowrap;
+}
+.tone-note > .markup-head .markup-label {
+  color: var(--accent);
+}
+.tone-error > .markup-head .markup-label {
+  color: var(--red);
+}
+.markup-tag,
+.markup-attr {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-hover);
+  color: var(--fg-faint);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.markup-preview {
+  font-size: 12px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.markup-body {
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border-top: 1px solid var(--border);
+}
+.markup.nested > .markup-body {
+  padding: var(--space-1) 0 var(--space-1) var(--space-3);
+  border-top: none;
+  border-left: 1px solid var(--border);
+  margin-left: var(--space-3);
+}
+
+.markup-row {
+  display: grid;
+  grid-template-columns: minmax(80px, max-content) minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: 3px 0;
+  font-size: 13px;
+  align-items: baseline;
+}
+.markup-key {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--fg-faint);
+  white-space: nowrap;
+}
+.markup-value {
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
 .part-reasoning {
   color: var(--fg-faint);
   font-style: italic;

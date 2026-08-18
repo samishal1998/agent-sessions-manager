@@ -23,7 +23,7 @@ pub use write::unarchive_by_id;
 use std::path::{Path, PathBuf};
 
 use crate::CoreError;
-use crate::model::{AgentKind, Project, Session};
+use crate::model::{AgentKind, Session};
 
 use super::{
     AgentRead, AgentWrite, ArchiveOutcome, Capabilities, DeleteReport, DetectResult,
@@ -103,10 +103,6 @@ impl AgentRead for ClaudeAdapter {
             store_found: self.root.join("projects").is_dir(),
             store_root: self.root.clone(),
         }
-    }
-
-    fn projects(&self) -> Result<Vec<Project>, CoreError> {
-        store::projects(self)
     }
 
     fn sessions(&self, filter: &SessionFilter) -> Result<Vec<Session>, CoreError> {

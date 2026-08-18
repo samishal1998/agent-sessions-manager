@@ -143,7 +143,11 @@ fn project_filter_narrows_results() {
 fn projects_group_by_authoritative_cwd() {
     let dir = tempfile::tempdir().unwrap();
     write_store(dir.path());
-    let projects = adapter(dir.path()).projects().unwrap();
+    let sessions = adapter(dir.path()).sessions(&SessionFilter::default()).unwrap();
+    // Fixture paths are not real repositories, so each authoritative cwd
+    // stands alone — which is the point: grouping follows the relocated
+    // marker, not the encoded directory name.
+    let projects = asm_core::ops::group_projects(&sessions, |_| None, |_| Vec::new());
 
     assert_eq!(projects.len(), 2, "alpha + relocated worktree");
     let alpha = projects
@@ -151,7 +155,7 @@ fn projects_group_by_authoritative_cwd() {
         .find(|p| p.root == Path::new("/home/user/projects/alpha"))
         .unwrap();
     assert_eq!(alpha.session_count, 1);
-    assert_eq!(alpha.native_id.as_deref(), Some("-home-user-projects-alpha"));
+    assert!(alpha.repo.is_none());
 }
 
 #[test]
