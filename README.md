@@ -1,0 +1,226 @@
+# asm — cross-agent session manager
+
+One inventory, one set of verbs, for the coding-agent sessions scattered across
+your machine. `asm` reads the on-disk stores that [Claude Code][cc] and
+[OpenCode][oc] keep for themselves, presents every session in one list, and lets
+you rename, move, archive, delete, export — and **carry a conversation from one
+agent into the other**.
+
+```
+$ asm
+AGENT        ID        TITLE                                     PROJECT                          UPDATED   STATUS
+claude-code  fb779332  Build cross-agent session manager system  ~/projects/rust/asm              just now  live
+claude-code  20011bb2  fsl-phase-1-compiler-runtime              ~/projects/rust/fdl              6h ago    idle
+opencode     ses_32d1  OpenRPC monorepo tooling plan             ~/projects/node/openrpc          2026-07-11 idle
+```
+
+Three frontends over one core: a CLI, a terminal UI (`asm tui`), and a local web
+UI (`asm serve`).
+
+[cc]: https://claude.com/claude-code
+[oc]: https://opencode.ai
+
+## Why
+
+Agents are good at keeping their own history and bad at everything around it.
+Sessions pile up in per-agent stores with per-agent identity schemes; there is no
+cross-agent list, no way to retitle a session you can no longer identify, no way
+to move one after you renamed the project directory, and no way to continue a
+conversation in a different agent. `asm` is that layer.
+
+## Status
+
+| Milestone | What | State |
+|---|---|---|
+| M0 | Core model + Claude Code read adapter, `list`/`show`/`projects` | done |
+| M1 | OpenCode adapter, management verbs, `doctor`, `worktrees`, Session IR + `export` | done |
+| M2 | Cross-agent `import` (both directions, verified live) | done |
+| M3 | Terminal UI | done |
+| M4 | Local web UI | done |
+| M5 | Full-text search, sync groundwork, docs | done |
+
+Verified against **Claude Code 2.1.234** and **OpenCode 1.17.18** on Linux —
+"verified" meaning a real session was imported and then resumed in the target
+agent's own CLI with its conversation intact.
+`asm doctor` warns when your installed versions have drifted from those.
+
+## Build
+
+```sh
+# The web UI's assets are embedded at compile time, so build them first.
+cd crates/asm-web/frontend && bun install && bun run build && cd -
+cargo build --release
+```
+
+Requires a recent stable Rust (developed on 1.94) and, for the web UI only,
+Node or Bun. The binary is self-contained: SQLite is bundled, and the frontend
+is embedded.
+
+## Commands
+
+```sh
+asm                          # interactive TUI on a terminal; plain table when piped
+asm list --agent opencode    # filter by agent, --project, --all (include subagents)
+asm show 4c93a826            # metadata card; refs are unique id prefixes or agent:prefix
+asm resume 4c93a826          # hands off to the native agent, in the right directory
+
+asm rename 4c93a826 "New title"
+asm move 4c93a826 ~/projects/renamed-dir
+asm archive 4c93a826         # Claude: moved into asm's archive; OpenCode: native flag
+asm unarchive 4c93a826
+asm delete 4c93a826          # backs everything up first
+
+asm import 4c93a826 --to opencode          # the flagship
+asm import 4c93a826 --to opencode --dry-run --mode seed
+asm export 4c93a826 -o session.ir.json     # versioned, agent-neutral JSON
+
+asm search "path encoder"    # full-text across every transcript, both agents
+asm search --agent opencode "jsonrpc"
+asm index                    # refresh the index and report on it
+
+asm doctor                   # store health, duplicate ids, stale locks
+asm worktrees                # git worktrees of a repo, with the sessions in each
+asm sync init && asm sync status
+asm serve                    # web UI on http://127.0.0.1:7433
+```
+
+Every command takes `--json`.
+
+### In the TUI
+
+Every per-session verb is a keystroke, so the terminal UI is not a read-only
+view of the CLI:
+
+| Key | |
+|---|---|
+| `⏎` | resume in the native agent (the TUI steps aside and comes back) |
+| `r` `a` `d` | rename · archive/unarchive · delete (confirmed, backed up) |
+| `m` `i` `e` | move to another project · import into the other agent · export IR |
+| `s` `/` | full-text search across transcripts · filter the list |
+| `D` | store health (the same report as `asm doctor`) |
+| `⇥` `R` `q` | focus the transcript · rescan · quit |
+
+## Importing across agents
+
+`asm import` converts through a documented intermediate representation (see
+[docs/ir-schema.md](docs/ir-schema.md)) and writes a **native** session in the
+target agent, so the target's own picker lists it and its own resume works:
+
+```
+$ asm import 36405fad --to opencode
+Imported as opencode:ses_7bdfed0f167b6c507797045ba6.
+
+Loss report:
+2 of 3 messages converted
+1 opaque reasoning blocks dropped (provider-bound; summaries only)
+conversation re-attributed to openai/gpt-5.6-sol (the target install's last-used model)
+
+Resume with: opencode -s ses_7bdfed0f167b6c507797045ba6   (run in the project dir)
+```
+
+Two modes:
+
+- `--mode full` (default) translates the transcript into the target's native
+  records. Highest fidelity, and the most exposed to the target's format
+  changing under it.
+- `--mode seed` distills the session into a narrative handoff document that
+  becomes the first message of a fresh session. Lower fidelity, essentially
+  immune to format churn.
+
+Imports are **idempotent**: target ids are derived deterministically from the
+source session, so re-importing reports `In sync` instead of creating a
+duplicate.
+
+Some things cannot cross and `asm` says so rather than pretending:
+provider-signed reasoning blocks, tools the target does not have (the names are
+kept verbatim so the history still reads), and nested subagent transcripts.
+
+## Search
+
+`asm search` runs SQLite FTS5 over every message of every session, in an index
+kept in asm's own data directory — the agents' stores are never written to.
+
+The index is incremental: each session carries an opaque content fingerprint,
+and only sessions whose fingerprint moved are re-extracted. On this machine, 30
+sessions index in about 5 seconds cold and refresh in ~0.15s warm, so
+`asm search` refreshes by default; pass `--no-refresh` to skip it.
+
+Fingerprints are per-agent because the naive choice is wrong for OpenCode: its
+`session.time_updated` lags behind its own message rows, so keying on it would
+silently lose streamed tool output. File-backed sessions key on size and mtime;
+row-backed ones on the message table's own count and high-water mark.
+
+**Subagent transcripts are indexed**, which matters more than it sounds — in
+delegating sessions they are the majority of the searchable text, so indexing
+only the parent conversation hides most of the corpus.
+
+The index is disposable: anything unreadable, or written by a different schema
+version, is rebuilt rather than migrated. Tool *inputs* are indexed in full
+(commands, paths, patterns); tool *outputs* only in part, since they dominate
+transcript bulk. `asm index` also reclaims space after re-extraction (FTS5's
+`optimize` restructures but does not return pages to the filesystem; `VACUUM`
+does).
+
+`s` opens the same search in the TUI, and the web UI has a transcript search box
+next to its filter.
+
+Archived sessions stay searchable even though they have left their agent's
+store and no longer appear in `asm list`; results mark them `(archived)` so it
+is clear they need restoring before they can be resumed.
+
+### Known limitations
+
+- Deleting a session's rows from the FTS table is a scan of that table, so a
+  full rebuild is linear in sessions × messages. At personal scale (seconds)
+  this is fine; it would need a rowid map to scale further.
+- OpenCode staleness is judged by the session's `time_updated`. If OpenCode
+  ever writes a message without bumping it, that session would look unchanged.
+
+## Safety model
+
+This tool writes into stores owned by other programs, so the rules are strict:
+
+- **Never touch a live session.** Mutating a session whose agent is running is
+  refused outright.
+- **Never rewrite transcript bytes.** Claude Code's background jobs hold raw
+  byte offsets into transcript files; `asm` only appends or renames whole files.
+- **Never duplicate a session id.** Claude Code's cross-project `--resume`
+  hard-fails when an id exists in two project directories, so `asm` moves rather
+  than copies and refuses an import that would collide. `asm doctor` reports
+  pre-existing duplicates.
+- **Back up before destroying.** `asm delete` copies every affected path into
+  `~/.local/share/asm/backups/<agent>/<id>/<timestamp>/` first.
+- **Never write into a busy store.** OpenCode mutations are refused while an
+  OpenCode instance holds its lock directory.
+- **Only ever write through sanctioned paths where they exist** — imports into
+  OpenCode go through `opencode import`, not raw SQL.
+
+The web UI binds to localhost only and has no authentication; it is a personal
+dashboard, not a service.
+
+## Layout
+
+```
+crates/asm-core   domain model, agent adapters, Session IR, import engine  (no UI deps)
+crates/asm-cli    clap frontend
+crates/asm-tui    ratatui terminal UI
+crates/asm-web    axum API + embedded Vue frontend
+crates/asm        the single `asm` binary
+```
+
+Architecture and the per-agent format details worth knowing before touching an
+adapter are in [docs/agent-formats.md](docs/agent-formats.md).
+
+## Data asm writes
+
+Only inside its own directory (`$XDG_DATA_HOME/asm`, override with `ASM_DATA_DIR`):
+
+```
+archive/<agent>/<id>/   archived sessions (manifest.json + native/)
+backups/<agent>/<id>/   pre-delete backups, timestamped
+index/sessions.db       the search index (derived; safe to delete)
+```
+
+`asm sync init` turns `archive/` into a git repository so archived sessions can
+be versioned and pushed to a remote of your choosing. asm does not manage the
+transport — `sync status` prints the git command to run.

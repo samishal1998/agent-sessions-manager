@@ -1,0 +1,7 @@
+/target
+node_modules/
+
+# crates/asm-web/frontend/dist is deliberately NOT ignored: rust-embed
+# compiles those assets into the binary, so the workspace does not build
+# without them. Rebuild with `bun run build` in that directory after
+# changing the frontend.

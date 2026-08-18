@@ -1,0 +1,16 @@
+[package]
+name = "asm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "asm"
+path = "src/main.rs"
+
+[dependencies]
+asm-cli = { workspace = true }
+asm-tui = { workspace = true }
+asm-web = { workspace = true }
+anyhow = { workspace = true }

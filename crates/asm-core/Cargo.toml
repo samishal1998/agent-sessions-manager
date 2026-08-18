@@ -1,0 +1,20 @@
+[package]
+name = "asm-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Dependency discipline: asm-core must never depend on clap, ratatui, axum,
+# tokio, or anyhow. Frontends stay thin; core stays synchronous.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+jiff = { workspace = true }
+etcetera = { workspace = true }
+rusqlite = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
