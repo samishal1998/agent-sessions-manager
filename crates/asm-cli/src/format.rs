@@ -2,6 +2,7 @@
 
 use jiff::Timestamp;
 
+use asm_core::fmt::human_bytes;
 use asm_core::model::{Project, Session, SessionLocation, SessionStatus};
 
 pub fn session_table(sessions: &[Session]) {
@@ -15,12 +16,13 @@ pub fn session_table(sessions: &[Session]) {
                 home_relative(&s.project_root.display().to_string()),
                 s.git_branch.clone().unwrap_or_default(),
                 s.updated.map(humanize).unwrap_or_default(),
+                s.size_bytes.map(human_bytes).unwrap_or_default(),
                 status_label(&s.status).to_string(),
             ]
         })
         .collect();
     print_table(
-        &["AGENT", "ID", "TITLE", "PROJECT", "BRANCH", "UPDATED", "STATUS"],
+        &["AGENT", "ID", "TITLE", "PROJECT", "BRANCH", "UPDATED", "SIZE", "STATUS"],
         &rows,
     );
 }
@@ -34,6 +36,7 @@ pub fn project_table(projects: &[Project]) {
                 home_relative(&p.root.display().to_string()),
                 p.agents.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", "),
                 p.session_count.to_string(),
+                human_bytes(p.size_bytes),
                 // Only interesting once a repository has more than one
                 // checkout; a plain directory has nothing to say here.
                 match p.worktrees.len() {
@@ -44,7 +47,7 @@ pub fn project_table(projects: &[Project]) {
             ]
         })
         .collect();
-    print_table(&["PROJECT", "AGENTS", "SESSIONS", "WORKTREES", "UPDATED"], &rows);
+    print_table(&["PROJECT", "AGENTS", "SESSIONS", "SIZE", "WORKTREES", "UPDATED"], &rows);
 }
 
 /// Worktrees of a project, indented beneath it.
@@ -96,6 +99,9 @@ pub fn session_card(s: &Session) {
     }
     if let Some(version) = &s.agent_version {
         lines.push(("agent version", version.clone()));
+    }
+    if let Some(size) = s.size_bytes {
+        lines.push(("size", human_bytes(size)));
     }
     match &s.handle.location {
         SessionLocation::JsonlFile { path } => {

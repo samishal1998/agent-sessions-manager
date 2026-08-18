@@ -26,6 +26,9 @@ pub struct Project {
     /// Every checkout of this repository, whether or not it has sessions.
     pub worktrees: Vec<ProjectWorktree>,
     pub session_count: usize,
+    /// Bytes its sessions occupy, summed from them.
+    #[serde(default)]
+    pub size_bytes: u64,
     pub last_updated: Option<Timestamp>,
 }
 

@@ -61,6 +61,13 @@ pub struct Session {
     /// Version of the agent CLI that (last) wrote this session; drives the
     /// tested-versions matrix for import.
     pub agent_version: Option<String>,
+    /// Bytes this session's own data occupies in its agent's store: the
+    /// transcript file, the snapshot and its journal, or the message and
+    /// part rows. Sidecars that are cheap to find are included; anything
+    /// that would need a directory walk per session is not, because this is
+    /// computed for every session on every listing.
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
 }
 
 impl Session {

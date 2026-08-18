@@ -270,6 +270,9 @@ fn scan_transcript(path: &Path, session_id: &str) -> Option<Session> {
         status: SessionStatus::Idle,
         parent: None,
         agent_version: tail_state.version.or(head_state.version),
+        // The transcript is the session; its sidecars would each need a
+        // directory walk, which listing cannot afford.
+        size_bytes: Some(file_len),
     })
 }
 

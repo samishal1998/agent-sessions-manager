@@ -164,6 +164,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
                 Cell::from(s.title.clone().unwrap_or_else(|| "(untitled)".into())),
                 Cell::from(shorten(&s.project_root.display().to_string(), 28)),
                 Cell::from(s.updated.map(super::ui::ago).unwrap_or_default()),
+                Cell::from(s.size_bytes.map(asm_core::fmt::human_bytes).unwrap_or_default()),
                 Cell::from(status),
             ])
         })
@@ -177,11 +178,12 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Fill(2),
             Constraint::Length(28),
             Constraint::Length(8),
+            Constraint::Length(8),
             Constraint::Length(4),
         ],
     )
     .header(
-        Row::new(["agent", "id", "title", "project", "updated", "st"])
+        Row::new(["agent", "id", "title", "project", "updated", "size", "st"])
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
     .row_highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
@@ -199,7 +201,13 @@ fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {
     };
     let title = app
         .selected_session()
-        .map(|s| format!(" {} — {} ", s.short_id(), s.title.as_deref().unwrap_or("(untitled)")))
+        .map(|s| {
+            let size = s
+                .size_bytes
+                .map(|b| format!(" · {}", asm_core::fmt::human_bytes(b)))
+                .unwrap_or_default();
+            format!(" {} — {}{size} ", s.short_id(), s.title.as_deref().unwrap_or("(untitled)"))
+        })
         .unwrap_or_else(|| " transcript ".to_string());
     let block = Block::default().borders(Borders::ALL).border_style(border_style).title(title);
 

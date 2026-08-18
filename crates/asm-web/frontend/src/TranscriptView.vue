@@ -101,6 +101,21 @@ function inputSummary(input) {
   return firstLine(JSON.stringify(input))
 }
 
+const size = computed(() => {
+  const bytes = props.session.size_bytes
+  if (bytes == null) return ''
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return unit === 0
+    ? `${bytes} B`
+    : `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`
+})
+
 function when(ts) {
   return ts ? ts.slice(0, 19).replace('T', ' ') : ''
 }
@@ -135,7 +150,10 @@ watch(
       <AgentMark :agent="session.ref.agent" />
       <div class="drawer-title">
         <strong class="truncate">{{ session.title || 'Untitled session' }}</strong>
-        <span class="mono faint truncate">{{ session.ref.native_id }}</span>
+        <span class="mono faint truncate">
+          {{ session.ref.native_id
+          }}<template v-if="session.size_bytes != null"> · {{ size }}</template>
+        </span>
       </div>
       <label class="field">
         <Search :size="15" />

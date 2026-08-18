@@ -346,6 +346,7 @@ pub fn archived_sessions() -> Result<Vec<crate::model::Session>, CoreError> {
                 status: SessionStatus::Archived,
                 parent: None,
                 agent_version: None,
+                size_bytes: Some(dir_size(&session_dir)),
             });
         }
     }

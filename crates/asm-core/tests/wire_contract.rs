@@ -36,6 +36,7 @@ fn sample(status: SessionStatus) -> Session {
         status,
         parent: None,
         agent_version: None,
+        size_bytes: None,
     }
 }
 

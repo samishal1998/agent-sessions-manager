@@ -114,7 +114,7 @@ const visible = computed(() => {
   })
 })
 
-// Agents differ in what they support — jcode is read-only, for instance —
+// Agents differ in what they support — jcode has no "move", for instance —
 // so the row offers only the verbs its agent can actually perform.
 const capabilities = computed(() =>
   Object.fromEntries((doctor.value?.agents || []).map((a) => [a.agent, a.capabilities])),
@@ -161,6 +161,20 @@ function statusHint(s) {
     default:
       return 'Not running'
   }
+}
+
+// Matches asm_core::fmt::human_bytes so the CLI, TUI and web agree.
+function humanBytes(bytes) {
+  if (bytes == null) return ''
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  if (unit === 0) return `${bytes} B`
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`
 }
 
 function ago(ts) {
@@ -217,7 +231,7 @@ function doMove(s) {
 }
 
 function doImport(s) {
-  // jcode is read-only, so it is never an import destination.
+  // jcode can be an import source but not a destination.
   const to = s.ref.agent === 'claude-code' ? 'opencode' : 'claude-code'
   const name = to === 'opencode' ? 'OpenCode' : 'Claude Code'
   if (confirm(`Import ${shortId(s)} into ${name}?\n\nFull mode. Re-importing is a no-op.`))
@@ -333,7 +347,9 @@ function pickProject(root) {
           >
             <GitBranch v-if="p.worktrees.length > 1" :size="13" class="faint" />
             <span class="label">{{ shortProject(p.root) }}</span>
-            <span class="count">{{ p.session_count }}</span>
+            <span class="count" :title="`${p.session_count} sessions · ${humanBytes(p.size_bytes)}`">
+              {{ p.session_count }}
+            </span>
           </button>
         </div>
       </div>
@@ -480,6 +496,10 @@ function pickProject(root) {
                   }}</span>
                   <span class="sep">·</span>
                   <span>{{ ago(s.updated) }}</span>
+                  <template v-if="s.size_bytes != null">
+                    <span class="sep">·</span>
+                    <span>{{ humanBytes(s.size_bytes) }}</span>
+                  </template>
                 </div>
               </div>
 

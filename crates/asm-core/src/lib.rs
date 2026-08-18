@@ -4,6 +4,7 @@
 pub mod adapter;
 pub mod archive;
 pub mod error;
+pub mod fmt;
 pub mod fsutil;
 pub mod git;
 pub mod import;

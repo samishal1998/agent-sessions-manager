@@ -29,6 +29,7 @@ fn session(agent: AgentKind, id: &str, cwd: &str) -> Session {
         status: SessionStatus::Idle,
         parent: None,
         agent_version: None,
+        size_bytes: None,
     }
 }
 

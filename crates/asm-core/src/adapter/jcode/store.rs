@@ -109,6 +109,7 @@ pub(super) fn sessions(
             status,
             parent: snapshot.parent_id,
             agent_version: None,
+            size_bytes: Some(session_bytes(&path)),
         };
         if session.project_root.as_os_str().is_empty() {
             continue; // nothing to group it under
@@ -174,4 +175,17 @@ fn live_pids(root: &Path) -> HashMap<String, u32> {
 /// jcode timestamps are chrono RFC 3339.
 fn parse_time(text: &str) -> Option<Timestamp> {
     text.parse::<Timestamp>().ok()
+}
+
+/// The snapshot plus the two files jcode keeps beside it.
+fn session_bytes(snapshot: &Path) -> u64 {
+    [
+        snapshot.to_path_buf(),
+        snapshot.with_extension("bak"),
+        snapshot.with_extension("journal.jsonl"),
+    ]
+    .iter()
+    .filter_map(|p| std::fs::metadata(p).ok())
+    .map(|m| m.len())
+    .sum()
 }

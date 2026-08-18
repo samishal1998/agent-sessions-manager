@@ -1,5 +1,6 @@
 //! Read-only queries over OpenCode's SQLite store.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use jiff::Timestamp;
@@ -33,6 +34,7 @@ pub(super) fn sessions(
     }
 
     let conn = open_ro(adapter)?;
+    let sizes = session_sizes(&conn);
     let sql_err =
         |e: rusqlite::Error| CoreError::Sqlite { db: adapter.db().to_path_buf(), source: Box::new(e) };
 
@@ -100,6 +102,7 @@ pub(super) fn sessions(
             SessionStatus::Idle
         };
 
+        let id_for_size = id.clone();
         let session = Session {
             handle: SessionRef {
                 agent: AgentKind::OpenCode,
@@ -126,6 +129,7 @@ pub(super) fn sessions(
             status,
             parent,
             agent_version: version,
+            size_bytes: sizes.get(&id_for_size).copied(),
         };
         if filter.matches(&session) {
             sessions.push(session);
@@ -145,4 +149,28 @@ fn from_millis(ms: i64) -> Timestamp {
 fn model_id(json: &str) -> Option<String> {
     let value: Value = serde_json::from_str(json).ok()?;
     value.get("id").and_then(Value::as_str).map(str::to_string)
+}
+
+/// Bytes each session's rows occupy, in one pass over both payload tables.
+///
+/// OpenCode has no file per session to stat, so "size" is the length of the
+/// JSON it stores: the message envelopes plus their parts, which is where
+/// effectively all of a session's bytes live.
+fn session_sizes(conn: &Connection) -> HashMap<String, u64> {
+    let mut sizes: HashMap<String, u64> = HashMap::new();
+    for table in ["message", "part"] {
+        let sql = format!(
+            "SELECT session_id, SUM(LENGTH(COALESCE(data, ''))) FROM {table} GROUP BY session_id"
+        );
+        let Ok(mut stmt) = conn.prepare(&sql) else { continue };
+        let Ok(rows) = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1).unwrap_or(0)))
+        }) else {
+            continue;
+        };
+        for (id, bytes) in rows.filter_map(Result::ok) {
+            *sizes.entry(id).or_default() += bytes.max(0) as u64;
+        }
+    }
+    sizes
 }

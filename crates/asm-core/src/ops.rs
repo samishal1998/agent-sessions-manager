@@ -113,6 +113,7 @@ pub fn group_projects(
                 repo: repo.map(|r| r.common_dir),
                 agents,
                 session_count: group.len(),
+                size_bytes: group.iter().filter_map(|s| s.size_bytes).sum(),
                 last_updated: group.iter().filter_map(|s| s.updated).max(),
                 worktrees,
             }
