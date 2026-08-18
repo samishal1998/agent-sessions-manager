@@ -25,3 +25,9 @@ pub fn backup_dir(agent: &str, session_id: &str) -> Option<PathBuf> {
 pub fn archive_dir(agent: &str, session_id: &str) -> Option<PathBuf> {
     data_dir().map(|d| d.join("archive").join(agent).join(session_id))
 }
+
+/// The user's home directory. Callers that display paths need this to
+/// abbreviate them to `~`; hard-coding `/home/<user>` is wrong on macOS.
+pub fn home() -> Option<std::path::PathBuf> {
+    etcetera::home_dir().ok()
+}

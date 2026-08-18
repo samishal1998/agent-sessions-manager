@@ -21,6 +21,7 @@ import {
   Zap,
 } from 'lucide-vue-next'
 import api from './api.js'
+import { shortId, shortProject } from './ids.js'
 import TranscriptView from './TranscriptView.vue'
 import AgentMark from './components/AgentMark.vue'
 import IconButton from './components/IconButton.vue'
@@ -129,14 +130,11 @@ const warnings = computed(() =>
 )
 
 /* Presentation -------------------------------------------------------- */
-function shortId(s) {
-  const id = s.ref.native_id
-  return id.startsWith('ses_') ? id.slice(0, 12) : id.slice(0, 8)
-}
-
-function shortProject(root) {
-  return root.replace(/^\/home\/[^/]+/, '~')
-}
+// Where home is, so paths can be shown as `~/…`. Asked once; until it
+// arrives paths render in full, which is correct if unlovely.
+const home = ref(null)
+api.meta().then((m) => (home.value = m.home)).catch(() => {})
+const shortDir = (root) => shortProject(root, home.value)
 
 // SessionStatus is an internally tagged enum: {"state":"live","pid":N} |
 // {"state":"idle"} | {"state":"archived"}.
@@ -346,7 +344,7 @@ function pickProject(root) {
             @click="pickProject(p.root)"
           >
             <GitBranch v-if="p.worktrees.length > 1" :size="13" class="faint" />
-            <span class="label">{{ shortProject(p.root) }}</span>
+            <span class="label">{{ shortDir(p.root) }}</span>
             <span class="count" :title="`${p.session_count} sessions · ${humanBytes(p.size_bytes)}`">
               {{ p.session_count }}
             </span>
@@ -492,7 +490,7 @@ function pickProject(root) {
                   <span class="mono">{{ shortId(s) }}</span>
                   <span class="sep">·</span>
                   <span class="project" :title="s.project_root">{{
-                    shortProject(s.project_root)
+                    shortDir(s.project_root)
                   }}</span>
                   <span class="sep">·</span>
                   <span>{{ ago(s.updated) }}</span>

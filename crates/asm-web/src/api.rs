@@ -74,6 +74,7 @@ async fn guard_mutations(
 
 pub fn router() -> axum::Router {
     axum::Router::new()
+        .route("/api/meta", get(meta))
         .route("/api/sessions", get(sessions))
         .route("/api/projects", get(projects))
         .route("/api/doctor", get(doctor))
@@ -88,6 +89,15 @@ pub fn router() -> axum::Router {
         .route("/api/session/{agent}/{id}/move", post(move_session))
         .route("/api/session/{agent}/{id}/import", post(import))
         .layer(axum::middleware::from_fn(guard_mutations))
+}
+
+/// The UI shortens `/home/you/code/x` to `~/code/x`, which it cannot do
+/// without knowing where home is — guessing `/home/<user>` is wrong on
+/// macOS, where it is `/Users/<name>`.
+async fn meta() -> Json<serde_json::Value> {
+    Json(json!({
+        "home": asm_core::paths::home().map(|h| h.display().to_string()),
+    }))
 }
 
 #[derive(Deserialize)]

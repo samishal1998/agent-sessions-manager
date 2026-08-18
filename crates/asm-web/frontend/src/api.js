@@ -21,6 +21,7 @@ const sessionPath = (s, action) =>
   `/api/session/${encodeURIComponent(s.ref.agent)}/${encodeURIComponent(s.ref.native_id)}/${action}`
 
 export default {
+  meta: () => request('/api/meta'),
   sessions: (all) => request(`/api/sessions?all=${all ? 'true' : 'false'}`),
   projects: () => request('/api/projects'),
   doctor: () => request('/api/doctor'),
