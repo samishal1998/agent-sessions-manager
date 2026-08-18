@@ -225,11 +225,15 @@ fn render_preview(ir: &asm_core::ir::IrSession) -> Vec<PreviewLine> {
                     }
                 }
                 IrPart::Reasoning { summary, .. } => {
-                    let first = summary.lines().next().unwrap_or_default();
-                    lines.push(PreviewLine {
-                        kind: PreviewKind::Meta,
-                        text: format!("(thinking) {}", clip(first, 200)),
-                    });
+                    // Signed thinking blocks can carry no readable text; the
+                    // part still means the model reasoned here.
+                    let first = summary.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+                    let text = if first.is_empty() {
+                        "(thinking, not recorded)".to_string()
+                    } else {
+                        format!("(thinking) {}", clip(first, 200))
+                    };
+                    lines.push(PreviewLine { kind: PreviewKind::Meta, text });
                 }
                 IrPart::ToolCall { name, input, .. } => {
                     lines.push(PreviewLine {

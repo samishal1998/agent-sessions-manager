@@ -88,6 +88,19 @@ asm serve --host 0.0.0.0     # every interface — read the warning it prints
 
 Every command takes `--json`.
 
+### In the web UI
+
+`asm serve` gives the same verbs a mouse: sessions as cards with the agent shown
+as an icon (its name is one hover away), per-row actions, multi-select filtering
+by agent, project filters in the sidebar, full-text search with highlighted
+snippets, and a transcript panel that renders text, reasoning, tool calls and
+expandable tool output. It is responsive down to a phone, where the sidebar
+becomes an overlay and the transcript takes the full screen.
+
+To see it without a browser — or to re-check a change — `bun run shots` in
+`crates/asm-web/frontend` screenshots the running UI at three widths and fails
+on any console error (needs `bunx playwright install chromium` once).
+
 ### In the TUI
 
 Every per-session verb is a keystroke, so the terminal UI is not a read-only
