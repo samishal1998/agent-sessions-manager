@@ -156,11 +156,16 @@ fn model_id(json: &str) -> Option<String> {
 /// OpenCode has no file per session to stat, so "size" is the length of the
 /// JSON it stores: the message envelopes plus their parts, which is where
 /// effectively all of a session's bytes live.
+/// `data` is a TEXT column, and SQLite's LENGTH counts characters there,
+/// not bytes — the cast to BLOB is what makes this a byte count. Real
+/// transcripts are a fraction of a percent multibyte, so the difference is
+/// small but always in the same direction.
 fn session_sizes(conn: &Connection) -> HashMap<String, u64> {
     let mut sizes: HashMap<String, u64> = HashMap::new();
     for table in ["message", "part"] {
         let sql = format!(
-            "SELECT session_id, SUM(LENGTH(COALESCE(data, ''))) FROM {table} GROUP BY session_id"
+            "SELECT session_id, SUM(LENGTH(CAST(COALESCE(data, '') AS BLOB))) \
+             FROM {table} GROUP BY session_id"
         );
         let Ok(mut stmt) = conn.prepare(&sql) else { continue };
         let Ok(rows) = stmt.query_map([], |row| {
