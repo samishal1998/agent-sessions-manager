@@ -196,6 +196,92 @@ function highlight(snippet) {
   return escaped.replaceAll('\u0001', '<mark>').replaceAll('\u0002', '</mark>')
 }
 
+/* Multi-select --------------------------------------------------------
+ *
+ * Ticks are keyed by agent and id rather than held as object references:
+ * every refresh replaces the session objects, and identity comparison
+ * would silently empty the selection each time the list reloads.
+ */
+const ticked = ref(new Set())
+const tickKey = (s) => `${s.ref.agent}\u0000${s.ref.native_id}`
+const isTicked = (s) => ticked.value.has(tickKey(s))
+
+function toggleTick(s) {
+  const next = new Set(ticked.value)
+  next.has(tickKey(s)) ? next.delete(tickKey(s)) : next.add(tickKey(s))
+  ticked.value = next
+}
+
+// Only what the filters are currently showing — never rows the user
+// cannot see.
+const allVisibleTicked = computed(
+  () => visible.value.length > 0 && visible.value.every(isTicked),
+)
+
+function toggleAllVisible() {
+  ticked.value = allVisibleTicked.value
+    ? new Set()
+    : new Set(visible.value.map(tickKey))
+}
+
+function clearTicks() {
+  ticked.value = new Set()
+}
+
+/// The ticked sessions that are still in the list, resolved now. Anything
+/// that disappeared since it was ticked simply is not in the batch.
+const tickedSessions = computed(() => sessions.value.filter(isTicked))
+
+const bulkProblems = ref(null)
+
+async function runBulk(action, confirmText) {
+  const batch = tickedSessions.value
+  if (!batch.length) return
+  if (confirmText && !confirm(confirmText.replace('{n}', batch.length))) return
+  status.value = `${action.action} ${batch.length} session(s)…`
+  bulkProblems.value = null
+  try {
+    const report = await api.bulk(batch, action)
+    status.value = report.summary
+    if (report.unresolved?.length) {
+      status.value += `, ${report.unresolved.length} no longer present`
+    }
+    // Only interrupt when there is something to say beyond the count.
+    if (report.problems?.length) bulkProblems.value = report
+    clearTicks()
+    await refresh()
+  } catch (e) {
+    status.value = `${action.action} failed: ${e.message}`
+  }
+}
+
+const bulkArchive = () => runBulk({ action: 'archive' })
+const bulkUnarchive = () => runBulk({ action: 'unarchive' })
+const bulkDelete = () =>
+  runBulk({ action: 'delete' }, 'Delete {n} sessions?\n\nEach is backed up first.')
+
+function bulkMove() {
+  const dir = prompt(`Move ${tickedSessions.value.length} session(s) to which directory?`)
+  if (dir?.trim()) runBulk({ action: 'move', dir: dir.trim() })
+}
+
+function bulkExport() {
+  const dir = prompt('Write one IR file per session into which directory?')
+  if (dir?.trim()) runBulk({ action: 'export', dir: dir.trim() })
+}
+
+function bulkImport() {
+  // One destination for the batch: whichever agent most of the selection
+  // is not already in. jcode is never a destination.
+  const claude = tickedSessions.value.filter((s) => s.ref.agent === 'claude-code').length
+  const to = claude * 2 > tickedSessions.value.length ? 'opencode' : 'claude-code'
+  const name = to === 'opencode' ? 'OpenCode' : 'Claude Code'
+  runBulk(
+    { action: 'import', to },
+    `Import {n} session(s) into ${name}?\n\nFull mode. Already-imported ones are skipped.`,
+  )
+}
+
 /* Actions ------------------------------------------------------------- */
 async function act(name, fn) {
   status.value = `${name}…`
@@ -468,6 +554,40 @@ function pickProject(root) {
         <!-- Session list -->
         <template v-else>
           <div v-if="!visible.length" class="empty">No sessions match these filters.</div>
+
+          <div v-if="visible.length" class="bulkbar" :class="{ active: ticked.size > 0 }">
+            <label class="tickall">
+              <input
+                type="checkbox"
+                :checked="allVisibleTicked"
+                :aria-label="allVisibleTicked ? 'Clear selection' : 'Select all shown'"
+                @change="toggleAllVisible"
+              />
+              <span v-if="ticked.size">{{ ticked.size }} selected</span>
+              <span v-else class="faint">Select all shown</span>
+            </label>
+
+            <div v-if="ticked.size" class="bulkacts">
+              <button class="btn" @click="bulkArchive">Archive</button>
+              <button class="btn" @click="bulkUnarchive">Unarchive</button>
+              <button class="btn" @click="bulkImport">Import</button>
+              <button class="btn" @click="bulkMove">Move</button>
+              <button class="btn" @click="bulkExport">Export</button>
+              <button class="btn danger" @click="bulkDelete">Delete</button>
+              <button class="btn ghost" @click="clearTicks">Clear</button>
+            </div>
+          </div>
+
+          <div v-if="bulkProblems" class="problems" role="status">
+            <div class="problems-head">
+              <strong>{{ bulkProblems.summary }}</strong>
+              <button class="btn ghost" @click="bulkProblems = null">Dismiss</button>
+            </div>
+            <ul>
+              <li v-for="(line, i) in bulkProblems.problems" :key="i">{{ line }}</li>
+            </ul>
+          </div>
+
           <div class="rows">
             <div
               v-for="s in visible"
@@ -482,6 +602,16 @@ function pickProject(root) {
               @keydown.enter.prevent="selected = s"
               @keydown.space.prevent="selected = s"
             >
+              <input
+                class="tick"
+                type="checkbox"
+                :checked="isTicked(s)"
+                :aria-label="`Select ${s.title || 'untitled session'}`"
+                @click.stop="toggleTick(s)"
+                @keydown.enter.stop
+                @keydown.space.stop
+              />
+
               <AgentMark :agent="s.ref.agent" />
 
               <div class="row-body">

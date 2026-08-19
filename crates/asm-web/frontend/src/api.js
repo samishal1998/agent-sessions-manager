@@ -22,6 +22,13 @@ const sessionPath = (s, action) =>
 
 export default {
   meta: () => request('/api/meta'),
+  // One verb over many sessions. `action` is the tagged BulkAction the
+  // core defines: {action:'archive'} | {action:'move',dir} | …
+  bulk: (sessions, action) =>
+    post('/api/bulk', {
+      sessions: sessions.map((s) => ({ agent: s.ref.agent, native_id: s.ref.native_id })),
+      ...action,
+    }),
   sessions: (all) => request(`/api/sessions?all=${all ? 'true' : 'false'}`),
   projects: () => request('/api/projects'),
   doctor: () => request('/api/doctor'),

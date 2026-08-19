@@ -88,6 +88,7 @@ pub fn router() -> axum::Router {
         .route("/api/session/{agent}/{id}/delete", post(delete))
         .route("/api/session/{agent}/{id}/move", post(move_session))
         .route("/api/session/{agent}/{id}/import", post(import))
+        .route("/api/bulk", post(bulk))
         .layer(axum::middleware::from_fn(guard_mutations))
 }
 
@@ -245,6 +246,56 @@ async fn move_session(
         let outcome = ops::relocate(&session, std::path::Path::new(&body.dir))
             .map_err(|e| err(StatusCode::CONFLICT, e))?;
         serde_json::to_value(&outcome).map_err(internal)
+    })
+    .await
+    .map(Json)
+}
+
+#[derive(Deserialize)]
+struct BulkBody {
+    /// Which sessions, as the list rendered them.
+    sessions: Vec<BulkTarget>,
+    /// The verb, tagged: {"action":"archive"} or {"action":"move","dir":…}.
+    #[serde(flatten)]
+    action: asm_core::bulk::BulkAction,
+}
+
+#[derive(Deserialize)]
+struct BulkTarget {
+    agent: String,
+    native_id: String,
+}
+
+/// One verb over many sessions, in one request.
+///
+/// A round trip per session would be slower, but more importantly it would
+/// leave the browser deciding what to do when the fourth of ten fails.
+/// The core batch answers that once, for both frontends.
+async fn bulk(Json(body): Json<BulkBody>) -> ApiResult<Value> {
+    blocking(move || {
+        // A session that cannot be resolved is reported as a failed item,
+        // not as a failed request: the rest of the batch still runs.
+        let mut sessions = Vec::new();
+        let mut unresolved = Vec::new();
+        for target in &body.sessions {
+            match resolve(&target.agent, &target.native_id) {
+                Ok(session) => sessions.push(session),
+                Err(_) => unresolved.push(format!("{}:{}", target.agent, target.native_id)),
+            }
+        }
+        let report = asm_core::bulk::run(&sessions, &body.action);
+        let verb = body.action.verb();
+        serde_json::to_value(json!({
+            "verb": verb,
+            "summary": report.summary(verb),
+            "problems": report.problems(),
+            "ok": report.ok(),
+            "skipped": report.skipped(),
+            "failed": report.failed(),
+            "unresolved": unresolved,
+            "items": report.items,
+        }))
+        .map_err(internal)
     })
     .await
     .map(Json)
