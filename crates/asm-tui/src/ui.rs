@@ -27,7 +27,47 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_status(frame, app, status_bar);
     if app.show_doctor {
         draw_doctor(frame, app, frame.area());
+    } else if app.report.is_some() {
+        draw_report(frame, app, frame.area());
     }
+}
+
+/// What a batch could not do. Only drawn when something was skipped or
+/// failed — a clean run says so in the status bar and stays out of the way.
+fn draw_report(frame: &mut Frame, app: &App, area: Rect) {
+    let Some((verb, report)) = app.report.as_ref() else { return };
+    let problems = report.problems();
+    let width = area.width.saturating_sub(8).clamp(20, 100);
+    let height = (problems.len() as u16 + 4).min(area.height.saturating_sub(4)).max(5);
+    let popup = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + (area.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    };
+    frame.render_widget(Clear, popup);
+
+    let lines: Vec<Line> = problems
+        .iter()
+        .map(|line| {
+            let style = if line.contains(": failed") {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+            Line::styled(line.clone(), style)
+        })
+        .collect();
+
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red))
+                .title(format!(" {} — esc to close ", report.summary(verb))),
+        ),
+        popup,
+    );
 }
 
 fn draw_doctor(frame: &mut Frame, app: &App, area: Rect) {
@@ -139,11 +179,14 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         Style::default().fg(Color::Cyan)
     };
-    let title = if app.filter.is_empty() {
+    let mut title = if app.filter.is_empty() {
         " sessions ".to_string()
     } else {
         format!(" sessions (filter: {}) ", app.filter)
     };
+    if !app.selection.is_empty() {
+        title = format!("{}[{} selected] ", title, app.selection.len());
+    }
     let block = Block::default().borders(Borders::ALL).border_style(border_style).title(title);
 
     let rows: Vec<Row> = app
@@ -159,6 +202,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
                 }
             };
             Row::new(vec![
+                Cell::from(if app.is_ticked(s) { "◉" } else { " " }),
                 Cell::from(s.handle.agent.to_string()),
                 Cell::from(s.short_id().to_string()),
                 Cell::from(s.title.clone().unwrap_or_else(|| "(untitled)".into())),
@@ -173,6 +217,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     let table = Table::new(
         rows,
         [
+            Constraint::Length(1),
             Constraint::Length(11),
             Constraint::Length(8),
             Constraint::Fill(2),
@@ -183,7 +228,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         ],
     )
     .header(
-        Row::new(["agent", "id", "title", "project", "updated", "size", "st"])
+        Row::new(["", "agent", "id", "title", "project", "updated", "size", "st"])
             .style(Style::default().add_modifier(Modifier::BOLD)),
     )
     .row_highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
@@ -256,6 +301,22 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             format!("{what}? full mode, idempotent. (y/N)")
         }
         Mode::Search => format!("search transcripts: {}▏  (enter search, esc cancel)", app.input),
+        Mode::ConfirmBulk => {
+            let what = app
+                .pending_bulk()
+                .map(|(a, n)| format!("{} {n} selected session(s)", a.verb().to_lowercase()))
+                .unwrap_or_default();
+            let tail = match app.pending_bulk().map(|(a, _)| a.is_destructive()) {
+                Some(true) => "backed up first. (y/N)",
+                _ => "(y/N)",
+            };
+            format!("{what}? {tail}")
+        }
+        Mode::BulkInput => {
+            let verb = app.pending_bulk().map(|(a, _)| a.verb()).unwrap_or("");
+            let n = app.pending_bulk().map(|(_, n)| n).unwrap_or(0);
+            format!("{} {n} session(s) to directory: {}▏  (enter go, esc cancel)", verb.to_lowercase(), app.input)
+        }
         Mode::Normal if app.hits.is_some() => {
             format!("{}  —  ⏎ jump to session · / new search · esc back to list", app.status)
         }
@@ -266,9 +327,9 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 n => format!("  ⚠ {n} (D)"),
             };
             format!(
-                "{}{scanning}{health}  —  ⏎ resume · r rename · a (un)archive · d delete · \
-                 e export · m move · i import · s search · / filter · D health · ⇥ focus · \
-                 R rescan · q quit",
+                "{}{scanning}{health}  —  ⏎ resume · ␣ select · * all · r rename · \
+                 a (un)archive · d delete · e export · m move · i import · s search · \
+                 / filter · D health · ⇥ focus · R rescan · q quit",
                 app.status
             )
         }

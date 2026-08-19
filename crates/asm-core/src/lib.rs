@@ -3,6 +3,7 @@
 
 pub mod adapter;
 pub mod archive;
+pub mod bulk;
 pub mod error;
 pub mod fmt;
 pub mod fsutil;

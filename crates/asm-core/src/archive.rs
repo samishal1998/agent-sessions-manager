@@ -134,6 +134,10 @@ fn find_archived(root: &std::path::Path, query: &str) -> Option<PathBuf> {
         .filter(|p| p.is_dir());
 
     let mut by_slug = None;
+    // Every other verb resolves a session by a unique id prefix, so this
+    // one does too — but only when the prefix picks out exactly one
+    // session. Two matches is not "the first one wins".
+    let mut by_prefix: Vec<PathBuf> = Vec::new();
     for agent_dir in agent_dirs {
         let exact = agent_dir.join(query);
         if exact.join("manifest.json").is_file() {
@@ -141,12 +145,99 @@ fn find_archived(root: &std::path::Path, query: &str) -> Option<PathBuf> {
         }
         let Ok(sessions) = fs::read_dir(&agent_dir) else { continue };
         for entry in sessions.filter_map(Result::ok) {
-            let Ok(bytes) = fs::read(entry.path().join("manifest.json")) else { continue };
+            let path = entry.path();
+            let Ok(bytes) = fs::read(path.join("manifest.json")) else { continue };
             let Ok(value) = serde_json::from_slice::<Value>(&bytes) else { continue };
             if value.get("slug").and_then(Value::as_str) == Some(query) {
-                by_slug = Some(entry.path());
+                by_slug = Some(path.clone());
+            }
+            if let Some(name) = path.file_name().and_then(|n| n.to_str())
+                && !query.is_empty()
+                && name.starts_with(query)
+            {
+                by_prefix.push(path);
             }
         }
     }
-    by_slug
+    // A slug is an exact match and outranks a prefix.
+    by_slug.or_else(|| match by_prefix.len() {
+        1 => by_prefix.pop(),
+        _ => None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_archived;
+    use std::fs;
+
+    /// Lay out `<root>/<agent>/<id>/manifest.json` the way archiving does.
+    fn archived(root: &std::path::Path, agent: &str, id: &str, slug: Option<&str>) {
+        let dir = root.join(agent).join(id);
+        fs::create_dir_all(&dir).unwrap();
+        let manifest = match slug {
+            Some(s) => format!(r#"{{"entries":[],"slug":"{s}"}}"#),
+            None => r#"{"entries":[]}"#.to_string(),
+        };
+        fs::write(dir.join("manifest.json"), manifest).unwrap();
+    }
+
+    #[test]
+    fn a_unique_id_prefix_resolves_like_every_other_verb() {
+        // `asm archive 7f3a1c88` works, so `asm unarchive 7f3a1c88` has to
+        // as well — requiring the full uuid here was the asymmetry.
+        let tmp = tempfile::tempdir().unwrap();
+        archived(tmp.path(), "claude-code", "7f3a1c88-2d4e-4b91-9a05-6c7e8f201b43", None);
+        let found = find_archived(tmp.path(), "7f3a1c88").expect("prefix should resolve");
+        assert!(found.ends_with("7f3a1c88-2d4e-4b91-9a05-6c7e8f201b43"));
+    }
+
+    #[test]
+    fn the_full_id_still_wins_outright() {
+        let tmp = tempfile::tempdir().unwrap();
+        archived(tmp.path(), "claude-code", "abc123", None);
+        assert!(find_archived(tmp.path(), "abc123").is_some());
+    }
+
+    #[test]
+    fn an_ambiguous_prefix_resolves_to_nothing_rather_than_a_guess() {
+        let tmp = tempfile::tempdir().unwrap();
+        archived(tmp.path(), "claude-code", "ab111111", None);
+        archived(tmp.path(), "claude-code", "ab222222", None);
+        assert!(find_archived(tmp.path(), "ab").is_none());
+    }
+
+    #[test]
+    fn a_prefix_that_spans_two_agents_is_still_ambiguous() {
+        let tmp = tempfile::tempdir().unwrap();
+        archived(tmp.path(), "claude-code", "dup00001", None);
+        archived(tmp.path(), "jcode", "dup00002", None);
+        assert!(find_archived(tmp.path(), "dup").is_none());
+    }
+
+    #[test]
+    fn a_slug_is_an_exact_match_and_beats_a_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        archived(tmp.path(), "jcode", "session_calm-meridian", Some("calm-meridian"));
+        archived(tmp.path(), "jcode", "calm-meridian-other", None);
+        let found = find_archived(tmp.path(), "calm-meridian").expect("slug should resolve");
+        assert!(found.ends_with("session_calm-meridian"));
+    }
+
+    #[test]
+    fn an_empty_query_matches_nothing_instead_of_everything() {
+        let tmp = tempfile::tempdir().unwrap();
+        archived(tmp.path(), "claude-code", "abc123", None);
+        assert!(find_archived(tmp.path(), "").is_none());
+    }
+
+    #[test]
+    fn files_beside_the_agent_directories_do_not_stop_the_search() {
+        // `asm sync init` writes .gitignore and README.md into the archive
+        // root; an earlier version bailed on the first non-directory.
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("README.md"), "notes").unwrap();
+        archived(tmp.path(), "claude-code", "abc123", None);
+        assert!(find_archived(tmp.path(), "abc123").is_some());
+    }
 }

@@ -1,12 +1,14 @@
 //! App state and event loop. Panel-local state stays here; anything slow
 //! goes through the worker.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 
-use asm_core::model::{Session, SessionStatus};
+use asm_core::bulk::{BulkAction, BulkReport};
+use asm_core::model::{AgentKind, Session, SessionStatus};
 use asm_core::ops;
 
 use crate::worker::{PreviewLine, Request, Response, Worker};
@@ -31,6 +33,10 @@ pub enum Mode {
     ConfirmImport,
     /// Input: a full-text query across every transcript.
     Search,
+    /// Confirm a verb over the whole selection.
+    ConfirmBulk,
+    /// Input for a bulk verb that needs one: a destination directory.
+    BulkInput,
 }
 
 pub struct App {
@@ -56,6 +62,18 @@ pub struct App {
     /// the keystroke that opens a confirmation and the one that answers it,
     /// so re-reading the selection would act on the wrong session.
     pending: Option<Session>,
+    /// Sessions ticked for a bulk action, keyed by identity rather than by
+    /// row: a background rescan reorders and can drop rows, and an index
+    /// would then point at a different session than the one ticked.
+    pub selection: HashSet<(AgentKind, String)>,
+    /// The selection resolved to real sessions, taken when the action was
+    /// confirmed. Anything that vanished in between is dropped here, once,
+    /// rather than failing later with a confusing error.
+    pending_batch: Vec<Session>,
+    pending_action: Option<BulkAction>,
+    /// The last batch's per-item outcome, shown as an overlay when
+    /// anything did not simply work.
+    pub report: Option<(String, BulkReport)>,
     /// Store-health report, shown as an overlay on `D`.
     pub doctor: Vec<String>,
     pub doctor_warnings: usize,
@@ -82,6 +100,10 @@ impl App {
             hit_selected: 0,
             searched_for: String::new(),
             pending: None,
+            selection: HashSet::new(),
+            pending_batch: Vec::new(),
+            pending_action: None,
+            report: None,
             doctor: Vec::new(),
             doctor_warnings: 0,
             show_doctor: false,
@@ -103,6 +125,103 @@ impl App {
 
     pub fn selected_session(&self) -> Option<&Session> {
         self.filtered.get(self.selected).map(|&i| &self.sessions[i])
+    }
+
+    /// Advance the cursor, so ticking with space walks down the list the
+    /// way holding space in a file manager does.
+    fn move_down(&mut self) {
+        if self.selected + 1 < self.filtered.len() {
+            self.selected += 1;
+            self.sync_preview();
+        }
+    }
+
+    fn key_of(session: &Session) -> (AgentKind, String) {
+        (session.handle.agent, session.handle.native_id.clone())
+    }
+
+    pub fn is_ticked(&self, session: &Session) -> bool {
+        self.selection.contains(&Self::key_of(session))
+    }
+
+    fn toggle_tick(&mut self) {
+        if let Some(session) = self.selected_session() {
+            let key = Self::key_of(session);
+            if !self.selection.remove(&key) {
+                self.selection.insert(key);
+            }
+        }
+        self.status = self.selection_status();
+    }
+
+    /// Tick everything the filter is currently showing — not the whole
+    /// store, which would silently include rows the user cannot see.
+    fn tick_all_visible(&mut self) {
+        let keys: Vec<_> =
+            self.filtered.iter().map(|&i| Self::key_of(&self.sessions[i])).collect();
+        // A second press on an already-complete selection clears it, so the
+        // key is a toggle rather than a one-way door.
+        if keys.iter().all(|k| self.selection.contains(k)) {
+            self.selection.clear();
+        } else {
+            self.selection.extend(keys);
+        }
+        self.status = self.selection_status();
+    }
+
+    fn selection_status(&self) -> String {
+        match self.selection.len() {
+            0 => format!("{} sessions", self.sessions.len()),
+            n => format!("{n} selected — a archive · d delete · m move · e export · i import"),
+        }
+    }
+
+    /// The sessions a bulk action should run over, resolved now. Ticks that
+    /// no longer match a session are dropped and counted.
+    fn resolve_batch(&self) -> (Vec<Session>, usize) {
+        let found: Vec<Session> = self
+            .sessions
+            .iter()
+            .filter(|s| self.selection.contains(&Self::key_of(s)))
+            .cloned()
+            .collect();
+        let vanished = self.selection.len().saturating_sub(found.len());
+        (found, vanished)
+    }
+
+    /// Begin a bulk action: resolve the ticks, then either confirm it or
+    /// ask for the directory it needs.
+    fn begin_bulk(&mut self, action: BulkAction, input_default: Option<String>) {
+        let (batch, vanished) = self.resolve_batch();
+        if batch.is_empty() {
+            self.status = "nothing selected is still there".to_string();
+            return;
+        }
+        self.pending_batch = batch;
+        self.pending_action = Some(action);
+        if let Some(default) = input_default {
+            self.input = default;
+            self.mode = Mode::BulkInput;
+        } else {
+            self.mode = Mode::ConfirmBulk;
+        }
+        if vanished > 0 {
+            self.status = format!("{vanished} selected session(s) are gone; acting on the rest");
+        }
+    }
+
+    fn send_bulk(&mut self) {
+        let sessions = std::mem::take(&mut self.pending_batch);
+        if let Some(action) = self.pending_action.take() {
+            self.status = format!("{} {} session(s)…", action.verb().to_lowercase(), sessions.len());
+            let _ = self.worker.tx.send(Request::Bulk(sessions, action));
+        }
+        self.mode = Mode::Normal;
+    }
+
+    /// What a pending bulk confirmation is about, for the prompt.
+    pub fn pending_bulk(&self) -> Option<(&BulkAction, usize)> {
+        self.pending_action.as_ref().map(|a| (a, self.pending_batch.len()))
     }
 
     fn apply_filter(&mut self) {
@@ -172,6 +291,15 @@ impl App {
                     self.status = message;
                     self.request_scan();
                 }
+                Response::Bulk(verb, report) => {
+                    self.status = report.summary(&verb);
+                    // Only interrupt with the detail when there is detail;
+                    // a clean batch just updates the status line.
+                    self.report =
+                        (report.failed() + report.skipped() > 0).then_some((verb, report));
+                    self.selection.clear();
+                    self.request_scan();
+                }
                 Response::Error(message) => {
                     self.status = format!("error: {message}");
                     self.scanning = false;
@@ -204,6 +332,8 @@ impl App {
                 Mode::Move => self.on_move_key(key),
                 Mode::ConfirmImport => self.on_confirm_import_key(key),
                 Mode::Search => self.on_search_key(key),
+                Mode::ConfirmBulk => self.on_confirm_bulk_key(key),
+                Mode::BulkInput => self.on_bulk_input_key(key),
             }
         }
     }
@@ -276,7 +406,24 @@ impl App {
             }
         }
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => return Some(LoopOutcome::Quit),
+            KeyCode::Char('q') => return Some(LoopOutcome::Quit),
+            // Esc backs out of things in the order they were put up, and
+            // only quits when there is nothing left to back out of.
+            KeyCode::Esc => {
+                if self.report.is_some() {
+                    self.report = None;
+                } else if !self.selection.is_empty() {
+                    self.selection.clear();
+                    self.status = self.selection_status();
+                } else {
+                    return Some(LoopOutcome::Quit);
+                }
+            }
+            KeyCode::Char(' ') => {
+                self.toggle_tick();
+                self.move_down();
+            }
+            KeyCode::Char('*') => self.tick_all_visible(),
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return Some(LoopOutcome::Quit);
             }
@@ -332,7 +479,22 @@ impl App {
                 }
             }
             KeyCode::Char('a') => {
-                if let Some(session) = self.selected_session() {
+                if !self.selection.is_empty() {
+                    // Archive and unarchive are one key on one session, so
+                    // a mixed batch has to pick: the majority state wins,
+                    // and the confirmation says which.
+                    let (batch, _) = self.resolve_batch();
+                    let archived = batch
+                        .iter()
+                        .filter(|s| s.status == SessionStatus::Archived)
+                        .count();
+                    let action = if archived * 2 > batch.len() {
+                        BulkAction::Unarchive
+                    } else {
+                        BulkAction::Archive
+                    };
+                    self.begin_bulk(action, None);
+                } else if let Some(session) = self.selected_session() {
                     let request = if session.status == SessionStatus::Archived {
                         Request::Unarchive(Box::new(session.clone()))
                     } else {
@@ -343,27 +505,56 @@ impl App {
                 }
             }
             KeyCode::Char('d') => {
-                if let Some(session) = self.selected_session().cloned() {
+                if !self.selection.is_empty() {
+                    self.begin_bulk(BulkAction::Delete, None);
+                } else if let Some(session) = self.selected_session().cloned() {
                     self.pending = Some(session);
                     self.mode = Mode::ConfirmDelete;
                 }
             }
             KeyCode::Char('e') => {
-                if let Some(session) = self.selected_session().cloned() {
+                if !self.selection.is_empty() {
+                    // A batch writes one file each, so it needs a directory
+                    // rather than the single-session file path.
+                    let dir = std::env::current_dir()
+                        .map(|d| d.display().to_string())
+                        .unwrap_or_default();
+                    self.begin_bulk(BulkAction::Export { dir: Default::default() }, Some(dir));
+                } else if let Some(session) = self.selected_session().cloned() {
                     self.input = format!("{}.ir.json", session.short_id());
                     self.pending = Some(session);
                     self.mode = Mode::Export;
                 }
             }
             KeyCode::Char('m') => {
-                if let Some(session) = self.selected_session().cloned() {
+                if !self.selection.is_empty() {
+                    let default = self
+                        .selected_session()
+                        .map(|s| s.project_root.display().to_string())
+                        .unwrap_or_default();
+                    self.begin_bulk(BulkAction::Move { dir: Default::default() }, Some(default));
+                } else if let Some(session) = self.selected_session().cloned() {
                     self.input = session.project_root.display().to_string();
                     self.pending = Some(session);
                     self.mode = Mode::Move;
                 }
             }
             KeyCode::Char('i') => {
-                if let Some(session) = self.selected_session().cloned() {
+                if !self.selection.is_empty() {
+                    // One destination for the batch: whichever agent the
+                    // majority of the selection is not already in.
+                    let (batch, _) = self.resolve_batch();
+                    let claude = batch
+                        .iter()
+                        .filter(|s| s.handle.agent == AgentKind::ClaudeCode)
+                        .count();
+                    let to = if claude * 2 > batch.len() {
+                        AgentKind::OpenCode
+                    } else {
+                        AgentKind::ClaudeCode
+                    };
+                    self.begin_bulk(BulkAction::Import { to }, None);
+                } else if let Some(session) = self.selected_session().cloned() {
                     self.pending = Some(session);
                     self.mode = Mode::ConfirmImport;
                 }
@@ -375,6 +566,44 @@ impl App {
             _ => {}
         }
         None
+    }
+
+    fn on_confirm_bulk_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => self.send_bulk(),
+            _ => {
+                self.pending_batch.clear();
+                self.pending_action = None;
+                self.mode = Mode::Normal;
+            }
+        }
+    }
+
+    fn on_bulk_input_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.pending_batch.clear();
+                self.pending_action = None;
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter => {
+                if self.input.trim().is_empty() {
+                    return;
+                }
+                let dir = std::path::PathBuf::from(self.input.trim());
+                self.pending_action = match self.pending_action.take() {
+                    Some(BulkAction::Move { .. }) => Some(BulkAction::Move { dir }),
+                    Some(BulkAction::Export { .. }) => Some(BulkAction::Export { dir }),
+                    other => other,
+                };
+                self.send_bulk();
+            }
+            KeyCode::Backspace => {
+                self.input.pop();
+            }
+            KeyCode::Char(c) => self.input.push(c),
+            _ => {}
+        }
     }
 
     fn on_search_key(&mut self, key: KeyEvent) {

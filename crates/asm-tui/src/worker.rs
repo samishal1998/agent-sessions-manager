@@ -19,6 +19,9 @@ pub enum Request {
     Import(Box<Session>, asm_core::model::AgentKind),
     Search(String),
     Doctor,
+    /// One verb over a selected set. Sessions are resolved by the caller at
+    /// the moment the action is confirmed, never by index.
+    Bulk(Vec<Session>, asm_core::bulk::BulkAction),
 }
 
 pub enum Response {
@@ -31,6 +34,8 @@ pub enum Response {
     Doctor(Vec<String>, usize),
     Done(String),
     Error(String),
+    /// (the verb, the per-item report)
+    Bulk(String, asm_core::bulk::BulkReport),
 }
 
 pub struct PreviewLine {
@@ -100,6 +105,10 @@ fn handle(request: Request) -> Response {
             )),
             Err(e) => Response::Error(e.to_string()),
         },
+        Request::Bulk(sessions, action) => {
+            let verb = action.verb().to_string();
+            Response::Bulk(verb, asm_core::bulk::run(&sessions, &action))
+        }
         Request::Doctor => match ops::doctor() {
             Ok(report) => {
                 let mut lines = Vec::new();
