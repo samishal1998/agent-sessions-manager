@@ -1,6 +1,7 @@
 //! Command-line frontend: clap definitions and handlers over `asm_core::ops`.
 
 mod format;
+mod update;
 
 use std::path::PathBuf;
 
@@ -120,6 +121,18 @@ enum Command {
     /// Version the archive store with git (transport stays yours).
     #[command(subcommand)]
     Sync(SyncCommand),
+    /// Replace this binary with the latest release.
+    Update {
+        /// Report what is available and exit without changing anything.
+        #[arg(long)]
+        check: bool,
+        /// Install even when this is already the latest version.
+        #[arg(long)]
+        force: bool,
+        /// Install a specific tag instead of the latest release.
+        #[arg(long)]
+        version: Option<String>,
+    },
     /// Open the interactive TUI browser.
     Tui,
     /// Serve the web UI (loopback by default).
@@ -198,6 +211,7 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
         }
         Command::Index { stats } => index(stats, cli.json),
         Command::Doctor => doctor(cli.json),
+        Command::Update { check, force, version } => update::run(check, force, version, cli.json),
         Command::Sync(command) => sync(command, cli.json),
     }?;
     Ok(None)

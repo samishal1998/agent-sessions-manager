@@ -12,3 +12,4 @@ clap = { workspace = true }
 jiff = { workspace = true }
 serde_json = { workspace = true }
 etcetera = { workspace = true }
+sha2 = { workspace = true }

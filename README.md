@@ -61,6 +61,12 @@ against the release's `SHA256SUMS`, and installs it to `~/.local/bin`. A failed
 download or a checksum mismatch stops before anything is written, so an
 existing install is never left broken.
 
+Once installed, `asm update` does the same thing without the pipeline: it
+checks the release, verifies the download against `SHA256SUMS`, and replaces
+the running binary in place. A bad download leaves the working one alone, and
+it refuses rather than installing something it could not verify. It needs curl
+or wget, the same as the installer.
+
 | Variable | |
 |---|---|
 | `ASM_VERSION` | install a specific tag instead of the latest |
@@ -108,6 +114,9 @@ asm search "path encoder"    # full-text across every transcript, every agent
 asm search --agent opencode "jsonrpc"
 asm index                    # refresh the index and report on it
 
+asm update                   # replace this binary with the latest release
+asm update --check           # just say whether there is a newer one
+
 asm doctor                   # store health, duplicate ids, stale locks
 asm worktrees                # git worktrees of a repo, with the sessions in each
 asm sync init && asm sync status
@@ -124,7 +133,9 @@ Every command takes `--json`.
 as an icon (its name is one hover away), per-row actions, multi-select filtering
 by agent, project filters in the sidebar, full-text search with highlighted
 snippets, and a transcript panel that renders text, reasoning, tool calls and
-expandable tool output. It is responsive down to a phone, where the sidebar
+expandable tool output. Tick several sessions and the bar above the list
+archives, imports, moves, exports or deletes the whole set at once, reporting
+per session what did not work. It is responsive down to a phone, where the sidebar
 becomes an overlay and the transcript takes the full screen.
 
 To see it without a browser — or to re-check a change — `bun run shots` in
@@ -141,9 +152,15 @@ view of the CLI:
 | `⏎` | resume in the native agent (the TUI steps aside and comes back) |
 | `r` `a` `d` | rename · archive/unarchive · delete (confirmed, backed up) |
 | `m` `i` `e` | move to another project · import into the other agent · export IR |
+| `␣` `*` | tick this session · tick everything the filter shows |
 | `s` `/` | full-text search across transcripts · filter the list |
 | `D` | store health (the same report as `asm doctor`) |
 | `⇥` `R` `q` | focus the transcript · rescan · quit |
+
+With anything ticked, `a` `d` `m` `e` `i` run over the whole selection instead
+of the row under the cursor; with nothing ticked they behave as before. A batch
+attempts every session, so one failure cannot strand the rest, and what did not
+work is listed per session afterwards.
 
 ## Importing across agents
 
