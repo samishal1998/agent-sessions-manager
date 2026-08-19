@@ -348,11 +348,16 @@ footer { border-top: 1px solid var(--border); padding: 44px 0; color: var(--fg-f
       <h2>And a browser, if you'd rather</h2>
       <p>
         <code>asm serve</code> puts the same verbs behind a mouse — filters, full-text search,
-        and a transcript panel that renders reasoning, tool calls and their output.
+        a transcript panel that renders reasoning and tool calls, and a checkbox on every row
+        for when one at a time is not enough.
       </p>
     </div>
     <div class="shot"><img src="shots/transcript.png" alt="The asm web UI: a list of sessions from three agents on the left, and an open transcript on the right showing reasoning, tool calls and results." width="2880" height="1800" loading="lazy" /></div>
     <p class="shot-cap">Everything runs locally. Nothing is uploaded anywhere.</p>
+    <div class="shot" style="margin-top: 28px">
+      <img src="shots/bulk.png" alt="Three sessions ticked, with a bar above the list offering Archive, Unarchive, Import, Move, Export and Delete for the whole selection." width="2880" height="1800" loading="lazy" />
+    </div>
+    <p class="shot-cap">Select a set; the bar acts on all of it.</p>
   </div>
 </section>
 
@@ -387,6 +392,11 @@ footer { border-top: 1px solid var(--border); padding: 44px 0; color: var(--fg-f
         <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v6h6"/><path d="M20 20v-6h-6"/><path d="M20 9A8 8 0 0 0 6 5.3L4 7"/><path d="M4 15a8 8 0 0 0 14 3.7l2-1.7"/></svg></div>
         <h3>Cross-agent import</h3>
         <p>Carry a conversation from one agent to another as a native session the target's own picker lists and its own resume opens.</p>
+      </div>
+      <div class="feat">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div>
+        <h3>Act on many at once</h3>
+        <p>Tick a set in either UI and archive, import, move, export or delete the lot. Every one is attempted, so a single failure cannot strand the rest, and what did not work is listed per session.</p>
       </div>
       <div class="feat">
         <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg></div>
@@ -512,6 +522,19 @@ bun install &amp;&amp; bun run build &amp;&amp; cd -
 cargo build --release</pre>
       </div>
     </div>
+    <div class="inst" style="margin-top: 18px">
+      <div class="card">
+      <h3>Updating</h3>
+      <p style="color:var(--fg-muted);margin:0;font-size:14.5px">
+        No need to run the installer again. <code>asm update</code> checks the
+        latest release, verifies the download, and replaces the binary in place;
+        a bad download leaves the working one alone.
+      </p>
+      <pre>asm update --check   # is there a newer one?
+asm update           # install it</pre>
+      </div>
+    </div>
+
     <table class="env">
       <thead><tr><th>Variable</th><th>Effect</th></tr></thead>
       <tbody>
