@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "asm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "asm-cli",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "asm-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "asm-core",
@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "asm-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "etcetera",
  "jiff",
@@ -122,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "asm-tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "asm-core",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "asm-web"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "asm-core",

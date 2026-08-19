@@ -216,6 +216,18 @@ pub fn run(check: bool, force: bool, want: Option<String>, json: bool) -> Result
         .ok_or_else(|| anyhow!("{} has no parent directory", exe.display()))?
         .to_path_buf();
 
+    // A cargo build directory is writable, so the probe below would happily
+    // let `cargo run -- update` replace a freshly built binary with a
+    // release one. Recoverable, but confusing enough to be worth refusing.
+    if is_cargo_build(&exe) && !force {
+        bail!(
+            "{} looks like a cargo build directory, not an installed asm.\n\
+             Updating it would replace your build with a release binary. \
+             Re-run with --force if that is what you meant.",
+            exe.display()
+        );
+    }
+
     // Fail before downloading anything if the result could not be written.
     writable(&dir).with_context(|| {
         format!(
@@ -233,6 +245,16 @@ pub fn run(check: bool, force: bool, want: Option<String>, json: bool) -> Result
     let result = install(&version, target, &staging, &exe, current, json);
     let _ = std::fs::remove_dir_all(&staging);
     result
+}
+
+/// `…/target/debug/asm` or `…/target/release/asm` — where `cargo build`
+/// puts things, and where nobody installs.
+fn is_cargo_build(exe: &Path) -> bool {
+    let mut parts = exe.components().rev().skip(1); // skip the file name
+    let profile = parts.next().and_then(|c| c.as_os_str().to_str().map(str::to_string));
+    let target = parts.next().and_then(|c| c.as_os_str().to_str().map(str::to_string));
+    matches!(profile.as_deref(), Some("debug") | Some("release"))
+        && target.as_deref() == Some("target")
 }
 
 /// Can we create a file here? Checked by doing it, because permission bits
@@ -326,6 +348,23 @@ fn install(
 #[cfg(test)]
 mod tests {
     use super::is_newer;
+
+    use super::is_cargo_build;
+    use std::path::Path;
+
+    #[test]
+    fn a_cargo_build_directory_is_recognised() {
+        assert!(is_cargo_build(Path::new("/home/dev/proj/target/debug/asm")));
+        assert!(is_cargo_build(Path::new("/home/dev/proj/target/release/asm")));
+    }
+
+    #[test]
+    fn an_installed_binary_is_not_mistaken_for_a_build() {
+        assert!(!is_cargo_build(Path::new("/home/dev/.local/bin/asm")));
+        assert!(!is_cargo_build(Path::new("/usr/local/bin/asm")));
+        // A directory that merely ends in "debug" is not a cargo layout.
+        assert!(!is_cargo_build(Path::new("/opt/debug/asm")));
+    }
 
     #[test]
     fn versions_compare_numerically_not_as_text() {

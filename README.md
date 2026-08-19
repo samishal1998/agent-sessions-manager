@@ -162,6 +162,11 @@ of the row under the cursor; with nothing ticked they behave as before. A batch
 attempts every session, so one failure cannot strand the rest, and what did not
 work is listed per session afterwards.
 
+Bulk unarchive only reaches OpenCode sessions, because only they stay listed
+once archived — Claude and jcode sessions leave their store for asm's archive
+and are restored by reference with `asm unarchive <id>`. That is the same
+division the single-session verb has always had.
+
 ## Importing across agents
 
 `asm import` converts through a documented intermediate representation (see
