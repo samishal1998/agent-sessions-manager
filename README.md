@@ -15,7 +15,9 @@ opencode     ses_32d1  OpenRPC monorepo tooling plan             ~/projects/node
 ```
 
 Three frontends over one core: a CLI, a terminal UI (`asm tui`), and a local web
-UI (`asm serve`).
+UI (`asm serve`). There is a [tour of it here][site].
+
+[site]: https://samishal1998.github.io/agent-sessions-manager/
 
 [cc]: https://claude.com/claude-code
 [oc]: https://opencode.ai
@@ -59,19 +61,12 @@ against the release's `SHA256SUMS`, and installs it to `~/.local/bin`. A failed
 download or a checksum mismatch stops before anything is written, so an
 existing install is never left broken.
 
-**While this repository is private** the installer needs a token with `repo`
-scope, since both the release API and the asset bytes are authenticated:
-
-```sh
-GITHUB_TOKEN=ghp_... curl -fsSL .../install.sh | sh
-```
-
 | Variable | |
 |---|---|
 | `ASM_VERSION` | install a specific tag instead of the latest |
 | `ASM_INSTALL_DIR` | where the binary goes (default `~/.local/bin`) |
 | `ASM_BASE_URL` | fetch assets from a mirror or a local directory instead |
-| `GITHUB_TOKEN` | required while the repository is private |
+| `GITHUB_TOKEN` | only needed if the repository is ever made private again |
 
 Releases are cut by tagging: `git tag v0.1.0 && git push origin v0.1.0` builds
 Linux and macOS binaries for x86_64 and arm64, publishes them with checksums,
