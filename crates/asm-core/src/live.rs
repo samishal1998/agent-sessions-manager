@@ -22,6 +22,14 @@
 //!   will change. A dropped line reads to the user as "the agent said
 //!   nothing", which is the worst possible way to learn about a format
 //!   change.
+//! - **Exactly one [`LiveEvent::Done`] reaches the caller, and it is the
+//!   last event.** Adapters do report in-band failures as `Done` — a turn
+//!   can fail while the process exits 0, which is what OpenCode's `error`
+//!   line and Claude's `is_error` result are — so the driver intercepts
+//!   those, keeps the reason, and folds it into its own single terminal
+//!   event. Otherwise every frontend has to decide for itself whether the
+//!   first or the last `Done` wins, and they will not all decide the same
+//!   way.
 //! - **Live sessions are refused.** Sending into a session a human is
 //!   actively driving in another terminal is the one case none of these
 //!   CLIs promise to handle.
@@ -90,6 +98,63 @@ impl AgentLive for Adapter {
             Adapter::JCode(a) => a.parse_event(line),
             Adapter::Codex(a) => a.parse_event(line),
             Adapter::Antigravity(a) => a.parse_event(line),
+        }
+    }
+}
+
+/// Folds the adapter's events into what the caller sees.
+///
+/// Its whole job is the single-terminal-`Done` invariant: an adapter may
+/// report an in-band failure as `Done`, and the driver owns the one
+/// terminal event, so those are absorbed here and surfaced once at the end.
+#[derive(Default)]
+struct Funnel {
+    in_band_error: Option<String>,
+}
+
+impl Funnel {
+    /// `Some(event)` to pass on, `None` to absorb.
+    fn absorb(&mut self, event: LiveEvent) -> Option<LiveEvent> {
+        match event {
+            LiveEvent::Done { ok: false, error } => {
+                // First reason wins: it is the one nearest the cause, and
+                // later lines are usually fallout from it.
+                if self.in_band_error.is_none() {
+                    self.in_band_error =
+                        Some(error.unwrap_or_else(|| "the turn failed".to_string()));
+                }
+                None
+            }
+            // No adapter reports success in-band today, and if one starts,
+            // the driver still owns the terminal event.
+            LiveEvent::Done { ok: true, .. } => None,
+            other => Some(other),
+        }
+    }
+
+    /// The single terminal event, given how the process actually ended.
+    fn finish(self, cancelled: bool, exited_cleanly: bool, stderr: &str) -> LiveEvent {
+        if cancelled {
+            return LiveEvent::Done { ok: false, error: Some("cancelled".to_string()) };
+        }
+        // The process may well have exited 0: `opencode run` and
+        // `claude -p` both do when the *invocation* worked and the *turn*
+        // did not. The turn is what the caller asked about.
+        if let Some(error) = self.in_band_error {
+            return LiveEvent::Done { ok: false, error: Some(error) };
+        }
+        if exited_cleanly {
+            return LiveEvent::Done { ok: true, error: None };
+        }
+        // The agent's own diagnostics beat an exit code, when it wrote any.
+        let detail = stderr.trim();
+        LiveEvent::Done {
+            ok: false,
+            error: Some(if detail.is_empty() {
+                "the agent exited without completing the turn".to_string()
+            } else {
+                detail.to_string()
+            }),
         }
     }
 }
@@ -174,6 +239,7 @@ pub fn send_cancellable(
     });
 
     let mut cancelled = false;
+    let mut funnel = Funnel::default();
     if let Some(stdout) = child.stdout.take() {
         for line in BufReader::new(stdout).lines() {
             if cancel.load(Ordering::Relaxed) {
@@ -186,7 +252,9 @@ pub fn send_cancellable(
                 continue;
             }
             for event in adapter.parse_event(&line) {
-                on_event(event);
+                if let Some(event) = funnel.absorb(event) {
+                    on_event(event);
+                }
             }
         }
     }
@@ -194,23 +262,7 @@ pub fn send_cancellable(
     let status = reap(&mut child);
     let stderr = stderr_thread.and_then(|t| t.join().ok()).unwrap_or_default();
 
-    let event = if cancelled {
-        LiveEvent::Done { ok: false, error: Some("cancelled".to_string()) }
-    } else if status.is_some_and(|ok| ok) {
-        LiveEvent::Done { ok: true, error: None }
-    } else {
-        // The agent's own diagnostics are far more useful than an exit code,
-        // so prefer them when it wrote any.
-        let detail = stderr.trim();
-        LiveEvent::Done {
-            ok: false,
-            error: Some(if detail.is_empty() {
-                format!("{} exited without completing the turn", session.handle.agent)
-            } else {
-                detail.to_string()
-            }),
-        }
-    };
+    let event = funnel.finish(cancelled, status.is_some_and(|ok| ok), &stderr);
     on_event(event);
     Ok(())
 }
@@ -255,6 +307,79 @@ pub(crate) mod parse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The invariant every frontend is built on: one terminal `Done`, last.
+    ///
+    /// Without it the CLI, the web UI and the TUI each have to decide
+    /// whether the first or the last `Done` wins — and the TUI, which
+    /// assigns its status line per event, would show "reply complete" for
+    /// a turn that failed.
+    #[test]
+    fn an_in_band_failure_becomes_the_one_terminal_event() {
+        let mut funnel = Funnel::default();
+        // OpenCode's `{"type":"error"}` and Claude's `is_error` result both
+        // arrive as this, and both processes then exit 0.
+        assert_eq!(
+            funnel.absorb(LiveEvent::Done {
+                ok: false,
+                error: Some("model not approved for this key".into())
+            }),
+            None,
+            "an adapter's Done must not reach the caller"
+        );
+        let terminal = funnel.finish(false, true, "");
+        assert_eq!(
+            terminal,
+            LiveEvent::Done {
+                ok: false,
+                error: Some("model not approved for this key".into())
+            },
+            "a clean exit must not turn a failed turn into a success"
+        );
+    }
+
+    #[test]
+    fn the_first_reason_wins_and_later_ones_are_fallout() {
+        let mut funnel = Funnel::default();
+        funnel.absorb(LiveEvent::Done { ok: false, error: Some("quota exhausted".into()) });
+        funnel.absorb(LiveEvent::Done { ok: false, error: Some("stream closed".into()) });
+        assert_eq!(
+            funnel.finish(false, false, "some stderr noise"),
+            LiveEvent::Done { ok: false, error: Some("quota exhausted".into()) }
+        );
+    }
+
+    #[test]
+    fn cancelling_outranks_everything_else() {
+        let mut funnel = Funnel::default();
+        funnel.absorb(LiveEvent::Done { ok: false, error: Some("stream closed".into()) });
+        assert_eq!(
+            funnel.finish(true, false, "broken pipe"),
+            LiveEvent::Done { ok: false, error: Some("cancelled".into()) }
+        );
+    }
+
+    #[test]
+    fn a_clean_run_reports_success_and_passes_content_through() {
+        let mut funnel = Funnel::default();
+        let text = LiveEvent::Text { role: crate::ir::IrRole::Assistant, text: "hi".into() };
+        assert_eq!(funnel.absorb(text.clone()), Some(text));
+        assert_eq!(funnel.finish(false, true, ""), LiveEvent::Done { ok: true, error: None });
+    }
+
+    /// A non-zero exit with nothing on stdout is the common shape of a
+    /// crash; the agent's own stderr is far more useful than the code.
+    #[test]
+    fn stderr_explains_a_failed_exit() {
+        let funnel = Funnel::default();
+        assert_eq!(
+            funnel.finish(false, false, "  No credentials found. Let's log in!\n"),
+            LiveEvent::Done {
+                ok: false,
+                error: Some("No credentials found. Let's log in!".into())
+            }
+        );
+    }
 
     #[test]
     fn a_non_json_line_survives_as_raw() {

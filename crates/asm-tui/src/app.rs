@@ -343,6 +343,8 @@ impl App {
         self.sending = true;
         self.sending_for = Some(session.clone());
         self.preview_focus = true;
+        // `push_live` below needs `sending_for` already set: it refuses to
+        // write into a pane showing a different session.
         // Echo the message straight away. The agent takes seconds to
         // minutes to answer and a pane that does not visibly change reads
         // as a keystroke that did not register.
@@ -352,7 +354,24 @@ impl App {
         let _ = self.worker.tx.send(Request::Send(Box::new(session), message));
     }
 
+    /// The native id of the session whose reply is streaming, if the
+    /// preview pane is still showing it.
+    ///
+    /// Moving the cursor during a send repoints the pane at another
+    /// session; the worker keeps streaming regardless, and appending to
+    /// whatever is on screen would splice one session's reply into
+    /// another's transcript.
+    fn streaming_into_view(&self) -> bool {
+        match (&self.sending_for, &self.preview_for) {
+            (Some(session), Some(showing)) => &session.handle.native_id == showing,
+            _ => false,
+        }
+    }
+
     fn push_live(&mut self, kind: PreviewKind, text: String) {
+        if !self.streaming_into_view() {
+            return;
+        }
         self.preview.push(PreviewLine { kind, text });
         // Follow the tail, the way a terminal does; the user is watching
         // the newest line, not the oldest.
@@ -404,8 +423,12 @@ impl App {
                     (false, None) => "send failed".to_string(),
                 };
                 // The turn is only in the store once the agent has written
-                // it, so re-read rather than trusting the echo above.
-                if let Some(session) = self.sending_for.take() {
+                // it, so re-read rather than trusting the echo above — but
+                // only if that session is still the one on screen.
+                let showing = self.streaming_into_view();
+                if let Some(session) = self.sending_for.take()
+                    && showing
+                {
                     self.load_preview(session);
                 }
                 self.request_scan();

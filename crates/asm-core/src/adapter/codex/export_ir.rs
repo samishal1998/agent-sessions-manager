@@ -213,8 +213,7 @@ pub(super) fn export_ir(
         )]
         .into_iter()
         .collect(),
-        }
-    )
+    })
 }
 
 fn apply_token_count(usage: &mut Usage, info: &Value) {

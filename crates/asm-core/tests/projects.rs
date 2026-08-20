@@ -169,3 +169,30 @@ fn nested_worktrees_attribute_to_the_innermost() {
     assert_eq!(inner.session_count, 1);
     assert_eq!(outer.session_count, 0);
 }
+
+/// A session with no recorded working directory belongs to no project.
+///
+/// Antigravity is why this matters: nothing in its store ties most
+/// conversations to a directory, so `project_root` is legitimately empty.
+/// Grouping on the empty path would produce a project with a blank name
+/// collecting every such session, and `git rev-parse` in "" would be asked
+/// about a directory that does not exist.
+#[test]
+fn sessions_with_no_project_directory_do_not_invent_a_project() {
+    let placed = session(AgentKind::ClaudeCode, "a", "/repo/app");
+    let mut unplaced = session(AgentKind::Antigravity, "b", "/repo/app");
+    unplaced.project_root = PathBuf::new();
+
+    let projects = asm_core::ops::group_projects(
+        &[placed, unplaced],
+        |dir| {
+            assert!(!dir.as_os_str().is_empty(), "an empty path must never reach git");
+            None
+        },
+        |_| Vec::new(),
+    );
+
+    assert_eq!(projects.len(), 1, "{projects:#?}");
+    assert_eq!(projects[0].root, PathBuf::from("/repo/app"));
+    assert_eq!(projects[0].session_count, 1);
+}

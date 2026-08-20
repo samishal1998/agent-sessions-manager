@@ -45,6 +45,14 @@ pub fn group_projects(
     let mut repos: HashMap<PathBuf, Option<crate::git::Repo>> = HashMap::new();
 
     for session in sessions {
+        // A session whose agent never recorded a working directory is in no
+        // project. Antigravity is the case in point: nothing in its store
+        // ties most conversations to a directory. Grouping them by the
+        // empty path would invent a project with a blank name and file
+        // every such session under it.
+        if session.project_root.as_os_str().is_empty() {
+            continue;
+        }
         let dir = session.project_root.clone();
         let repo = repo_cache.entry(dir.clone()).or_insert_with(|| repo_of(&dir)).clone();
         // Identity: the repository's common dir, or the bare directory.
