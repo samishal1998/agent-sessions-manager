@@ -167,6 +167,9 @@ pub fn doctor() -> Result<DoctorReport, CoreError> {
             // it has neither Claude's duplicate-id hazard nor OpenCode's
             // single-writer lock.
             Adapter::JCode(_) => {}
+            // Codex keeps one rollout per thread id and asm never writes to
+            // it, so there is no divergence for doctor to find.
+            Adapter::Codex(_) => {}
             Adapter::OpenCode(opencode) => {
                 for lock in opencode.locks() {
                     if lock.held {

@@ -1,8 +1,9 @@
 # asm — cross-agent session manager
 
 One inventory, one set of verbs, for the coding-agent sessions scattered across
-your machine. `asm` reads the on-disk stores that [Claude Code][cc], [OpenCode][oc]
-and [jcode][jc] keep for themselves, presents every session in one list, and lets
+your machine. `asm` reads the on-disk stores that [Claude Code][cc], [OpenCode][oc],
+[jcode][jc] and [Codex][cx] keep for themselves, presents every session in one
+list, and lets
 you rename, move, archive, delete, export — and **carry a conversation from one
 agent into the other**.
 
@@ -22,6 +23,7 @@ UI (`asm serve`). There is a [tour of it here][site].
 [cc]: https://claude.com/claude-code
 [oc]: https://opencode.ai
 [jc]: https://github.com/1jehuang/jcode
+[cx]: https://github.com/openai/codex
 
 ## Why
 
@@ -204,19 +206,27 @@ kept verbatim so the history still reads), and nested subagent transcripts.
 
 ## Agent support
 
-| | Claude Code | OpenCode | jcode |
-|---|---|---|---|
-| List, show, search, projects | yes | yes | yes |
-| Liveness | yes | yes | yes |
-| Resume | yes | yes | yes |
-| Export to Session IR | yes | yes | yes |
-| Rename | yes | yes | yes |
-| Archive / unarchive | yes | yes | yes |
-| Delete | yes | yes | yes |
-| Move to another directory | yes | yes | no |
-| Import **from** (source) | yes | yes | yes |
-| Import **into** (target) | yes | yes | no |
-| Verified against a real install | 2.1.234 | 1.17.18 | 0.78.0 |
+| | Claude Code | OpenCode | jcode | Codex |
+|---|---|---|---|---|
+| List, show, search, projects | yes | yes | yes | yes |
+| Liveness | yes | yes | yes | no |
+| Resume | yes | yes | yes | yes |
+| Export to Session IR | yes | yes | yes | yes |
+| Rename | yes | yes | yes | no |
+| Archive / unarchive | yes | yes | yes | no |
+| Delete | yes | yes | yes | no |
+| Move to another directory | yes | yes | no | no |
+| Import **from** (source) | yes | yes | yes | yes |
+| Import **into** (target) | yes | yes | no | no |
+| Verified against a real install | 2.1.234 | 1.17.18 | 0.78.0 | 0.148.0 |
+
+Codex is read-only. Its metadata lives in `state_5.sqlite`, a schema 48 sqlx
+migrations deep and still gaining columns, and codex ships no `rename`,
+`archive` or `import` command to write through instead — so every mutation
+would be a raw write to a moving target that its own picker might then
+disagree with. Reading is safe and complete: the `threads` table drives the
+listing, and asm additionally sweeps the `sessions/` tree for rollouts that
+have no `threads` row, which codex hides until you resume them by id.
 
 Two jcode verbs are missing, for the same reason: its whole session — metadata
 *and* the entire conversation — is one JSON document, and jcode ships no

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The coding agents this tool knows about. `#[non_exhaustive]` because the
-/// set will grow (Codex, Gemini CLI, Cursor, ...).
+/// set will grow (Antigravity, Cursor, ...).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
@@ -12,6 +12,8 @@ pub enum AgentKind {
     OpenCode,
     #[serde(rename = "jcode")]
     JCode,
+    #[serde(rename = "codex")]
+    Codex,
 }
 
 impl AgentKind {
@@ -20,6 +22,7 @@ impl AgentKind {
             AgentKind::ClaudeCode => "claude-code",
             AgentKind::OpenCode => "opencode",
             AgentKind::JCode => "jcode",
+            AgentKind::Codex => "codex",
         }
     }
 
@@ -29,6 +32,7 @@ impl AgentKind {
             "claude-code" | "claude" | "claudecode" | "cc" => Some(AgentKind::ClaudeCode),
             "opencode" | "open-code" | "oc" => Some(AgentKind::OpenCode),
             "jcode" | "jc" => Some(AgentKind::JCode),
+            "codex" | "codex-cli" | "cx" => Some(AgentKind::Codex),
             _ => None,
         }
     }

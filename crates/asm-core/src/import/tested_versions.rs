@@ -17,6 +17,7 @@ pub const TESTED: &[(AgentKind, &str)] = &[
     (AgentKind::ClaudeCode, "2.1.234"),
     (AgentKind::OpenCode, "1.17.18"),
     (AgentKind::JCode, "0.78.0"),
+    (AgentKind::Codex, "0.148.0"),
 ];
 
 pub fn tested_version(agent: AgentKind) -> Option<&'static str> {
@@ -28,6 +29,7 @@ fn binary_name(agent: AgentKind) -> &'static str {
         AgentKind::ClaudeCode => "claude",
         AgentKind::OpenCode => "opencode",
         AgentKind::JCode => "jcode",
+        AgentKind::Codex => "codex",
     }
 }
 

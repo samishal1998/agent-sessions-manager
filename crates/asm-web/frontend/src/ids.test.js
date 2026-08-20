@@ -32,3 +32,13 @@ test('a path outside home is left alone, and a sibling is not mistaken for it', 
 test('an unknown home leaves paths untouched rather than mangling them', () => {
   expect(shortProject('/home/dev/code', null)).toBe('/home/dev/code')
 })
+
+test('codex sessions started in the same minute stay distinguishable', () => {
+  // A UUIDv7's leading twelve hex digits are its millisecond clock, so
+  // eight characters of these two ids are identical.
+  const a = { ref: { agent: 'codex', native_id: '01a020ab-9a2c-71a1-8384-1e1058de5553' } }
+  const b = { ref: { agent: 'codex', native_id: '01a020ab-1f35-7763-8138-231f59ac2e99' } }
+  expect(shortId(a)).toBe('01a020ab-9a2c')
+  expect(shortId(b)).toBe('01a020ab-1f35')
+  expect(shortId(a)).not.toBe(shortId(b))
+})

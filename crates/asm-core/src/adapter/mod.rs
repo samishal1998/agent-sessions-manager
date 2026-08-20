@@ -6,6 +6,7 @@
 //! adding an agent makes the compiler list every place that must handle it.
 
 pub mod claude;
+pub mod codex;
 pub mod jcode;
 pub mod opencode;
 
@@ -32,6 +33,10 @@ pub struct Capabilities {
     pub export_ir: bool,
     /// Can we hand back a command that resumes the session in its own agent?
     pub resume_native: bool,
+    /// Can we send a new message into this session and stream the reply?
+    /// Deliberately not part of [`AgentWrite`]: every write refuses a live
+    /// session, and this one is the opposite kind of operation.
+    pub send_message: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -121,6 +126,7 @@ pub enum Adapter {
     ClaudeCode(claude::ClaudeAdapter),
     OpenCode(opencode::OpenCodeAdapter),
     JCode(jcode::JCodeAdapter),
+    Codex(codex::CodexAdapter),
 }
 
 impl Adapter {
@@ -136,6 +142,9 @@ impl Adapter {
         if let Some(jcode) = jcode::JCodeAdapter::detect_default() {
             adapters.push(Adapter::JCode(jcode));
         }
+        if let Some(codex) = codex::CodexAdapter::detect_default() {
+            adapters.push(Adapter::Codex(codex));
+        }
         adapters
     }
 }
@@ -146,6 +155,7 @@ macro_rules! dispatch {
             Adapter::ClaudeCode($a) => $body,
             Adapter::OpenCode($a) => $body,
             Adapter::JCode($a) => $body,
+            Adapter::Codex($a) => $body,
         }
     };
 }

@@ -48,6 +48,10 @@ fn name_for(row: &Row, agent: AgentKind) -> Option<&'static str> {
         AgentKind::ClaudeCode => row.claude,
         AgentKind::OpenCode => row.opencode,
         AgentKind::JCode => row.jcode,
+        // Codex is read-only, so nothing is ever mapped *into* its
+        // vocabulary; its tool names still resolve on the way out because
+        // `map_tool` matches the name against every column.
+        AgentKind::Codex => None,
     }
 }
 

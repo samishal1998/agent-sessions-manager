@@ -73,10 +73,19 @@ pub struct Session {
 impl Session {
     /// A short, human-usable handle for the session.
     ///
-    /// Truncating the raw id is not enough: every jcode id begins
-    /// `session_`, so eight characters of one is eight characters of all of
-    /// them. jcode's own handle is the memorable name it embeds in that id
-    /// ("hog"), so use it; otherwise drop a known prefix before truncating.
+    /// Truncating the raw id is not enough, and it is not enough in two
+    /// different ways.
+    ///
+    /// Every jcode id begins `session_`, so eight characters of one is
+    /// eight characters of all of them; jcode's own handle is the memorable
+    /// name it embeds in that id ("hog"), so use that instead.
+    ///
+    /// Codex ids are UUIDv7, whose leading twelve hex digits are a
+    /// millisecond timestamp: eight characters of one is a ~65-second
+    /// bucket, and two sessions started in the same minute display
+    /// identically. Thirteen characters covers the whole timestamp, which
+    /// is unique in practice and still a valid id prefix, so it round-trips
+    /// back through `resolve_ref`.
     pub fn short_id(&self) -> &str {
         if self.handle.agent == AgentKind::JCode
             && let Some(name) = self.slug.as_deref()
@@ -85,6 +94,7 @@ impl Session {
             return name;
         }
         let id = self.handle.native_id.strip_prefix("session_").unwrap_or(&self.handle.native_id);
-        &id[..id.len().min(8)]
+        let width = if self.handle.agent == AgentKind::Codex { 13 } else { 8 };
+        &id[..id.len().min(width)]
     }
 }
