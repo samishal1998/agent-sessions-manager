@@ -28,6 +28,11 @@ const props = defineProps({
   // offering a box that always fails.
   canSend: { type: Boolean, default: false },
 })
+
+// A session another terminal is driving right now is refused by the core —
+// none of these CLIs promise to handle two writers — so the composer says
+// so up front instead of letting the user type a message and lose it.
+const isLive = computed(() => props.session.status?.state === 'live')
 const emit = defineEmits(['close'])
 
 const root = ref(null)
@@ -372,6 +377,10 @@ watch(
       <p v-if="sendError" class="composer-error">{{ sendError }}</p>
       <p v-if="!canSend" class="composer-off">
         asm cannot send into {{ session.ref.agent }} sessions yet.
+      </p>
+      <p v-else-if="isLive" class="composer-off">
+        This session is being driven by another {{ session.ref.agent }} process right now.
+        Close it to reply from here.
       </p>
       <template v-else>
         <textarea

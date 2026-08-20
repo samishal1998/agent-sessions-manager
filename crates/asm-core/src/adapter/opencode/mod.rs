@@ -198,6 +198,7 @@ impl AgentRead for OpenCodeAdapter {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             list: true,
+            read_transcript: true,
             liveness: true,
             resume_native: true,
             send_message: true,

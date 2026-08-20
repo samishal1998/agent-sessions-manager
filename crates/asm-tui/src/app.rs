@@ -312,6 +312,16 @@ impl App {
             self.status = format!("asm cannot send into {} sessions", session.handle.agent);
             return;
         }
+        // The core refuses a session another process is driving; say so
+        // before the message is typed rather than after it is lost.
+        if let asm_core::model::SessionStatus::Live { .. } = session.status {
+            self.status = format!(
+                "{} is live in another {} process; close it to reply from here",
+                session.short_id(),
+                session.handle.agent
+            );
+            return;
+        }
         // The preview is the conversation being replied to, so open it if
         // the user has not already; typing into a blank pane is disorienting.
         if self.preview_for.as_deref() != Some(session.handle.native_id.as_str()) {

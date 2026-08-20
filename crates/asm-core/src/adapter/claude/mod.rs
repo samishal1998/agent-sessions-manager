@@ -85,6 +85,7 @@ impl AgentRead for ClaudeAdapter {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             list: true,
+            read_transcript: true,
             liveness: true,
             resume_native: true,
             send_message: true,
@@ -94,7 +95,6 @@ impl AgentRead for ClaudeAdapter {
             delete: true,
             export_ir: true,
             import_ir: true,
-            ..Capabilities::default()
         }
     }
 

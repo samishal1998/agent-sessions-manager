@@ -69,6 +69,7 @@ impl AgentRead for JCodeAdapter {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             list: true,
+            read_transcript: true,
             liveness: true,
             resume_native: true,
             export_ir: true,
