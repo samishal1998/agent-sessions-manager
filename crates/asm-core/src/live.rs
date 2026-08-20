@@ -79,6 +79,7 @@ impl AgentLive for Adapter {
             Adapter::OpenCode(a) => a.send_command(session, message),
             Adapter::JCode(a) => a.send_command(session, message),
             Adapter::Codex(a) => a.send_command(session, message),
+            Adapter::Antigravity(a) => a.send_command(session, message),
         }
     }
 
@@ -88,6 +89,7 @@ impl AgentLive for Adapter {
             Adapter::OpenCode(a) => a.parse_event(line),
             Adapter::JCode(a) => a.parse_event(line),
             Adapter::Codex(a) => a.parse_event(line),
+            Adapter::Antigravity(a) => a.parse_event(line),
         }
     }
 }

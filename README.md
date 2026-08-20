@@ -2,8 +2,8 @@
 
 One inventory, one set of verbs, for the coding-agent sessions scattered across
 your machine. `asm` reads the on-disk stores that [Claude Code][cc], [OpenCode][oc],
-[jcode][jc] and [Codex][cx] keep for themselves, presents every session in one
-list, and lets
+[jcode][jc], [Codex][cx] and [Antigravity][ag] keep for themselves, presents
+every session in one list, and lets
 you rename, move, archive, delete, export — and **carry a conversation from one
 agent into the other**.
 
@@ -24,6 +24,7 @@ UI (`asm serve`). There is a [tour of it here][site].
 [oc]: https://opencode.ai
 [jc]: https://github.com/1jehuang/jcode
 [cx]: https://github.com/openai/codex
+[ag]: https://antigravity.google
 
 ## Why
 
@@ -206,20 +207,20 @@ kept verbatim so the history still reads), and nested subagent transcripts.
 
 ## Agent support
 
-| | Claude Code | OpenCode | jcode | Codex |
-|---|---|---|---|---|
-| List, show, search, projects | yes | yes | yes | yes |
-| Liveness | yes | yes | yes | no |
-| Resume | yes | yes | yes | yes |
-| Export to Session IR | yes | yes | yes | yes |
-| Rename | yes | yes | yes | no |
-| Archive / unarchive | yes | yes | yes | no |
-| Delete | yes | yes | yes | no |
-| Move to another directory | yes | yes | no | no |
-| Import **from** (source) | yes | yes | yes | yes |
-| Import **into** (target) | yes | yes | no | no |
-| Send a message into a session | yes | yes | no | yes |
-| Verified against a real install | 2.1.234 | 1.17.18 | 0.78.0 | 0.148.0 |
+| | Claude Code | OpenCode | jcode | Codex | Antigravity |
+|---|---|---|---|---|---|
+| List, show, search, projects | yes | yes | yes | yes | yes |
+| Liveness | yes | yes | yes | no | no |
+| Resume | yes | yes | yes | yes | yes |
+| Export to Session IR | yes | yes | yes | yes | yes |
+| Rename | yes | yes | yes | no | no |
+| Archive / unarchive | yes | yes | yes | no | no |
+| Delete | yes | yes | yes | no | no |
+| Move to another directory | yes | yes | no | no | no |
+| Import **from** (source) | yes | yes | yes | yes | yes |
+| Import **into** (target) | yes | yes | no | no | no |
+| Send a message into a session | yes | yes | no | yes | yes |
+| Verified against a real install | 2.1.234 | 1.17.18 | 0.78.0 | 0.148.0 | 1.1.16 |
 
 ## Replying to a session
 
@@ -250,6 +251,21 @@ would be a raw write to a moving target that its own picker might then
 disagree with. Reading is safe and complete: the `threads` table drives the
 listing, and asm additionally sweeps the `sessions/` tree for rollouts that
 have no `threads` row, which codex hides until you resume them by id.
+
+Antigravity is what Gemini CLI became — Google now refuses Gemini Code
+Assist for individuals outright, telling you to migrate — and its store is
+different in kind: one SQLite database per conversation, with every step
+held as a protobuf blob against a schema Google does not publish. asm reads
+the conversation instead from the JSONL rendering antigravity writes
+alongside it, under `brain/<id>/.system_generated/logs/`. Same steps, same
+author, no guessed field numbers.
+
+One real gap: **an Antigravity conversation does not record its project
+directory.** Neither the conversation database nor the summaries index keeps
+one (`workspace_uris` is empty), and the only mapping on disk,
+`cache/last_conversations.json`, remembers just the most recent conversation
+per directory. Sessions it does not cover are listed with no project rather
+than a guessed one.
 
 Two jcode verbs are missing, for the same reason: its whole session — metadata
 *and* the entire conversation — is one JSON document, and jcode ships no

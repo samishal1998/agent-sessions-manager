@@ -6,6 +6,7 @@
 //! Codex 0.148.0 (`exec --json`). When one of these formats changes, these
 //! tests are what notices.
 
+use asm_core::adapter::antigravity::AntigravityAdapter;
 use asm_core::adapter::claude::ClaudeAdapter;
 use asm_core::adapter::codex::CodexAdapter;
 use asm_core::adapter::opencode::OpenCodeAdapter;
@@ -20,6 +21,9 @@ fn opencode() -> OpenCodeAdapter {
 }
 fn codex() -> CodexAdapter {
     CodexAdapter::with_root("/nonexistent")
+}
+fn antigravity() -> AntigravityAdapter {
+    AntigravityAdapter::with_root("/nonexistent")
 }
 
 fn texts(events: &[LiveEvent]) -> Vec<&str> {
@@ -165,6 +169,7 @@ fn unknown_lines_are_kept_verbatim_by_every_parser() {
         claude().parse_event(line),
         opencode().parse_event(line),
         codex().parse_event(line),
+        antigravity().parse_event(line),
     ] {
         assert!(matches!(events.as_slice(), [LiveEvent::Raw { .. }]), "{events:?}");
     }
@@ -174,6 +179,7 @@ fn unknown_lines_are_kept_verbatim_by_every_parser() {
         claude().parse_event(notice),
         opencode().parse_event(notice),
         codex().parse_event(notice),
+        antigravity().parse_event(notice),
     ] {
         assert_eq!(events, vec![LiveEvent::Raw { line: notice.to_string() }]);
     }
@@ -192,6 +198,50 @@ fn claude_tool_results_are_not_user_speech() {
         vec![LiveEvent::ToolResult { name: None, output: "ok".into(), is_error: false }]
     );
     assert!(texts(&events).is_empty());
+}
+
+/// Antigravity is the only agent that streams deltas rather than whole
+/// messages, and the only one whose final event repeats the entire answer.
+/// Emitting that repeat would print every reply twice.
+#[test]
+fn antigravity_streams_deltas_and_does_not_repeat_the_result() {
+    let a = antigravity();
+
+    assert_eq!(
+        a.parse_event(
+            r#"{"event":"init","conversation_id":"3f6bfd66-67b6-4c35-9065-5316a755e9af","init":{"cwd":"/p"}}"#
+        ),
+        vec![LiveEvent::Started {
+            session_id: Some("3f6bfd66-67b6-4c35-9065-5316a755e9af".into())
+        }]
+    );
+
+    let first = a.parse_event(
+        r#"{"event":"step_update","step_update":{"conversation_id":"c","step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"sev"}}"#,
+    );
+    let second = a.parse_event(
+        r#"{"event":"step_update","step_update":{"conversation_id":"c","step_index":2,"state":"DONE","step_type":"agent_response","text_delta":"enth","usage":{"input_tokens":13875,"output_tokens":30}}}"#,
+    );
+    assert_eq!(texts(&first), vec!["sev"]);
+    assert_eq!(texts(&second), vec!["enth"], "the two deltas concatenate to the answer");
+    assert!(second.iter().any(|e| matches!(e, LiveEvent::Usage(_))));
+
+    // The result repeats "seventh" whole; only its totals are new.
+    let result = a.parse_event(
+        r#"{"event":"result","result":{"conversation_id":"c","status":"SUCCESS","response":"seventh\n","usage":{"input_tokens":13875,"output_tokens":30}}}"#,
+    );
+    assert!(texts(&result).is_empty(), "the whole answer must not be emitted again");
+    assert!(result.iter().any(|e| matches!(e, LiveEvent::Usage(_))));
+
+    let failed = a.parse_event(
+        r#"{"event":"result","result":{"conversation_id":"c","status":"ERROR","error":"quota exhausted"}}"#,
+    );
+    assert!(
+        failed.iter().any(
+            |e| matches!(e, LiveEvent::Done { ok: false, error } if error.as_deref() == Some("quota exhausted"))
+        ),
+        "{failed:?}"
+    );
 }
 
 /// jcode has no captured stream yet, so it must not claim it can send.

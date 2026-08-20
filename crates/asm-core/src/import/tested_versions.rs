@@ -18,6 +18,8 @@ pub const TESTED: &[(AgentKind, &str)] = &[
     (AgentKind::OpenCode, "1.17.18"),
     (AgentKind::JCode, "0.78.0"),
     (AgentKind::Codex, "0.148.0"),
+    // `agy version` reports nothing parseable yet; pinned by observation.
+    (AgentKind::Antigravity, "1.1.16"),
 ];
 
 pub fn tested_version(agent: AgentKind) -> Option<&'static str> {
@@ -30,6 +32,7 @@ fn binary_name(agent: AgentKind) -> &'static str {
         AgentKind::OpenCode => "opencode",
         AgentKind::JCode => "jcode",
         AgentKind::Codex => "codex",
+        AgentKind::Antigravity => "agy",
     }
 }
 

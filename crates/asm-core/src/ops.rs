@@ -170,6 +170,9 @@ pub fn doctor() -> Result<DoctorReport, CoreError> {
             // Codex keeps one rollout per thread id and asm never writes to
             // it, so there is no divergence for doctor to find.
             Adapter::Codex(_) => {}
+            // One database per conversation, never written by asm, so no
+            // divergence and no shared lock to contend for.
+            Adapter::Antigravity(_) => {}
             Adapter::OpenCode(opencode) => {
                 for lock in opencode.locks() {
                     if lock.held {

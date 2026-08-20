@@ -5,6 +5,7 @@
 //! In-tree adapters are dispatched through the closed `Adapter` enum —
 //! adding an agent makes the compiler list every place that must handle it.
 
+pub mod antigravity;
 pub mod claude;
 pub mod codex;
 pub mod jcode;
@@ -127,6 +128,7 @@ pub enum Adapter {
     OpenCode(opencode::OpenCodeAdapter),
     JCode(jcode::JCodeAdapter),
     Codex(codex::CodexAdapter),
+    Antigravity(antigravity::AntigravityAdapter),
 }
 
 impl Adapter {
@@ -145,6 +147,9 @@ impl Adapter {
         if let Some(codex) = codex::CodexAdapter::detect_default() {
             adapters.push(Adapter::Codex(codex));
         }
+        if let Some(antigravity) = antigravity::AntigravityAdapter::detect_default() {
+            adapters.push(Adapter::Antigravity(antigravity));
+        }
         adapters
     }
 }
@@ -156,6 +161,7 @@ macro_rules! dispatch {
             Adapter::OpenCode($a) => $body,
             Adapter::JCode($a) => $body,
             Adapter::Codex($a) => $body,
+            Adapter::Antigravity($a) => $body,
         }
     };
 }

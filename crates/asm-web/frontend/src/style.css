@@ -438,6 +438,14 @@ button:hover,
   color: var(--green);
   background: rgba(91, 209, 140, 0.12);
 }
+.agent-mark.codex {
+  color: var(--fg);
+  background: rgba(221, 227, 238, 0.1);
+}
+.agent-mark.antigravity {
+  color: var(--violet);
+  background: rgba(180, 142, 245, 0.12);
+}
 .agent-mark.unknown {
   color: var(--fg-muted);
   background: var(--bg-hover);

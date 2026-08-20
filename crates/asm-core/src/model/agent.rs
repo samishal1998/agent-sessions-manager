@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The coding agents this tool knows about. `#[non_exhaustive]` because the
-/// set will grow (Antigravity, Cursor, ...).
+/// set will grow (Cursor, Copilot, ...).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
@@ -14,6 +14,8 @@ pub enum AgentKind {
     JCode,
     #[serde(rename = "codex")]
     Codex,
+    #[serde(rename = "antigravity")]
+    Antigravity,
 }
 
 impl AgentKind {
@@ -23,6 +25,7 @@ impl AgentKind {
             AgentKind::OpenCode => "opencode",
             AgentKind::JCode => "jcode",
             AgentKind::Codex => "codex",
+            AgentKind::Antigravity => "antigravity",
         }
     }
 
@@ -33,6 +36,8 @@ impl AgentKind {
             "opencode" | "open-code" | "oc" => Some(AgentKind::OpenCode),
             "jcode" | "jc" => Some(AgentKind::JCode),
             "codex" | "codex-cli" | "cx" => Some(AgentKind::Codex),
+            // `agy` is the command the CLI installs, so accept it as a name.
+            "antigravity" | "agy" | "ag" => Some(AgentKind::Antigravity),
             _ => None,
         }
     }
