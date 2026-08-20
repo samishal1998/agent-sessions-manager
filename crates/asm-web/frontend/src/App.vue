@@ -683,6 +683,7 @@ function pickProject(root) {
       v-if="selected"
       :session="selected"
       :modal="isNarrow"
+      :can-send="can(selected, 'send_message')"
       @close="selected = null"
     />
   </div>

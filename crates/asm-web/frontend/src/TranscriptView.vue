@@ -7,6 +7,8 @@ import {
   CornerDownRight,
   Paperclip,
   Search,
+  SendHorizontal,
+  Square,
   Wrench,
   X,
 } from 'lucide-vue-next'
@@ -21,6 +23,10 @@ const props = defineProps({
   // When the drawer covers the page rather than sitting beside it, it is a
   // modal dialog and has to say so.
   modal: { type: Boolean, default: false },
+  // Whether this agent can be sent a new message at all. Codex, Claude Code
+  // and OpenCode can; jcode cannot, and the composer says so instead of
+  // offering a box that always fails.
+  canSend: { type: Boolean, default: false },
 })
 const emit = defineEmits(['close'])
 
@@ -134,6 +140,96 @@ watch(
   () => props.session,
   () => markupCache.clear(),
 )
+
+/* Composing a reply ---------------------------------------------------- */
+
+const draft = ref('')
+// Events from the turn in flight. They are rendered under the transcript
+// rather than merged into it: the transcript is what the agent has written
+// to disk, and these have not landed there yet.
+const streaming = ref([])
+const sendError = ref('')
+const busy = ref(false)
+let inFlight = null
+const body = ref(null)
+
+// The turn only reaches the store when the agent finishes writing it, so
+// the transcript is reloaded at the end rather than patched as it streams.
+async function reloadTranscript() {
+  try {
+    ir.value = await api.ir(props.session)
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+function scrollToBottom() {
+  nextTick(() => {
+    const el = body.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+
+async function sendDraft() {
+  const message = draft.value.trim()
+  if (!message || busy.value) return
+  busy.value = true
+  sendError.value = ''
+  streaming.value = [{ event: 'text', role: 'user', text: message }]
+  draft.value = ''
+  scrollToBottom()
+
+  inFlight = api.send(props.session, message, (event) => {
+    // `started` only confirms which session the agent thinks it is
+    // continuing; a mismatch would mean it forked, which is worth saying
+    // out loud rather than silently rendering into the wrong transcript.
+    if (event.event === 'started') {
+      if (event.session_id && event.session_id !== props.session.ref.native_id) {
+        sendError.value = `the agent replied in ${event.session_id}, not this session`
+      }
+      return
+    }
+    if (event.event === 'usage') return
+    if (event.event === 'done') {
+      if (!event.ok) sendError.value = event.error || 'the turn failed'
+      return
+    }
+    streaming.value = [...streaming.value, event]
+    scrollToBottom()
+  })
+
+  try {
+    await inFlight.done
+  } catch (e) {
+    if (e.name !== 'AbortError') sendError.value = e.message
+  } finally {
+    inFlight = null
+    busy.value = false
+    await reloadTranscript()
+    // Everything that landed is now in the transcript proper; keeping the
+    // streamed copy would show every reply twice.
+    if (!sendError.value) streaming.value = []
+    scrollToBottom()
+  }
+}
+
+function stopSending() {
+  inFlight?.abort()
+}
+
+// Leaving mid-turn must not leave an agent running against a page nobody is
+// watching; the server kills it when the stream drops.
+onBeforeUnmount(() => inFlight?.abort())
+watch(
+  () => props.session,
+  () => {
+    inFlight?.abort()
+    streaming.value = []
+    sendError.value = ''
+    draft.value = ''
+    busy.value = false
+  },
+)
 </script>
 
 <template>
@@ -165,7 +261,7 @@ watch(
     <div v-if="error" class="empty" style="color: var(--red)">{{ error }}</div>
     <div v-else-if="!ir" class="empty">Loading transcript…</div>
 
-    <div v-else class="drawer-body">
+    <div v-else ref="body" class="drawer-body">
       <button v-if="hidden" class="btn" style="width: 100%" @click="windowSize += 300">
         Show {{ hidden }} earlier message{{ hidden === 1 ? '' : 's' }}
       </button>
@@ -237,6 +333,68 @@ watch(
           </div>
         </template>
       </div>
+
+      <div v-if="streaming.length" class="message live">
+        <div class="message-role">
+          in flight
+          <span class="faint" style="text-transform: none; font-weight: 400">
+            not yet written to the session
+          </span>
+        </div>
+        <template v-for="(e, ei) in streaming" :key="ei">
+          <div v-if="e.event === 'text'" class="message-text">{{ e.text }}</div>
+          <div v-else-if="e.event === 'reasoning'" class="part-reasoning">
+            <Brain :size="14" style="flex-shrink: 0; margin-top: 3px" />
+            <span>{{ firstLine(e.text) }}</span>
+          </div>
+          <div v-else-if="e.event === 'tool_call'" class="part-tool">
+            <Wrench :size="14" style="flex-shrink: 0" />
+            <strong>{{ e.name }}</strong>
+            <span class="arg">{{ e.detail }}</span>
+          </div>
+          <div
+            v-else-if="e.event === 'tool_result'"
+            class="part-result"
+            :class="{ error: e.is_error }"
+          >
+            <span>{{ e.is_error ? 'Failed' : 'Result' }}: {{ firstLine(e.output) }}</span>
+          </div>
+          <!-- A line asm did not recognise. Shown, not dropped: these
+               formats change, and a swallowed line reads as silence. -->
+          <div v-else-if="e.event === 'raw'" class="part-reasoning">
+            <span class="mono">{{ firstLine(e.line) }}</span>
+          </div>
+        </template>
+      </div>
     </div>
+
+    <form v-if="ir" class="composer" @submit.prevent="sendDraft">
+      <p v-if="sendError" class="composer-error">{{ sendError }}</p>
+      <p v-if="!canSend" class="composer-off">
+        asm cannot send into {{ session.ref.agent }} sessions yet.
+      </p>
+      <template v-else>
+        <textarea
+          v-model="draft"
+          class="composer-input"
+          rows="2"
+          :disabled="busy"
+          :placeholder="`Reply in this ${session.ref.agent} session…`"
+          @keydown.enter.exact.prevent="sendDraft"
+        ></textarea>
+        <div class="composer-actions">
+          <span class="faint">
+            {{ busy ? 'The agent is working — it can read and edit files in this project.'
+                    : 'Enter sends · Shift+Enter for a new line' }}
+          </span>
+          <button v-if="busy" type="button" class="btn danger" @click="stopSending">
+            <Square :size="14" /> Stop
+          </button>
+          <button v-else type="submit" class="btn" :disabled="!draft.trim()">
+            <SendHorizontal :size="14" /> Send
+          </button>
+        </div>
+      </template>
+    </form>
   </aside>
 </template>

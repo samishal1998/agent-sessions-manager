@@ -20,7 +20,8 @@ ratatui = "0.30"
 
 # web
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync"] }
+tokio-stream = "0.1"
 rust-embed = "8"
 mime_guess = "2"
 

@@ -998,3 +998,65 @@ button:hover,
 .problems li {
   margin-bottom: var(--space-1);
 }
+
+/* Composer ------------------------------------------------------------ */
+
+/* Sits outside .drawer-body so it stays put while the transcript scrolls:
+   a reply box that scrolls away is a reply box you cannot find. */
+.composer {
+  border-top: 1px solid var(--border);
+  padding: 10px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--bg-alt);
+}
+
+.composer-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 44px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.composer-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.composer-actions .faint {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.composer-error {
+  color: var(--red);
+  font-size: 13px;
+  margin: 0;
+}
+
+.composer-off {
+  color: var(--fg-muted);
+  font-size: 13px;
+  margin: 0;
+}
+
+/* The turn in flight is deliberately not styled like a stored message:
+   it has not reached the agent's store yet and may still fail. */
+.message.live {
+  border-left: 2px solid var(--accent);
+  padding-left: 10px;
+  opacity: 0.92;
+}

@@ -88,6 +88,7 @@ pub fn router() -> axum::Router {
         .route("/api/session/{agent}/{id}/delete", post(delete))
         .route("/api/session/{agent}/{id}/move", post(move_session))
         .route("/api/session/{agent}/{id}/import", post(import))
+        .route("/api/session/{agent}/{id}/send", post(send))
         .route("/api/bulk", post(bulk))
         .layer(axum::middleware::from_fn(guard_mutations))
 }
@@ -331,4 +332,65 @@ async fn import(
     })
     .await
     .map(Json)
+}
+
+#[derive(Deserialize)]
+struct SendBody {
+    message: String,
+}
+
+/// Send a message into a session and stream the reply as NDJSON.
+///
+/// A POST returning a stream, rather than an `EventSource` GET, for two
+/// reasons that point the same way: `EventSource` cannot set headers, so it
+/// could not carry the `X-Asm-Request` marker `guard_mutations` requires,
+/// and this *is* a mutation — it spends the user's tokens and lets the
+/// agent edit files. Making it a GET would put it outside the guard
+/// entirely.
+async fn send(
+    Path((agent, id)): Path<(String, String)>,
+    Json(body): Json<SendBody>,
+) -> Result<axum::response::Response, ApiError> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let session = resolve(&agent, &id)?;
+    if body.message.trim().is_empty() {
+        return Err(err(StatusCode::BAD_REQUEST, "refusing to send an empty message"));
+    }
+
+    // Bounded, so a fast agent cannot outrun a slow client into unbounded
+    // memory; the send blocks instead, which is the correct backpressure.
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<String, std::convert::Infallible>>(64);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = cancel.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let mut emit = |event: asm_core::live::LiveEvent| {
+            let Ok(line) = serde_json::to_string(&event) else { return };
+            // A closed receiver means the browser went away mid-turn.
+            // Flipping the flag is what actually kills the agent process;
+            // without it the turn would run to completion unwatched.
+            if tx.blocking_send(Ok(format!("{line}\n"))).is_err() {
+                worker_cancel.store(true, Ordering::Relaxed);
+            }
+        };
+        if let Err(e) =
+            asm_core::live::send_cancellable(&session, &body.message, &worker_cancel, &mut emit)
+        {
+            emit(asm_core::live::LiveEvent::Done { ok: false, error: Some(e.to_string()) });
+        }
+    });
+
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    Ok((
+        [
+            (axum::http::header::CONTENT_TYPE, "application/x-ndjson"),
+            // Streaming through a proxy that buffers would defeat the
+            // point; this is the header that asks it not to.
+            (axum::http::HeaderName::from_static("x-accel-buffering"), "no"),
+        ],
+        axum::body::Body::from_stream(stream),
+    )
+        .into_response())
 }
