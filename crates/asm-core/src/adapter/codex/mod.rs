@@ -20,6 +20,7 @@
 //!   Listing therefore unions the two, because a session asm cannot see is
 //!   the problem asm exists to solve.
 
+mod live;
 mod export_ir;
 mod store;
 

@@ -9,6 +9,7 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 
 use asm_core::adapter::SessionFilter;
+use asm_core::live::LiveEvent;
 use asm_core::model::AgentKind;
 use asm_core::ops;
 
@@ -67,6 +68,12 @@ enum Command {
         /// Skip the confirmation prompt.
         #[arg(long)]
         yes: bool,
+    },
+    /// Send a message into an existing session and stream the reply.
+    Send {
+        r#ref: String,
+        /// The message. Use `-` to read it from stdin.
+        message: String,
     },
     /// Import a session into another agent (the flagship).
     Import {
@@ -194,6 +201,7 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
         Command::Archive { r#ref } => archive(&r#ref, &filter),
         Command::Unarchive { r#ref } => unarchive(&r#ref, &filter),
         Command::Delete { r#ref, yes } => delete(&r#ref, yes, &filter),
+        Command::Send { r#ref, message } => send(&r#ref, &message, &filter, cli.json),
         Command::Import { r#ref, to, project_dir, mode, dry_run, show_toolmap } => import(
             &r#ref,
             &to,
@@ -714,4 +722,84 @@ fn doctor(json: bool) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Send a message into a session and stream the reply to the terminal.
+///
+/// The reply is rendered as it arrives rather than collected and printed at
+/// the end: these turns run for minutes, and a silent terminal is
+/// indistinguishable from a hung one.
+fn send(
+    r#ref: &str,
+    message: &str,
+    filter: &SessionFilter,
+    json: bool,
+) -> anyhow::Result<()> {
+    use std::io::Write;
+
+    let session = asm_core::ops::resolve_ref(r#ref, filter)?;
+    let message = if message == "-" {
+        let mut buf = String::new();
+        std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+        buf
+    } else {
+        message.to_string()
+    };
+    if message.trim().is_empty() {
+        anyhow::bail!("refusing to send an empty message");
+    }
+
+    if !json {
+        eprintln!(
+            "sending to {} {} in {}",
+            session.handle.agent,
+            session.short_id(),
+            session.project_root.display()
+        );
+    }
+
+    let mut failure = None;
+    let mut out = std::io::stdout();
+    asm_core::live::send(&session, &message, &mut |event| {
+        if json {
+            if let Ok(line) = serde_json::to_string(&event) {
+                let _ = writeln!(out, "{line}");
+            }
+            let _ = out.flush();
+            if let LiveEvent::Done { ok: false, error } = &event {
+                failure = error.clone();
+            }
+            return;
+        }
+        match event {
+            LiveEvent::Started { .. } => {}
+            LiveEvent::Text { text, .. } => {
+                let _ = write!(out, "{text}");
+                let _ = out.flush();
+            }
+            LiveEvent::Reasoning { text } => eprintln!("\x1b[2m{}\x1b[0m", text.trim()),
+            LiveEvent::ToolCall { name, detail } => {
+                eprintln!("\x1b[2m· {name}{}\x1b[0m", detail.map(|d| format!(" {d}")).unwrap_or_default())
+            }
+            LiveEvent::ToolResult { is_error: true, output, .. } => {
+                eprintln!("\x1b[33m· tool failed: {}\x1b[0m", output.trim())
+            }
+            LiveEvent::ToolResult { .. } => {}
+            LiveEvent::Usage(usage) => {
+                if let Some(cost) = usage.cost_usd {
+                    eprintln!("\x1b[2m${cost:.4}\x1b[0m");
+                }
+            }
+            LiveEvent::Raw { line } => eprintln!("\x1b[2m{line}\x1b[0m"),
+            LiveEvent::Done { ok: false, error } => failure = error,
+            LiveEvent::Done { .. } => {
+                let _ = writeln!(out);
+            }
+        }
+    })?;
+
+    match failure {
+        Some(error) => anyhow::bail!("{error}"),
+        None => Ok(()),
+    }
 }

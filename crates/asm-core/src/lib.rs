@@ -11,6 +11,7 @@ pub mod git;
 pub mod import;
 pub mod index;
 pub mod ir;
+pub mod live;
 pub mod model;
 pub mod ops;
 pub mod paths;

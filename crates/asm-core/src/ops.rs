@@ -212,6 +212,11 @@ pub fn resume_command(session: &Session) -> Result<std::process::Command, Resolv
     Err(ResolveError::NotFound { query: session.handle.native_id.clone() })
 }
 
+/// The adapter that owns a session's store, for callers outside `ops`.
+pub fn adapter_for(agent: AgentKind) -> Option<Adapter> {
+    Adapter::available().into_iter().find(|a| a.kind() == agent)
+}
+
 fn owning_adapter(session: &Session) -> Result<Adapter, CoreError> {
     Adapter::available()
         .into_iter()

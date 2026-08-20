@@ -16,6 +16,7 @@
 //! therefore streams the document through serde with the message array
 //! deserialized into `IgnoredAny`, which walks it without building it.
 
+mod live;
 mod export_ir;
 mod store;
 mod write;

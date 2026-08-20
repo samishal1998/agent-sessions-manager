@@ -13,6 +13,7 @@
 //!   subagent/child sessions. Rows from older CLI generations (1.2.x) have
 //!   NULL path/agent/model — both generations coexist in one table.
 
+mod live;
 mod export_ir;
 mod import_ir;
 mod store;
@@ -199,6 +200,7 @@ impl AgentRead for OpenCodeAdapter {
             list: true,
             liveness: true,
             resume_native: true,
+            send_message: true,
             rename: true,
             archive: true,
             delete: true,

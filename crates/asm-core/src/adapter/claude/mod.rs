@@ -10,6 +10,7 @@
 //!   DIFFERENT, sparse field that may hold unrelated ids — never read it.
 //! - Live sessions are announced by PID-keyed records in `<root>/sessions/`.
 
+mod live;
 mod export_ir;
 mod import_ir;
 mod liveness;
@@ -86,6 +87,7 @@ impl AgentRead for ClaudeAdapter {
             list: true,
             liveness: true,
             resume_native: true,
+            send_message: true,
             rename: true,
             archive: true,
             relocate: true,
