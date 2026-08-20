@@ -218,7 +218,30 @@ kept verbatim so the history still reads), and nested subagent transcripts.
 | Move to another directory | yes | yes | no | no |
 | Import **from** (source) | yes | yes | yes | yes |
 | Import **into** (target) | yes | yes | no | no |
+| Send a message into a session | yes | yes | no | yes |
 | Verified against a real install | 2.1.234 | 1.17.18 | 0.78.0 | 0.148.0 |
+
+## Replying to a session
+
+`asm send <ref> <message>` sends a message into an existing session and
+streams the reply; the TUI binds it to `c` and the web transcript has a
+composer at the bottom. It goes through each agent's own headless resume —
+`claude --resume … -p`, `opencode run -s`, `codex exec resume` — so the turn
+is the agent's, with the agent's tools, permissions and model.
+
+Three things worth knowing before you use it:
+
+- **It appends to the session, it does not fork.** Verified against each
+  agent: same native id, same transcript, no new row.
+- **The agent can edit files in that project.** This is a real turn, not a
+  read-only query, and it spends tokens.
+- **Live sessions are refused.** If another terminal is driving the session
+  right now, asm will not send into it — none of these CLIs promise to
+  handle two writers.
+
+jcode is missing here for a different reason than below: its stream format
+has not been captured from a real run, and a normalizer written from a flag
+name is a guess, not support.
 
 Codex is read-only. Its metadata lives in `state_5.sqlite`, a schema 48 sqlx
 migrations deep and still gaining columns, and codex ships no `rename`,

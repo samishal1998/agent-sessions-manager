@@ -1,5 +1,7 @@
 //! Background worker: everything slower than a frame runs here.
 
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use asm_core::adapter::SessionFilter;
@@ -22,6 +24,10 @@ pub enum Request {
     /// One verb over a selected set. Sessions are resolved by the caller at
     /// the moment the action is confirmed, never by index.
     Bulk(Vec<Session>, asm_core::bulk::BulkAction),
+    /// Send a message into a session. Unlike every other request this one
+    /// answers with a stream of `Response::Live` rather than a single
+    /// response, and it occupies the worker until the agent is finished.
+    Send(Box<Session>, String),
 }
 
 pub enum Response {
@@ -36,6 +42,8 @@ pub enum Response {
     Error(String),
     /// (the verb, the per-item report)
     Bulk(String, asm_core::bulk::BulkReport),
+    /// One step of a reply in progress.
+    Live(asm_core::live::LiveEvent),
 }
 
 pub struct PreviewLine {
@@ -53,20 +61,51 @@ pub enum PreviewKind {
 pub struct Worker {
     pub tx: Sender<Request>,
     pub rx: Receiver<Response>,
+    /// Set to stop a send in progress. A flag rather than a message
+    /// because the worker is busy streaming and will not read its inbox
+    /// again until the turn ends — which is exactly what needs
+    /// interrupting.
+    pub cancel: Arc<AtomicBool>,
 }
 
 pub fn spawn() -> Worker {
     let (req_tx, req_rx) = channel::<Request>();
     let (resp_tx, resp_rx) = channel::<Response>();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let worker_cancel = cancel.clone();
     std::thread::spawn(move || {
         while let Ok(request) = req_rx.recv() {
+            // Sending streams many responses, so it cannot go through
+            // `handle`, which returns exactly one.
+            if let Request::Send(session, message) = request {
+                let mut failed = None;
+                let result = asm_core::live::send_cancellable(
+                    &session,
+                    &message,
+                    &worker_cancel,
+                    &mut |event| {
+                        let _ = resp_tx.send(Response::Live(event));
+                    },
+                );
+                if let Err(e) = result {
+                    failed = Some(e.to_string());
+                }
+                if let Some(error) = failed {
+                    let _ = resp_tx
+                        .send(Response::Live(asm_core::live::LiveEvent::Done {
+                            ok: false,
+                            error: Some(error),
+                        }));
+                }
+                continue;
+            }
             let response = handle(request);
             if resp_tx.send(response).is_err() {
                 break;
             }
         }
     });
-    Worker { tx: req_tx, rx: resp_rx }
+    Worker { tx: req_tx, rx: resp_rx, cancel }
 }
 
 fn handle(request: Request) -> Response {
@@ -105,6 +144,7 @@ fn handle(request: Request) -> Response {
             )),
             Err(e) => Response::Error(e.to_string()),
         },
+        Request::Send(..) => unreachable!("streamed in the worker loop"),
         Request::Bulk(sessions, action) => {
             let verb = action.verb().to_string();
             Response::Bulk(verb, asm_core::bulk::run(&sessions, &action))

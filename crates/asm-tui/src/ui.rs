@@ -290,6 +290,13 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 .unwrap_or_default();
             format!("delete {target} and all sidecars? backed up first. (y/N)")
         }
+        Mode::Send => {
+            let agent = app
+                .pending_session()
+                .map(|s| s.handle.agent.to_string())
+                .unwrap_or_else(|| "the agent".to_string());
+            format!("reply to {agent}: {}▏  (enter send, esc cancel)", app.input)
+        }
         Mode::Export => format!("export IR to: {}▏  (enter write, esc cancel)", app.input),
         Mode::Move => format!("move to project dir: {}▏  (enter move, esc cancel)", app.input),
         Mode::ConfirmImport => {
@@ -328,8 +335,8 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             };
             format!(
                 "{}{scanning}{health}  —  ⏎ resume · ␣ select · * all · r rename · \
-                 a (un)archive · d delete · e export · m move · i import · s search · \
-                 / filter · D health · ⇥ focus · R rescan · q quit",
+                 a (un)archive · d delete · e export · m move · i import · c reply · \
+                 s search · / filter · D health · ⇥ focus · R rescan · q quit",
                 app.status
             )
         }

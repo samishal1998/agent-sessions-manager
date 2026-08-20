@@ -1,7 +1,7 @@
 //! App state and event loop. Panel-local state stays here; anything slow
 //! goes through the worker.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use ratatui::DefaultTerminal;
@@ -11,7 +11,7 @@ use asm_core::bulk::{BulkAction, BulkReport};
 use asm_core::model::{AgentKind, Session, SessionStatus};
 use asm_core::ops;
 
-use crate::worker::{PreviewLine, Request, Response, Worker};
+use crate::worker::{PreviewKind, PreviewLine, Request, Response, Worker};
 
 pub enum LoopOutcome {
     Quit,
@@ -37,6 +37,8 @@ pub enum Mode {
     ConfirmBulk,
     /// Input for a bulk verb that needs one: a destination directory.
     BulkInput,
+    /// Composing a message to send into the selected session.
+    Send,
 }
 
 pub struct App {
@@ -74,6 +76,15 @@ pub struct App {
     /// The last batch's per-item outcome, shown as an overlay when
     /// anything did not simply work.
     pub report: Option<(String, BulkReport)>,
+    /// True while a reply is streaming. The worker is occupied for the
+    /// whole turn, so nothing else can be asked of it until this clears.
+    pub sending: bool,
+    /// The session the reply in flight belongs to, so a turn that finishes
+    /// after the user has moved on does not reload someone else's preview.
+    sending_for: Option<Session>,
+    /// Which agents will accept a message at all, resolved once at startup
+    /// rather than per keystroke.
+    can_send: HashMap<AgentKind, bool>,
     /// Store-health report, shown as an overlay on `D`.
     pub doctor: Vec<String>,
     pub doctor_warnings: usize,
@@ -104,6 +115,15 @@ impl App {
             pending_batch: Vec::new(),
             pending_action: None,
             report: None,
+            sending: false,
+            sending_for: None,
+            can_send: asm_core::adapter::Adapter::available()
+                .iter()
+                .map(|a| {
+                    use asm_core::adapter::AgentRead;
+                    (a.kind(), a.capabilities().send_message)
+                })
+                .collect(),
             doctor: Vec::new(),
             doctor_warnings: 0,
             show_doctor: false,
@@ -262,6 +282,127 @@ impl App {
         let _ = self.worker.tx.send(Request::LoadPreview(Box::new(session)));
     }
 
+    /// Load a session's transcript into the preview, even if it is already
+    /// the one shown. `sync_preview` short-circuits on an unchanged id,
+    /// which is right when moving the cursor and wrong after a reply has
+    /// changed the transcript under it.
+    fn load_preview(&mut self, session: Session) {
+        self.preview_for = Some(session.handle.native_id.clone());
+        self.preview.clear();
+        self.preview_scroll = 0;
+        let _ = self.worker.tx.send(Request::LoadPreview(Box::new(session)));
+    }
+
+    /// Whether asm can send into this session's agent at all.
+    pub fn can_send(&self, session: &Session) -> bool {
+        self.can_send.get(&session.handle.agent).copied().unwrap_or(false)
+    }
+
+    /// Start composing a reply to the highlighted session.
+    fn begin_send(&mut self) {
+        // The worker streams a turn on the one thread it has, so a second
+        // send would sit in the queue behind the first and then fire at a
+        // session the user may have moved away from.
+        if self.sending {
+            self.status = "a reply is already in flight (esc stops it)".to_string();
+            return;
+        }
+        let Some(session) = self.selected_session().cloned() else { return };
+        if !self.can_send(&session) {
+            self.status = format!("asm cannot send into {} sessions", session.handle.agent);
+            return;
+        }
+        // The preview is the conversation being replied to, so open it if
+        // the user has not already; typing into a blank pane is disorienting.
+        if self.preview_for.as_deref() != Some(session.handle.native_id.as_str()) {
+            self.load_preview(session.clone());
+        }
+        self.pending = Some(session);
+        self.input.clear();
+        self.mode = Mode::Send;
+    }
+
+    fn send_pending(&mut self) {
+        let Some(session) = self.pending.take() else { return };
+        let message = std::mem::take(&mut self.input);
+        if message.trim().is_empty() {
+            self.status = "nothing to send".to_string();
+            return;
+        }
+        self.worker.cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.sending = true;
+        self.sending_for = Some(session.clone());
+        self.preview_focus = true;
+        // Echo the message straight away. The agent takes seconds to
+        // minutes to answer and a pane that does not visibly change reads
+        // as a keystroke that did not register.
+        self.push_live(PreviewKind::Role, "you".to_string());
+        self.push_live(PreviewKind::Text, message.clone());
+        self.status = format!("sending to {}… (esc stops)", session.handle.agent);
+        let _ = self.worker.tx.send(Request::Send(Box::new(session), message));
+    }
+
+    fn push_live(&mut self, kind: PreviewKind, text: String) {
+        self.preview.push(PreviewLine { kind, text });
+        // Follow the tail, the way a terminal does; the user is watching
+        // the newest line, not the oldest.
+        self.preview_scroll = self.preview.len().saturating_sub(1) as u16;
+    }
+
+    fn on_live(&mut self, event: asm_core::live::LiveEvent) {
+        use asm_core::ir::IrRole;
+        use asm_core::live::LiveEvent;
+        match event {
+            LiveEvent::Started { .. } | LiveEvent::Usage(_) => {}
+            LiveEvent::Text { role, text } => {
+                self.push_live(
+                    PreviewKind::Role,
+                    match role {
+                        IrRole::Assistant => "assistant".to_string(),
+                        IrRole::User => "user".to_string(),
+                        IrRole::System => "system".to_string(),
+                    },
+                );
+                self.push_live(PreviewKind::Text, text);
+            }
+            LiveEvent::Reasoning { text } => {
+                self.push_live(PreviewKind::Meta, first_line(&text))
+            }
+            LiveEvent::ToolCall { name, detail } => self.push_live(
+                PreviewKind::Tool,
+                match detail {
+                    Some(detail) => format!("{name} {}", first_line(&detail)),
+                    None => name,
+                },
+            ),
+            LiveEvent::ToolResult { output, is_error, .. } => self.push_live(
+                PreviewKind::Meta,
+                format!(
+                    "{}: {}",
+                    if is_error { "failed" } else { "result" },
+                    first_line(&output)
+                ),
+            ),
+            // Kept rather than dropped: these stream formats change, and a
+            // swallowed line reads as the agent answering with silence.
+            LiveEvent::Raw { line } => self.push_live(PreviewKind::Meta, first_line(&line)),
+            LiveEvent::Done { ok, error } => {
+                self.sending = false;
+                self.status = match (ok, error) {
+                    (true, _) => "reply complete".to_string(),
+                    (false, Some(error)) => format!("send failed: {error}"),
+                    (false, None) => "send failed".to_string(),
+                };
+                // The turn is only in the store once the agent has written
+                // it, so re-read rather than trusting the echo above.
+                if let Some(session) = self.sending_for.take() {
+                    self.load_preview(session);
+                }
+                self.request_scan();
+            }
+        }
+    }
+
     fn drain_worker(&mut self) {
         while let Ok(response) = self.worker.rx.try_recv() {
             match response {
@@ -300,6 +441,7 @@ impl App {
                     self.selection.clear();
                     self.request_scan();
                 }
+                Response::Live(event) => self.on_live(event),
                 Response::Error(message) => {
                     self.status = format!("error: {message}");
                     self.scanning = false;
@@ -334,6 +476,7 @@ impl App {
                 Mode::Search => self.on_search_key(key),
                 Mode::ConfirmBulk => self.on_confirm_bulk_key(key),
                 Mode::BulkInput => self.on_bulk_input_key(key),
+                Mode::Send => self.on_send_key(key),
             }
         }
     }
@@ -365,6 +508,14 @@ impl App {
     }
 
     fn on_normal_key(&mut self, key: KeyEvent) -> Option<LoopOutcome> {
+        // A reply in flight owns Esc: the agent is spending tokens and can
+        // be editing files, so stopping it outranks whatever Esc would
+        // otherwise back out of.
+        if self.sending && key.code == KeyCode::Esc {
+            self.worker.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.status = "stopping…".to_string();
+            return None;
+        }
         // The health overlay swallows the next key, whatever it is.
         if self.show_doctor {
             self.show_doctor = false;
@@ -471,6 +622,10 @@ impl App {
                     }
                 }
             }
+            // `c` composes a reply — `s` is already search, and Enter in a
+            // list means "open". This one spends money, so it gets a key of
+            // its own rather than overloading an existing one.
+            KeyCode::Char('c') => self.begin_send(),
             KeyCode::Char('r') => {
                 if let Some(session) = self.selected_session().cloned() {
                     self.input = session.title.clone().unwrap_or_default();
@@ -738,6 +893,25 @@ impl App {
         }
     }
 
+    fn on_send_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.pending = None;
+                self.input.clear();
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter => {
+                self.send_pending();
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Backspace => {
+                self.input.pop();
+            }
+            KeyCode::Char(c) => self.input.push(c),
+            _ => {}
+        }
+    }
+
     fn on_rename_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
@@ -776,5 +950,16 @@ impl App {
                 self.mode = Mode::Normal;
             }
         }
+    }
+}
+
+/// The first line with something on it, clipped. Streamed tool output and
+/// reasoning run to hundreds of lines and the preview is one pane.
+fn first_line(text: &str) -> String {
+    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    if line.chars().count() > 200 {
+        format!("{}…", line.chars().take(200).collect::<String>())
+    } else {
+        line.to_string()
     }
 }
