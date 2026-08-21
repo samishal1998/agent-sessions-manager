@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>asm — one inventory for every coding agent's sessions</title>
-<meta name="description" content="asm reads the on-disk session stores that Claude Code, OpenCode and jcode keep for themselves, lists every session in one place, and carries a conversation from one agent into another." />
+<meta name="description" content="asm reads the on-disk session stores that Claude Code, OpenCode, jcode, Codex and Antigravity keep for themselves, lists every session in one place, answers the ones you can still talk to, and carries a conversation from one agent into another." />
 <meta property="og:title" content="asm — cross-agent session manager" />
 <meta property="og:description" content="One inventory, one set of verbs, for the coding-agent sessions scattered across your machine." />
 <meta property="og:type" content="website" />
@@ -79,10 +79,13 @@ header.nav {
 }
 .hero > * { position: relative; }
 .eyebrow {
-  display: inline-flex; align-items: center; gap: 8px;
-  font-size: 13px; color: var(--fg-muted);
+  /* Five agent names do not fit a phone on one line, and a pill that
+     overflows is a pill with names clipped off the end of it. */
+  display: inline-flex; flex-wrap: wrap; justify-content: center;
+  align-items: center; gap: 4px 8px;
+  max-width: 100%; font-size: 13px; color: var(--fg-muted);
   border: 1px solid var(--border-strong); border-radius: 999px;
-  padding: 5px 14px; margin-bottom: 26px;
+  padding: 6px 14px; margin-bottom: 26px;
 }
 .eyebrow b { color: var(--fg); font-weight: 600; }
 h1 {
@@ -127,8 +130,12 @@ h3 { font-size: 17px; margin: 0 0 8px; font-weight: 600; }
 .sec-head p { color: var(--fg-muted); margin: 0; font-size: 17px; }
 
 /* ---- problem ---- */
-.stores { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+/* Flex rather than grid: with five cards an auto-fit grid packs four across
+   and leaves one orphan on its own row. Wrapping and centring puts the
+   remainder in the middle, which reads as deliberate. */
+.stores { display: flex; flex-wrap: wrap; justify-content: center; gap: 16px; }
 .store {
+  flex: 1 1 300px; max-width: 420px; min-width: 0;
   background: var(--bg-alt); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 22px;
 }
@@ -136,7 +143,8 @@ h3 { font-size: 17px; margin: 0 0 8px; font-weight: 600; }
 .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
 .store p { margin: 0; color: var(--fg-muted); font-size: 14.5px; }
 .store .fmt {
-  display: inline-block; margin-top: 12px; font-family: var(--mono); font-size: 12.5px;
+  display: inline-block; max-width: 100%; overflow-wrap: anywhere;
+  margin-top: 12px; font-family: var(--mono); font-size: 12.5px;
   color: var(--fg-faint); background: var(--bg); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 3px 9px;
 }
@@ -256,6 +264,7 @@ footer { border-top: 1px solid var(--border); padding: 44px 0; color: var(--fg-f
       asm
     </a>
     <nav class="nav-links">
+      <a class="nav-hide" href="#reply">Reply</a>
       <a class="nav-hide" href="#features">Features</a>
       <a class="nav-hide" href="#import">Import</a>
       <a href="#install">Install</a>
@@ -266,12 +275,13 @@ footer { border-top: 1px solid var(--border); padding: 44px 0; color: var(--fg-f
 
 <div id="top" class="hero">
   <div class="wrap">
-    <div class="eyebrow">Works with <b>Claude&nbsp;Code</b> · <b>OpenCode</b> · <b>jcode</b></div>
+    <div class="eyebrow">Works with <b>Claude&nbsp;Code</b> · <b>OpenCode</b> · <b>jcode</b> · <b>Codex</b> · <b>Antigravity</b></div>
     <h1>Every agent's sessions,<br /><span class="grad">in one inventory</span></h1>
     <p class="lede">
       Coding agents are good at keeping their own history and bad at everything around it.
       <b>asm</b> reads the stores they keep for themselves, lists every session in one place,
-      and carries a conversation from one agent into another.
+      lets you reply to the ones you can still talk to, and carries a conversation from one
+      agent into another.
     </p>
     <div class="cmd">
       <span class="dollar">$</span>
@@ -285,7 +295,7 @@ footer { border-top: 1px solid var(--border); padding: 44px 0; color: var(--fg-f
 <section>
   <div class="wrap">
     <div class="sec-head">
-      <h2>Three agents, three incompatible stores</h2>
+      <h2>Five agents, five incompatible stores</h2>
       <p>
         Each agent invented its own on-disk format and its own idea of what a session is.
         None of them can see the others, so there is no list, no search, and no way back
@@ -308,6 +318,16 @@ footer { border-top: 1px solid var(--border); padding: 44px 0; color: var(--fg-f
         <p>A whole-conversation JSON snapshot rewritten on every turn, alongside a journal and a backup of the previous state.</p>
         <span class="fmt">~/.jcode/sessions/session_&lt;name&gt;.json</span>
       </div>
+      <div class="store">
+        <div class="who"><span class="dot" style="background:var(--fg)"></span>Codex</div>
+        <p>A rollout JSONL per session, plus a row in a SQLite index that its own picker reads — and rollouts on disk the index has never adopted.</p>
+        <span class="fmt">~/.codex/sessions/…/rollout-&lt;uuid&gt;.jsonl</span>
+      </div>
+      <div class="store">
+        <div class="who"><span class="dot" style="background:var(--violet)"></span>Antigravity</div>
+        <p>One SQLite database <i>per conversation</i>, every step a protobuf blob against a schema nobody publishes.</p>
+        <span class="fmt">~/.gemini/antigravity-cli/conversations/&lt;uuid&gt;.db</span>
+      </div>
     </div>
   </div>
 </section>
@@ -325,19 +345,22 @@ footer { border-top: 1px solid var(--border); padding: 44px 0; color: var(--fg-f
       </div>
 <pre><span class="p">$</span> asm list
 <span class="h">AGENT        ID             TITLE                                        PROJECT             BRANCH       UPDATED  SIZE    STATUS</span>
-<span class="a">jcode</span>        calm-meridian  Benchmark the new pool against the old one    ~/code/mercury                   2d ago   777 B   <span class="m">idle</span>
-<span class="a">claude-code</span>  4c0d9a71       Rewrite the auth guard tests                  ~/code/atlas-web    main         2d ago   1.2 KB  <span class="m">idle</span>
-<span class="a">claude-code</span>  b21e6f04       Port the retry middleware onto tower::Layer   ~/code/mercury-tls  tls-rewrite  3d ago   2.5 KB  <span class="m">idle</span>
-<span class="a">opencode</span>     ses_71bc       Design the billing webhook retry schema       ~/code/atlas-web                 4d ago   1.3 KB  <span class="m">idle</span>
-<span class="a">jcode</span>        bright-canyon  Draft the incident postmortem                 ~/code/notes                     5d ago   845 B   <span class="m">idle</span>
-<span class="a">claude-code</span>  7f3a1c88       Trace the connection-pool leak under load     ~/code/mercury      main         6d ago   4.2 KB  <span class="m">idle</span>
-<span class="a">opencode</span>     ses_9d2a       Migrate the dashboard build to Vite 7         ~/code/atlas-web                 7d ago   927 B   <span class="v">archived</span>
+<span class="a">antigravity</span>  3f6bfd66       Dashboard chart accessibility pass            ~/code/atlas-web                 1d ago   253 KB  <span class="m">idle</span>
+<span class="a">codex</span>        01a020c4-71bd  Audit the bundle for duplicate dependencies   ~/code/atlas-web    main         2d ago   1.5 KB  <span class="m">idle</span>
+<span class="a">codex</span>        01a020ab-9a2c  Add a regression test for the pool leak       ~/code/mercury      main         3d ago   2.2 KB  <span class="m">idle</span>
+<span class="a">jcode</span>        calm-meridian  Benchmark the new pool against the old one    ~/code/mercury                   4d ago   777 B   <span class="m">idle</span>
+<span class="a">claude-code</span>  4c0d9a71       Rewrite the auth guard tests                  ~/code/atlas-web    main         5d ago   1.2 KB  <span class="m">idle</span>
+<span class="a">claude-code</span>  b21e6f04       Port the retry middleware onto tower::Layer   ~/code/mercury-tls  tls-rewrite  6d ago   2.5 KB  <span class="m">idle</span>
+<span class="a">opencode</span>     ses_71bc       Design the billing webhook retry schema       ~/code/atlas-web                 6d ago   1.3 KB  <span class="m">idle</span>
+<span class="a">jcode</span>        bright-canyon  Draft the incident postmortem                 ~/code/notes                     7d ago   845 B   <span class="m">idle</span>
+<span class="a">claude-code</span>  7f3a1c88       Trace the connection-pool leak under load     ~/code/mercury      main         9d ago   4.2 KB  <span class="m">idle</span>
+<span class="a">opencode</span>     ses_9d2a       Migrate the dashboard build to Vite 7         ~/code/atlas-web                 9d ago   927 B   <span class="v">archived</span>
 
 <span class="p">$</span> asm projects
-<span class="h">PROJECT           AGENTS                 SESSIONS  SIZE    WORKTREES  UPDATED</span>
-~/code/mercury    claude-code, jcode     3         7.4 KB  2/2        2d ago
-~/code/atlas-web  claude-code, opencode  3         3.5 KB             2d ago
-~/code/notes      jcode                  1         845 B              5d ago</pre>
+<span class="h">PROJECT           AGENTS                              SESSIONS  SIZE    WORKTREES  UPDATED</span>
+~/code/mercury    claude-code, codex, jcode           4         9.6 KB  2/2        3d ago
+~/code/atlas-web  antigravity, claude-code, codex, …  5         257 KB             1d ago
+~/code/notes      jcode                               1         845 B              7d ago</pre>
     </div>
   </div>
 </section>
@@ -352,12 +375,45 @@ footer { border-top: 1px solid var(--border); padding: 44px 0; color: var(--fg-f
         for when one at a time is not enough.
       </p>
     </div>
-    <div class="shot"><img src="shots/transcript.png" alt="The asm web UI: a list of sessions from three agents on the left, and an open transcript on the right showing reasoning, tool calls and results." width="2880" height="1800" loading="lazy" /></div>
+    <div class="shot"><img src="shots/transcript.png" alt="The asm web UI: a list of sessions from five agents on the left, and an open transcript on the right showing reasoning, tool calls and results." width="2880" height="1800" loading="lazy" /></div>
     <p class="shot-cap">Everything runs locally. Nothing is uploaded anywhere.</p>
     <div class="shot" style="margin-top: 28px">
       <img src="shots/bulk.png" alt="Three sessions ticked, with a bar above the list offering Archive, Unarchive, Import, Move, Export and Delete for the whole selection." width="2880" height="1800" loading="lazy" />
     </div>
     <p class="shot-cap">Select a set; the bar acts on all of it.</p>
+  </div>
+</section>
+
+<section id="reply">
+  <div class="wrap">
+    <div class="sec-head center">
+      <h2>Reply to it, don't just read it</h2>
+      <p>
+        Open a transcript and answer it. The turn runs in the agent that owns the session —
+        its model, its tools, its permissions — and streams back as it happens.
+      </p>
+    </div>
+    <div class="shot">
+      <img src="shots/reply.png" alt="An open transcript with a composer at the bottom. Below the stored conversation, a block marked IN FLIGHT shows the reply arriving: the message just sent, the agent's first response, and a tool call, with a Stop button beside the composer." width="2880" height="1800" loading="lazy" />
+    </div>
+    <p class="shot-cap">Marked <b>in flight</b> until the agent writes it to the session.</p>
+    <div class="feats" style="margin-top:34px">
+      <div class="feat">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/></svg></div>
+        <h3>It appends, it does not fork</h3>
+        <p>Checked against each agent: the same session id, the same transcript growing. A reply cannot end up stranded in a copy you are not looking at.</p>
+      </div>
+      <div class="feat">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6v6H9z"/></svg></div>
+        <h3>Stop means stop</h3>
+        <p>Closing the panel or pressing Stop kills the agent process. A turn nobody is watching does not keep spending tokens and editing files.</p>
+      </div>
+      <div class="feat">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4"/><path d="M12 17h.01"/><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/></svg></div>
+        <h3>Never into a live session</h3>
+        <p>If another terminal is driving that session right now, asm says so instead of offering a box. Two writers into one conversation is not something any of these CLIs promise to handle.</p>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -397,6 +453,11 @@ footer { border-top: 1px solid var(--border); padding: 44px 0; color: var(--fg-f
         <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></div>
         <h3>Act on many at once</h3>
         <p>Tick a set in either UI and archive, import, move, export or delete the lot. Every one is attempted, so a single failure cannot strand the rest, and what did not work is listed per session.</p>
+      </div>
+      <div class="feat">
+        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/></svg></div>
+        <h3>Send a message back</h3>
+        <p><code>asm send</code>, <kbd>c</kbd> in the terminal UI, or the composer in the browser. The reply streams in, and what asm does not recognise is shown rather than swallowed.</p>
       </div>
       <div class="feat">
         <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg></div>
@@ -461,6 +522,7 @@ Resume with:
           <div class="keyrow"><kbd>⏎</kbd><span>resume in the native agent — the TUI steps aside and comes back</span></div>
           <div class="keyrow"><kbd>r</kbd><span>rename · <kbd>a</kbd> archive · <kbd>d</kbd> delete, confirmed and backed up</span></div>
           <div class="keyrow"><kbd>m</kbd><span>move to another project · <kbd>i</kbd> import · <kbd>e</kbd> export</span></div>
+          <div class="keyrow"><kbd>c</kbd><span>reply to the session, streamed into the pane — <kbd>esc</kbd> stops it</span></div>
           <div class="keyrow"><kbd>s</kbd><span>search across transcripts · <kbd>/</kbd> filter the list</span></div>
           <div class="keyrow"><kbd>D</kbd><span>store health — the same report as <code>asm doctor</code></span></div>
         </div>
@@ -473,21 +535,26 @@ Resume with:
   <div class="wrap">
     <div class="sec-head">
       <h2>Agent support</h2>
-      <p>Verified means a real session was changed, then the agent's own CLI still listed and resumed it.</p>
+      <p>
+        Verified means a real session was changed, then the agent's own CLI still listed and
+        resumed it. Codex and Antigravity are read-only on purpose: neither ships a command
+        to write through, and the alternative is a raw write to a schema that keeps moving.
+      </p>
     </div>
     <div class="support">
       <table class="sup">
-        <thead><tr><th></th><th>Claude&nbsp;Code</th><th>OpenCode</th><th>jcode</th></tr></thead>
+        <thead><tr><th></th><th>Claude&nbsp;Code</th><th>OpenCode</th><th>jcode</th><th>Codex</th><th>Antigravity</th></tr></thead>
         <tbody>
-          <tr><td>List, show, search</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-          <tr><td>Resume natively</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-          <tr><td>Rename</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-          <tr><td>Archive · unarchive</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-          <tr><td>Delete, with backup</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-          <tr><td>Move to another project</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td></tr>
-          <tr><td>Import into</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td></tr>
-          <tr><td>Export to IR</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-          <tr><td class="mono" style="font-size:13px">tested against</td><td class="mono" style="font-size:13px">2.1.234</td><td class="mono" style="font-size:13px">1.17.18</td><td class="mono" style="font-size:13px">0.78.0</td></tr>
+          <tr><td>List, show, search</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>Resume natively</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>Reply to a session</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>Export to IR</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>Rename</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td>Archive · unarchive</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td>Delete, with backup</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td>Move to another project</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td>Import into</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td class="mono" style="font-size:13px">tested against</td><td class="mono" style="font-size:13px">2.1.234</td><td class="mono" style="font-size:13px">1.17.18</td><td class="mono" style="font-size:13px">0.78.0</td><td class="mono" style="font-size:13px">0.148.0</td><td class="mono" style="font-size:13px">1.1.16</td></tr>
         </tbody>
       </table>
     </div>
