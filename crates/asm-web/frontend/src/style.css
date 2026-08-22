@@ -81,7 +81,9 @@ body {
 }
 
 .sidebar {
-  width: 260px;
+  /* Set from JS and remembered per browser; the literal is the fallback for
+     the first paint, before the stored value is read. */
+  width: var(--sidebar-w, 260px);
   flex-shrink: 0;
   border-right: 1px solid var(--border);
   background: var(--bg-alt);
@@ -153,6 +155,56 @@ body {
   color: var(--fg-faint);
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
+}
+
+/* A project is named by the tail of its path, with the whole path beneath.
+   min-width: 0 so the ellipsis in .label actually engages — a flex child
+   defaults to its content width and would otherwise push the count out. */
+.side-item .ico {
+  width: 13px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.side-item .stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
+}
+.side-item .sublabel {
+  font-size: 11.5px;
+  color: var(--fg-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Truncated at the end, not the start. `direction: rtl` would put the
+   ellipsis on the informative side, but a path is slashes and neutral
+   characters, so the bidi algorithm reorders the whole run and
+   `~/code/atlas-web` renders as `code/atlas-web/~`. The distinguishing tail
+   is already the label above this, and the full path is on hover. */
+
+.side-resize {
+  flex: 0 0 7px;
+  margin: 0 -3px 0 -4px;
+  z-index: 2;
+  cursor: col-resize;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  transition: background 0.12s ease;
+  touch-action: none;
+}
+.side-resize:hover,
+.sidebar.resizing + .side-resize {
+  background: var(--accent-soft);
+}
+.side-resize:focus-visible {
+  outline: none;
+  background: var(--accent);
 }
 
 .warnings {
@@ -878,6 +930,9 @@ button:hover,
   .sidebar.open {
     transform: translateX(0);
     visibility: visible;
+  }
+  .side-resize {
+    display: none;
   }
   .scrim {
     display: block;

@@ -1,7 +1,7 @@
 <script setup>
 import { computed } from 'vue'
-import { Bot, Orbit, Sparkles, SquareTerminal, Terminal, Zap } from 'lucide-vue-next'
 import Tooltip from './Tooltip.vue'
+import { AGENTS, agentMeta } from '../agents.js'
 
 // An icon rather than a name badge: the list is scanned far more often than
 // it is read, and the name is one hover away.
@@ -10,21 +10,14 @@ const props = defineProps({
   size: { type: Number, default: 17 },
 })
 
-const AGENTS = {
-  'claude-code': { icon: Sparkles, name: 'Claude Code' },
-  opencode: { icon: SquareTerminal, name: 'OpenCode' },
-  jcode: { icon: Zap, name: 'jcode' },
-  codex: { icon: Terminal, name: 'Codex' },
-  antigravity: { icon: Orbit, name: 'Antigravity' },
-}
-
-const meta = computed(() => AGENTS[props.agent] ?? { icon: Bot, name: props.agent })
-const cls = computed(() => (AGENTS[props.agent] ? props.agent : 'unknown'))
+const meta = computed(() => agentMeta(props.agent))
+// An agent this build has no colour for still gets a mark, just a neutral one.
+const cls = computed(() => (props.agent in AGENTS ? props.agent : 'unknown'))
 </script>
 
 <template>
-  <Tooltip :label="meta.name">
-    <span class="agent-mark" :class="cls" :aria-label="meta.name" role="img">
+  <Tooltip :label="meta.label">
+    <span class="agent-mark" :class="cls" :aria-label="meta.label" role="img">
       <component :is="meta.icon" :size="size" :stroke-width="2" />
     </span>
   </Tooltip>

@@ -14,14 +14,13 @@ import {
   Play,
   RefreshCw,
   Search,
-  Sparkles,
-  SquareTerminal,
   Trash2,
   TriangleAlert,
-  Zap,
 } from 'lucide-vue-next'
 import api from './api.js'
+import { agentOptions, resumeCommand } from './agents.js'
 import { shortId, shortProject } from './ids.js'
+import { uniqueTails } from './paths.js'
 import TranscriptView from './TranscriptView.vue'
 import AgentMark from './components/AgentMark.vue'
 import IconButton from './components/IconButton.vue'
@@ -47,11 +46,18 @@ const isNarrow = ref(narrowQuery.matches)
 const onNarrowChange = (e) => (isNarrow.value = e.matches)
 let pollTimer = null
 
-const AGENT_OPTIONS = [
-  { value: 'claude-code', label: 'Claude Code', icon: Sparkles },
-  { value: 'opencode', label: 'OpenCode', icon: SquareTerminal },
-  { value: 'jcode', label: 'jcode', icon: Zap },
-]
+// Derived rather than listed. A hand-written table is what let the filter
+// go on offering three agents after two more were supported, and nothing in
+// the build could catch it. Agents come from what the server reports; their
+// names and icons come from ./agents.js, the one place those live.
+const AGENT_FILTER_OPTIONS = computed(() =>
+  agentOptions([
+    ...(doctor.value?.agents || []).map((a) => a.agent),
+    // Fall back to the sessions themselves before doctor has answered, so
+    // the control is never briefly empty.
+    ...sessions.value.map((s) => s.ref.agent),
+  ]),
+)
 
 /* Data ---------------------------------------------------------------- */
 async function refresh() {
@@ -135,6 +141,103 @@ const warnings = computed(() =>
 const home = ref(null)
 api.meta().then((m) => (home.value = m.home)).catch(() => {})
 const shortDir = (root) => shortProject(root, home.value)
+
+/* Sidebar width ------------------------------------------------------- */
+
+const SIDEBAR_MIN = 190
+const SIDEBAR_MAX = 560
+const SIDEBAR_DEFAULT = 260
+
+// Remembered per browser. Wrapped because a private window, cleared site
+// data or a browser set to block storage makes even reading it throw.
+function storedWidth() {
+  try {
+    const saved = Number(localStorage.getItem('asm.sidebarWidth'))
+    if (Number.isFinite(saved) && saved >= SIDEBAR_MIN && saved <= SIDEBAR_MAX) return saved
+  } catch {
+    /* no stored preference is a fine state to be in */
+  }
+  return SIDEBAR_DEFAULT
+}
+
+const sidebarWidth = ref(storedWidth())
+const resizing = ref(false)
+
+function setSidebarWidth(px) {
+  sidebarWidth.value = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(px)))
+}
+
+function persistSidebarWidth() {
+  try {
+    localStorage.setItem('asm.sidebarWidth', String(sidebarWidth.value))
+  } catch {
+    /* the width still applies for this page; it just will not be recalled */
+  }
+}
+
+function startResize(event) {
+  // Pointer capture rather than window listeners: the pointer leaves the
+  // 5px handle immediately, and without capture the drag stops dead the
+  // moment it does.
+  event.preventDefault()
+  resizing.value = true
+  const handle = event.currentTarget
+  handle.setPointerCapture?.(event.pointerId)
+}
+
+function onResizeMove(event) {
+  if (!resizing.value) return
+  // Measured from the viewport edge, so the width follows the pointer
+  // exactly rather than drifting by wherever the grab started.
+  setSidebarWidth(event.clientX)
+}
+
+function endResize() {
+  if (!resizing.value) return
+  resizing.value = false
+  persistSidebarWidth()
+}
+
+// The keyboard has to be able to do this too; a mouse-only affordance is
+// not an affordance for everyone.
+function onResizeKey(event) {
+  const step = event.shiftKey ? 40 : 10
+  const moves = { ArrowLeft: -step, ArrowRight: step }
+  if (event.key in moves) {
+    event.preventDefault()
+    setSidebarWidth(sidebarWidth.value + moves[event.key])
+    persistSidebarWidth()
+    return
+  }
+  if (event.key === 'Home' || event.key === 'End') {
+    event.preventDefault()
+    setSidebarWidth(event.key === 'Home' ? SIDEBAR_MIN : SIDEBAR_MAX)
+    persistSidebarWidth()
+  }
+}
+
+function resetSidebarWidth() {
+  setSidebarWidth(SIDEBAR_DEFAULT)
+  persistSidebarWidth()
+}
+
+/* Project labels ------------------------------------------------------ */
+
+// What to call each project in the sidebar: the last segment of its path,
+// grown only as far as it takes to tell it from the others.
+const projectTails = computed(() =>
+  uniqueTails(projects.value.map((p) => shortDir(p.root))),
+)
+function projectLabel(root) {
+  const shown = shortDir(root)
+  return projectTails.value.get(shown) || shown
+}
+// Suppressed when it would just repeat the label — a one-segment path says
+// everything twice otherwise.
+function projectSubtitle(root) {
+  const shown = shortDir(root)
+  return projectLabel(root) === shown ? '' : shown
+}
 
 // SessionStatus is an internally tagged enum: {"state":"live","pid":N} |
 // {"state":"idle"} | {"state":"archived"}.
@@ -327,16 +430,8 @@ function doImport(s) {
     })
 }
 
-const RESUME = {
-  'claude-code': (s) => `claude --resume ${s.ref.native_id}`,
-  opencode: (s) => `opencode -s ${s.ref.native_id}`,
-  // jcode resolves --resume by memorable short name or id.
-  jcode: (s) => `jcode --resume ${s.slug || s.ref.native_id}`,
-}
-
 function copyResume(s) {
-  const cmd = RESUME[s.ref.agent]?.(s) ?? s.ref.native_id
-  const full = `cd ${s.project_root} && ${cmd}`
+  const full = `cd ${s.project_root} && ${resumeCommand(s)}`
   navigator.clipboard?.writeText(full)
   status.value = `Copied: ${full}`
 }
@@ -404,7 +499,11 @@ function pickProject(root) {
   <div class="layout">
     <div v-if="sidebarOpen" class="scrim" @click="sidebarOpen = false" />
 
-    <aside class="sidebar" :class="{ open: sidebarOpen }">
+    <aside
+      class="sidebar"
+      :class="{ open: sidebarOpen, resizing }"
+      :style="{ '--sidebar-w': sidebarWidth + 'px' }"
+    >
       <div class="brand">
         <Boxes :size="20" />
         <span>asm</span>
@@ -429,8 +528,17 @@ function pickProject(root) {
             :title="p.repo ? `${p.root} — ${p.worktrees.length} worktrees` : p.root"
             @click="pickProject(p.root)"
           >
-            <GitBranch v-if="p.worktrees.length > 1" :size="13" class="faint" />
-            <span class="label">{{ shortDir(p.root) }}</span>
+            <!-- Always rendered, so a project with worktrees does not sit
+                 indented relative to every project without them. -->
+            <span class="ico">
+              <GitBranch v-if="p.worktrees.length > 1" :size="13" class="faint" />
+            </span>
+            <span class="stack">
+              <span class="label">{{ projectLabel(p.root) }}</span>
+              <span v-if="projectSubtitle(p.root)" class="sublabel">{{
+                projectSubtitle(p.root)
+              }}</span>
+            </span>
             <span class="count" :title="`${p.session_count} sessions · ${humanBytes(p.size_bytes)}`">
               {{ p.session_count }}
             </span>
@@ -461,7 +569,27 @@ function pickProject(root) {
           <span>{{ w }}</span>
         </div>
       </div>
+
     </aside>
+
+    <div
+      class="side-resize"
+      role="separator"
+      tabindex="0"
+      aria-label="Resize the sidebar"
+      aria-orientation="vertical"
+      :aria-valuenow="sidebarWidth"
+      :aria-valuemin="SIDEBAR_MIN"
+      :aria-valuemax="SIDEBAR_MAX"
+      title="Drag to resize · double-click to reset"
+      @pointerdown="startResize"
+      @pointermove="onResizeMove"
+      @pointerup="endResize"
+      @pointercancel="endResize"
+      @lostpointercapture="endResize"
+      @dblclick="resetSidebarWidth"
+      @keydown="onResizeKey"
+    />
 
     <main class="main">
       <div class="toolbar">
@@ -486,7 +614,7 @@ function pickProject(root) {
 
         <SelectMenu
           v-model="selectedAgents"
-          :options="AGENT_OPTIONS"
+          :options="AGENT_FILTER_OPTIONS"
           multiple
           label="Filter by agent"
           placeholder="All agents"
