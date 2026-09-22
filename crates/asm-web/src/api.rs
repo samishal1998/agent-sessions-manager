@@ -322,7 +322,13 @@ async fn bulk(Json(body): Json<BulkBody>) -> ApiResult<Value> {
         for target in &body.sessions {
             match resolve(&target.agent, &target.native_id) {
                 Ok(session) => sessions.push(session),
-                Err(_) => unresolved.push(format!("{}:{}", target.agent, target.native_id)),
+                // Why, too: gone is one reason, one id in two places another.
+                Err((_, Json(e))) => unresolved.push(format!(
+                    "{}:{}: {}",
+                    target.agent,
+                    target.native_id,
+                    e.get("error").and_then(Value::as_str).unwrap_or("no longer present")
+                )),
             }
         }
         let report = asm_core::bulk::run(&sessions, &body.action);

@@ -165,7 +165,7 @@ pub(crate) fn install(
     // The journal is only ever half the state; installing it, or leaving
     // one here for jcode to replay onto the hub's snapshot, would make a
     // conversation neither machine had.
-    if file("journal.jsonl").is_some() {
+    if manifest.files.iter().any(|f| f.path == "journal.jsonl" && f.size > 0) {
         return Err(CoreError::Invalid {
             msg: format!(
                 "the pushing machine had turns of {id} jcode had not written into the session yet; \

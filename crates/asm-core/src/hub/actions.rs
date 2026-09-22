@@ -104,10 +104,22 @@ pub fn push(remote: &Remote, sessions: &[Session], force: bool, exact: bool) -> 
     // between them on every run — so is pushing either, which would back
     // up whichever a caller happened to list. Counted over everything here,
     // not only the batch: a daemon or a single row offers one copy.
-    let everything = crate::ops::list_sessions(&crate::adapter::SessionFilter {
-        include_children: true,
-        ..Default::default()
-    })?;
+    // Per agent in the batch, and a store that cannot be read only narrows
+    // the check to the batch: it is no reason to refuse every push.
+    let mut agents: Vec<AgentKind> = sessions.iter().map(|s| s.handle.agent).collect();
+    agents.sort_by_key(|a| a.as_str());
+    agents.dedup();
+    let everything: Vec<Session> = agents
+        .into_iter()
+        .flat_map(|agent| {
+            crate::ops::list_sessions(&crate::adapter::SessionFilter {
+                agent: Some(agent),
+                include_children: true,
+                ..Default::default()
+            })
+            .unwrap_or_default()
+        })
+        .collect();
     let mut places: HashMap<String, Vec<&crate::model::SessionLocation>> = HashMap::new();
     for s in sessions.iter().chain(&everything) {
         let here = places.entry(key(s.handle.agent, &s.handle.native_id)).or_default();
@@ -126,8 +138,12 @@ pub fn push(remote: &Remote, sessions: &[Session], force: bool, exact: bool) -> 
             continue;
         }
         let copies = places[&k].len();
-        // An OpenCode subagent travels in its parent's bundle.
-        if agent == AgentKind::OpenCode && session.parent.is_some() {
+        // An OpenCode subagent travels in its parent's bundle — if that
+        // parent is here to carry it; an orphan goes as its own root.
+        let carried = session.parent.as_ref().is_some_and(|p| {
+            everything.iter().any(|s| s.handle.agent == AgentKind::OpenCode && &s.handle.native_id == p)
+        });
+        if agent == AgentKind::OpenCode && carried {
             report.items.push(BulkItem {
                 agent,
                 native_id: id.clone(),
@@ -226,7 +242,9 @@ fn push_one(
 
     let parent = match (&tracked, head) {
         (Some(t), Some(h)) if h.rev == t.hub_rev => {
-            if canonical == t.canonical && files_now(&bundle) == t.files {
+            // With `exact`, the record is not trusted for the files: a
+            // non-exact sync records this machine's list, not the hub's.
+            if canonical == t.canonical && files_now(&bundle) == t.files && (!exact || same_as(h, &bundle)?) {
                 record(state, &h.rev, t.files.clone())?;
                 return Ok(in_sync());
             }

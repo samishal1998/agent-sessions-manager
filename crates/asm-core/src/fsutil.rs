@@ -108,7 +108,13 @@ pub fn lock_exclusive(path: &Path) -> Result<Option<fs::File>, CoreError> {
         use std::os::fd::AsRawFd;
         // Safety: flock on a descriptor this function owns.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Ok(None);
+            let e = std::io::Error::last_os_error();
+            // Only "someone holds it" means held; a filesystem that cannot
+            // lock at all (NFS without lockd) is an error to show as such.
+            return match e.kind() {
+                std::io::ErrorKind::WouldBlock => Ok(None),
+                _ => Err(CoreError::io(path, e)),
+            };
         }
     }
     Ok(Some(file))

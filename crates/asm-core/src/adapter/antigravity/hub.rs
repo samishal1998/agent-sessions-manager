@@ -31,6 +31,15 @@ pub(crate) fn collect(adapter: &AntigravityAdapter, session: &Session) -> Result
     let id = &session.handle.native_id;
     let db = adapter.conversations_dir().join(format!("{id}.db"));
 
+    // The transcript first, read once: its complete lines are both what is
+    // uploaded and the identity, and the database snapshotted after it is
+    // at least as new as that identity.
+    let transcript = match std::fs::read(adapter.transcript_of(id)) {
+        Ok(raw) => Some(bundle::complete_lines(&raw).to_vec()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(CoreError::io(adapter.transcript_of(id), e)),
+    };
+
     let tmp_dir = paths::tmp_dir()?;
     let snapshot = tmp_dir.join(format!("antigravity-{id}-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&snapshot);
@@ -42,7 +51,10 @@ pub(crate) fn collect(adapter: &AntigravityAdapter, session: &Session) -> Result
     let _ = std::fs::remove_file(&snapshot);
     let mut files = vec![Staged::bytes("conversation.db", bytes?)];
 
-    files.extend(bundle::walk(&adapter.root().join("brain").join(id), "brain")?);
+    files.extend(bundle::walk(&adapter.root().join("brain").join(id), "brain")?.into_iter().filter(|f| f.entry.path != TRANSCRIPT));
+    if let Some(lines) = &transcript {
+        files.push(Staged::bytes(TRANSCRIPT, lines.clone()));
+    }
 
     // Its cache entries, as data. `last_conversations.json` maps a workspace
     // to one conversation per directory, so writing it back on another
@@ -64,10 +76,9 @@ pub(crate) fn collect(adapter: &AntigravityAdapter, session: &Session) -> Result
         serde_json::to_vec_pretty(&json!({ "metadata": metadata, "workspace": workspace })).unwrap(),
     ));
 
-    let transcript = adapter.transcript_of(id);
-    let canonical = match std::fs::read(&transcript) {
-        Ok(raw) => fsutil::sha256_hex(bundle::complete_lines(&raw)),
-        Err(_) => crate::index::fingerprint(session),
+    let canonical = match &transcript {
+        Some(lines) => fsutil::sha256_hex(lines),
+        None => crate::index::fingerprint(session),
     };
     Ok(Bundle { files, canonical, extra: Value::Null })
 }
@@ -92,11 +103,11 @@ pub(crate) fn install(
     let hub_lines = match file(TRANSCRIPT) {
         Some(sha) => {
             let path = blob(sha)?;
-            std::fs::read(&path).map_err(|e| CoreError::io(&path, e))?
+            let raw = std::fs::read(&path).map_err(|e| CoreError::io(&path, e))?;
+            Some(bundle::complete_lines(&raw).to_vec())
         }
-        None => Vec::new(),
+        None => None,
     };
-    let hub_lines = bundle::complete_lines(&hub_lines).to_vec();
 
     // agy holds this while a process has the conversation open; holding it
     // here keeps agy out while asm writes.
@@ -119,13 +130,21 @@ pub(crate) fn install(
     }
     let local_transcript = adapter.transcript_of(id);
     let outcome = if db.is_file() {
-        let raw = std::fs::read(&local_transcript).unwrap_or_default();
+        // Without a transcript on either side there is nothing to tell the
+        // two databases apart by, so neither is taken for the other's past.
+        let (Some(hub_lines), Ok(raw)) = (&hub_lines, std::fs::read(&local_transcript)) else {
+            return Ok(Installed {
+                outcome: InstallOutcome::Diverged,
+                project_root: bundle::target_dir(manifest, project_dir).unwrap_or_default(),
+                path: db,
+            });
+        };
         let local = bundle::complete_lines(&raw);
         let content = if local == hub_lines.as_slice() {
             InstallOutcome::InSync
         } else if hub_lines.starts_with(local) {
             InstallOutcome::Replaced
-        } else if local.starts_with(&hub_lines) {
+        } else if local.starts_with(hub_lines) {
             InstallOutcome::Ahead
         } else {
             InstallOutcome::Diverged
@@ -151,26 +170,49 @@ pub(crate) fn install(
             fsutil::copy_recursive(&brain, &backup.join("brain"))?;
         }
     }
-    // The brain first and the database last: until the database is there,
-    // agy does not know the conversation.
-    for entry in &manifest.files {
-        let (Some(rest), Some(sha)) = (entry.path.strip_prefix("brain/"), &entry.sha256) else {
-            continue;
-        };
-        let dest = brain.join(rest);
-        bundle::real_dirs(&brain, dest.parent().unwrap_or(&brain))?;
-        if std::fs::symlink_metadata(&dest).is_ok_and(|m| !m.is_file()) {
-            continue;
+    let write_db = || -> Result<(), CoreError> {
+        let dir = adapter.conversations_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| CoreError::io(&dir, e))?;
+        for stale in [PathBuf::from(format!("{}-shm", db.display())), wal.clone()] {
+            // Empty (checked above for the log): what an unclean exit leaves.
+            let _ = std::fs::remove_file(stale);
         }
-        fsutil::copy_atomic(&blob(sha)?, &dest)?;
+        fsutil::copy_atomic(&db_src, &db)
+    };
+    let write_brain = || -> Result<(), CoreError> {
+        for entry in &manifest.files {
+            let (Some(rest), Some(sha)) = (entry.path.strip_prefix("brain/"), &entry.sha256) else {
+                continue;
+            };
+            let dest = brain.join(rest);
+            bundle::real_dirs(&brain, dest.parent().unwrap_or(&brain))?;
+            if std::fs::symlink_metadata(&dest).is_ok_and(|m| !m.is_file()) {
+                continue;
+            }
+            if entry.path != TRANSCRIPT {
+                fsutil::copy_atomic(&blob(sha)?, &dest)?;
+            }
+        }
+        // Last, and complete lines only, so agy's next append starts a line.
+        if let Some(lines) = &hub_lines {
+            let dest = brain.join(TRANSCRIPT.trim_start_matches("brain/"));
+            bundle::real_dirs(&brain, dest.parent().unwrap_or(&brain))?;
+            fsutil::write_atomic(&dest, lines)?;
+        }
+        Ok(())
+    };
+    // The transcript is what says which copy this is, so it is written
+    // last whenever a database is already here: an interrupted replace
+    // leaves the old transcript, and the next pull replaces again. A new
+    // conversation goes the other way, database last, because until the
+    // database is there agy does not know the conversation at all.
+    if outcome == InstallOutcome::Replaced {
+        write_db()?;
+        write_brain()?;
+    } else {
+        write_brain()?;
+        write_db()?;
     }
-    let dir = adapter.conversations_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| CoreError::io(&dir, e))?;
-    for stale in [PathBuf::from(format!("{}-shm", db.display())), wal] {
-        // Empty (checked above for the log): what an unclean exit leaves.
-        let _ = std::fs::remove_file(stale);
-    }
-    fsutil::copy_atomic(&db_src, &db)?;
     Ok(installed)
 }
 

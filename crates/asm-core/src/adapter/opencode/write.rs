@@ -23,7 +23,15 @@ const AGENT: &str = "opencode";
 
 /// Every table that holds rows of a session besides `session` itself: what
 /// a backup copies, a delete removes, and a hub bundle carries.
-pub(super) const SESSION_TABLES: [&str; 5] = ["message", "part", "todo", "session_share", "session_input"];
+pub(super) const SESSION_TABLES: [&str; 7] = [
+    "message",
+    "part",
+    "todo",
+    "session_share",
+    "session_input",
+    "session_message",
+    "session_context_epoch",
+];
 
 pub(super) fn guard_not_busy(adapter: &OpenCodeAdapter) -> Result<(), CoreError> {
     let held: Vec<String> = adapter
@@ -218,8 +226,8 @@ pub(super) fn delete(
     // Deepest first, so a failure part-way never orphans a child behind a
     // deleted parent.
     for target in targets.iter().rev() {
-        // Child rows go explicitly rather than by FK cascade: SQLite only
-        // enforces those when the connection opts in.
+        // Child rows go explicitly, so the backup above and this list agree
+        // on what a session is, whatever the connection's foreign-key mode.
         for table in SESSION_TABLES {
             if table_exists(&conn, table) {
                 conn.execute(

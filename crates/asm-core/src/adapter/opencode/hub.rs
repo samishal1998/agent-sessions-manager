@@ -27,19 +27,23 @@ use crate::hub::manifest::Manifest;
 use crate::model::Session;
 use crate::{CoreError, fsutil};
 
-const TABLES: [&str; 5] = write::SESSION_TABLES;
+const TABLES: [&str; 7] = write::SESSION_TABLES;
 
 /// Each table with the column that moves when one of its rows changes.
-const WATCHED: [(&str, &str); 5] = [
+const WATCHED: [(&str, &str); 7] = [
     ("message", "time_updated"),
     ("part", "time_updated"),
     ("todo", "time_updated"),
     ("session_share", "time_updated"),
     ("session_input", "time_created"),
+    ("session_message", "time_updated"),
+    ("session_context_epoch", "baseline_seq"),
 ];
 
-/// Session columns that say where a machine files it, rewritten on install.
-const PER_MACHINE: [&str; 4] = ["project_id", "directory", "path", "workspace_id"];
+/// Session columns that are one machine's own: where it files the session,
+/// rewritten on install, and whether it archived it there (a move archives
+/// the source once the hub has it; the other machine pulls it to use it).
+const PER_MACHINE: [&str; 5] = ["project_id", "directory", "path", "workspace_id", "time_archived"];
 
 /// What moves when anything the bundle holds does: every descendant's
 /// session row, and each table's row count and newest time for it. A
@@ -48,7 +52,11 @@ const PER_MACHINE: [&str; 4] = ["project_id", "directory", "path", "workspace_id
 /// changed, and it is the bundle's identity.
 fn watermark(conn: &Connection, root: &str) -> String {
     let mut parts = Vec::new();
-    for id in write::with_descendants(conn, root) {
+    // Sorted: the store returns children in insert order, and a pull
+    // inserts them in id order, so the same tree must hash the same.
+    let mut ids = write::with_descendants(conn, root);
+    ids.sort();
+    for id in ids {
         let ask = |sql: &str| {
             conn.query_row(sql, [&id], |r| r.get::<_, String>(0)).unwrap_or_else(|_| "?".into())
         };
@@ -117,13 +125,15 @@ pub(crate) fn collect(adapter: &OpenCodeAdapter, session: &Session) -> Result<Bu
 
 /// How each table's rows are told apart, and the column that moves when
 /// one changes.
-const KEYS: [(&str, &[&str], &str); 6] = [
+const KEYS: [(&str, &[&str], &str); 8] = [
     ("session", &["id"], "time_updated"),
     ("message", &["id"], "time_updated"),
     ("part", &["id"], "time_updated"),
     ("todo", &["session_id", "position"], "time_updated"),
     ("session_share", &["session_id"], "time_updated"),
     ("session_input", &["id"], "time_created"),
+    ("session_message", &["id"], "time_updated"),
+    ("session_context_epoch", &["session_id"], "baseline_seq"),
 ];
 
 type Times = HashMap<(&'static str, String), i64>;
@@ -283,6 +293,7 @@ fn write_tree(
                     row.insert("directory".into(), json!(place.directory));
                     row.insert("path".into(), place.path.clone());
                     row.insert("workspace_id".into(), place.workspace_id.clone());
+                    row.insert("time_archived".into(), Value::Null);
                 }
                 insert(&tx, table, &row)?;
             }
@@ -601,19 +612,37 @@ mod tests {
     }
 
     #[test]
-    fn a_rename_or_an_archive_moves_the_watermark() {
+    fn a_rename_moves_the_watermark_and_this_machines_own_columns_do_not() {
         let dir = tempfile::tempdir().unwrap();
         let a = machine_a(dir.path());
         let before = watermark(&a, ROOT);
         a.execute("UPDATE session SET title = 'Renamed' WHERE id = ?1", [ROOT]).unwrap();
         let renamed = watermark(&a, ROOT);
-        a.execute("UPDATE session SET time_archived = 99 WHERE id = ?1", [ROOT]).unwrap();
-        assert!(before != renamed && renamed != watermark(&a, ROOT));
-        // Where it is filed is not part of it.
-        a.execute("UPDATE session SET directory = '/elsewhere', path = 'sub' WHERE id = ?1", [ROOT]).unwrap();
-        let archived = watermark(&a, ROOT);
-        a.execute("UPDATE session SET directory = '/home/b/billing' WHERE id = ?1", [ROOT]).unwrap();
-        assert_eq!(archived, watermark(&a, ROOT));
+        assert_ne!(before, renamed);
+        // Where it is filed, and whether it was archived here after a move.
+        a.execute(
+            "UPDATE session SET directory = '/elsewhere', path = 'sub', time_archived = 99 WHERE id = ?1",
+            [ROOT],
+        )
+        .unwrap();
+        assert_eq!(renamed, watermark(&a, ROOT));
+    }
+
+    /// Children come back in insert order here and in id order after a
+    /// pull; the same tree must still read as the same.
+    #[test]
+    fn subagents_in_another_order_are_the_same_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = machine_a(dir.path());
+        // Created later, sorting earlier: OpenCode's ids descend.
+        session(&a, "ses_aaaa00000000000000000000", Some(ROOT), "proj_a", "/home/a/billing", 45);
+        let hub = dump_tree(&a, ROOT);
+        let mut b = store(dir.path(), "proj_b", "/home/b/billing");
+        session(&b, ROOT, None, "proj_b", "/home/b/billing", 10);
+        let place = place_of(&b, ROOT).unwrap();
+        let local = write::with_descendants(&b, ROOT);
+        write_tree(&mut b, &local, &hub, &place).unwrap();
+        assert_eq!(watermark(&b, ROOT), watermark(&a, ROOT));
     }
 
     #[test]

@@ -43,16 +43,23 @@ pub fn cycle(
         let synced = state.get(&k).is_some_and(|t| t.fingerprint == fingerprint);
         let (before, waited) = seen.get(&k).cloned().unwrap_or_default();
         let waited = if synced { 0 } else { waited + 1 };
-        if !synced && (before == fingerprint || waited > MAX_WAIT) {
+        if !synced && (before == fingerprint || waited >= MAX_WAIT) {
             ready.push(session);
         }
-        now.insert(k, (fingerprint, if waited > MAX_WAIT { 0 } else { waited }));
+        now.insert(k, (fingerprint, waited));
+    }
+    let report = if ready.is_empty() { BulkReport::default() } else { actions::push(remote, &ready, false, false)? };
+    // The wait starts over only for what the hub now has; a push that
+    // failed is tried again next pass rather than waiting another round.
+    for item in &report.items {
+        if matches!(item.outcome, ItemOutcome::Ok { .. })
+            && let Some(entry) = now.get_mut(&key(item.agent, &item.native_id))
+        {
+            entry.1 = 0;
+        }
     }
     *seen = now;
-    if ready.is_empty() {
-        return Ok(BulkReport::default());
-    }
-    actions::push(remote, &ready, false, false)
+    Ok(report)
 }
 
 /// Run passes forever. `say` gets one line per event; a session (or the

@@ -383,7 +383,7 @@ async function runBulk(action, confirmText) {
     const report = await api.bulk(batch, action)
     status.value = report.summary
     if (report.unresolved?.length) {
-      status.value += `, ${report.unresolved.length} no longer present`
+      status.value += `; not done: ${report.unresolved.join('; ')}`
     }
     // Only interrupt when there is something to say beyond the count.
     if (report.problems?.length) bulkProblems.value = report
@@ -450,7 +450,7 @@ function doPush(s) {
     // A skip is not a push either: say why, rather than "complete".
     if (report.failed || report.skipped || report.unresolved?.length)
       throw new Error(
-        [...report.problems, ...(report.unresolved || []).map((u) => `${u}: no longer present`)].join('; '),
+        [...report.problems, ...(report.unresolved || [])].join('; '),
       )
     await loadHub()
   })
