@@ -430,7 +430,7 @@ footer { border-top: 1px solid var(--border); padding: 44px 0; color: var(--fg-f
         </p>
         <ul>
           <li><b>Nothing is merged or guessed.</b> Every push names the revision it started from; two machines that both continued a session are told, never silently reconciled.</li>
-          <li><b>A daemon that only pushes.</b> <code>asm daemon</code> sends what changed once it has held still, so closing the lid loses at most one interval — and never writes into a session you are using.</li>
+          <li><b>A daemon that only pushes.</b> <code>asm daemon</code> sends what changed once it has held still, and a long run every few minutes regardless — and it never writes into a session you are using.</li>
           <li><b>Move, not copy.</b> <code>asm push --move</code> archives it here once the hub has it; <code>asm pull</code> picks it up there.</li>
           <li><b>Your TLS, one token per machine.</b> The hub speaks HTTP on a network you trust; each machine gets its own revocable credential, and none appears in a process list.</li>
         </ul>
