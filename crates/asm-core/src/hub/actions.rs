@@ -364,6 +364,11 @@ pub fn pull(remote: &Remote, query: &str, project_dir: Option<&Path>) -> Result<
                 .ok_or_else(|| invalid("cannot locate the Claude Code store"))?;
             crate::adapter::claude::hub::install(&adapter, manifest, &blob, project_dir)?
         }
+        AgentKind::Codex => {
+            let adapter = crate::adapter::codex::CodexAdapter::default_store()
+                .ok_or_else(|| invalid("cannot locate the Codex store"))?;
+            crate::adapter::codex::hub::install(&adapter, manifest, &blob, project_dir)?
+        }
         AgentKind::JCode => {
             let adapter = crate::adapter::jcode::JCodeAdapter::default_store()
                 .ok_or_else(|| invalid("cannot locate the jcode store"))?;

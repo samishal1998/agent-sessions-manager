@@ -41,6 +41,11 @@ impl CodexAdapter {
         CodexAdapter { root: root.into() }
     }
 
+    /// The default store, whether or not codex has created it yet.
+    pub fn default_store() -> Option<Self> {
+        default_root().map(Self::with_root)
+    }
+
     pub fn detect_default() -> Option<Self> {
         let root = default_root()?;
         // Either half is enough: a fresh install has the database before it
