@@ -170,7 +170,9 @@ fn a_live_session_is_one_whose_pid_still_exists() {
 }
 
 #[test]
-fn resume_uses_the_memorable_name_in_the_session_directory() {
+/// By id, not by the memorable name: names are unique only per machine, and
+/// a session pulled from another one can share its name with one here.
+fn resume_uses_the_id_in_the_session_directory() {
     let dir = tempfile::tempdir().unwrap();
     write_store(dir.path());
     let session = only(dir.path());
@@ -178,7 +180,7 @@ fn resume_uses_the_memorable_name_in_the_session_directory() {
 
     assert_eq!(command.get_program(), "jcode");
     let args: Vec<_> = command.get_args().collect();
-    assert_eq!(args, ["--resume", "fox"]);
+    assert_eq!(args, ["--resume", session.handle.native_id.as_str()]);
     assert_eq!(command.get_current_dir(), Some(Path::new("/home/user/projects/demo")));
 }
 

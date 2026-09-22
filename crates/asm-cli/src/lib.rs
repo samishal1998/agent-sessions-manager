@@ -1072,7 +1072,7 @@ fn pull(query: &str, project_dir: Option<&std::path::Path>, json: bool) -> anyho
         return Ok(());
     }
     let from = pulled.from.as_deref().unwrap_or("the hub");
-    let label = format!("{} {}", pulled.agent, asm_core::model::short_id_of(pulled.agent, &pulled.id, None));
+    let label = format!("{} {}", pulled.agent, asm_core::model::short_id_of(pulled.agent, &pulled.id, pulled.slug.as_deref()));
     let project = pulled.installed.project_root.display();
     match pulled.installed.outcome {
         InstallOutcome::New => println!("Installed {label} from {from} in {project}."),

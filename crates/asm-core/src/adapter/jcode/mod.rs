@@ -38,6 +38,11 @@ impl JCodeAdapter {
         JCodeAdapter { root: root.into() }
     }
 
+    /// The default store, whether or not jcode has created it yet.
+    pub fn default_store() -> Option<Self> {
+        default_root().map(Self::with_root)
+    }
+
     pub fn detect_default() -> Option<Self> {
         let root = default_root()?;
         root.join("sessions").is_dir().then_some(JCodeAdapter { root })
@@ -95,10 +100,10 @@ impl AgentRead for JCodeAdapter {
 
     fn resume_command(&self, session: &Session) -> Option<std::process::Command> {
         let mut cmd = std::process::Command::new("jcode");
-        // jcode resolves `--resume` by memorable short name or by id; the
-        // short name is what its own UI shows, so prefer it when present.
-        let target = session.slug.clone().unwrap_or_else(|| session.handle.native_id.clone());
-        cmd.arg("--resume").arg(target).current_dir(&session.project_root);
+        // jcode resolves `--resume` by id or by memorable short name. The id:
+        // names are only unique per machine, and a session pulled from
+        // another one can share its name with one started here.
+        cmd.arg("--resume").arg(&session.handle.native_id).current_dir(&session.project_root);
         Some(cmd)
     }
 

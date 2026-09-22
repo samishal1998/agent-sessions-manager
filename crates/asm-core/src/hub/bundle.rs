@@ -199,7 +199,7 @@ pub(crate) fn target_dir(manifest: &super::manifest::Manifest, project_dir: Opti
 /// Agents whose pull asm can perform today. The rest are backed up only;
 /// each is added once its own CLI has been seen to resume a restored copy.
 pub fn restorable(agent: AgentKind) -> bool {
-    matches!(agent, AgentKind::ClaudeCode | AgentKind::OpenCode)
+    matches!(agent, AgentKind::ClaudeCode | AgentKind::OpenCode | AgentKind::JCode)
 }
 
 #[cfg(test)]

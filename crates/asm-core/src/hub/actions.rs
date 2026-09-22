@@ -327,6 +327,7 @@ pub struct Pulled {
     pub agent: AgentKind,
     pub id: String,
     pub title: Option<String>,
+    pub slug: Option<String>,
     /// The machine that pushed this revision.
     pub from: Option<String>,
     #[serde(flatten)]
@@ -363,6 +364,11 @@ pub fn pull(remote: &Remote, query: &str, project_dir: Option<&Path>) -> Result<
                 .ok_or_else(|| invalid("cannot locate the Claude Code store"))?;
             crate::adapter::claude::hub::install(&adapter, manifest, &blob, project_dir)?
         }
+        AgentKind::JCode => {
+            let adapter = crate::adapter::jcode::JCodeAdapter::default_store()
+                .ok_or_else(|| invalid("cannot locate the jcode store"))?;
+            crate::adapter::jcode::hub::install(&adapter, manifest, &blob, project_dir)?
+        }
         AgentKind::OpenCode => {
             let adapter = crate::adapter::opencode::OpenCodeAdapter::default_store()
                 .ok_or_else(|| invalid("cannot locate the OpenCode store"))?;
@@ -397,6 +403,7 @@ pub fn pull(remote: &Remote, query: &str, project_dir: Option<&Path>) -> Result<
         agent,
         id,
         title: manifest.title.clone(),
+        slug: manifest.slug.clone(),
         from: manifest.machine.as_ref().map(|m| m.name.clone()),
         installed,
     })
