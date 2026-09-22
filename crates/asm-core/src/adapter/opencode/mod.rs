@@ -13,6 +13,7 @@
 //!   subagent/child sessions. Rows from older CLI generations (1.2.x) have
 //!   NULL path/agent/model — both generations coexist in one table.
 
+pub(crate) mod hub;
 mod live;
 mod export_ir;
 mod import_ir;
@@ -121,7 +122,7 @@ fn inspect_lock(path: &Path) -> LockHolder {
 
     // Another machine's lock (a shared home directory): we cannot inspect
     // its process table, so fall back to the heartbeat.
-    let same_host = match (&hostname, this_hostname()) {
+    let same_host = match (&hostname, crate::process::hostname()) {
         (Some(lock_host), Some(here)) => *lock_host == here,
         _ => hostname.is_none(),
     };
@@ -158,22 +159,6 @@ fn heartbeat_age(lock: &Path) -> Option<std::time::Duration> {
     std::fs::metadata(target).ok()?.modified().ok()?.elapsed().ok()
 }
 
-fn this_hostname() -> Option<String> {
-    if let Ok(name) = std::env::var("HOSTNAME")
-        && !name.is_empty()
-    {
-        return Some(name);
-    }
-    for path in ["/proc/sys/kernel/hostname", "/etc/hostname"] {
-        if let Ok(name) = std::fs::read_to_string(path) {
-            let name = name.trim().to_string();
-            if !name.is_empty() {
-                return Some(name);
-            }
-        }
-    }
-    None
-}
 
 fn default_db() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_DATA_HOME")

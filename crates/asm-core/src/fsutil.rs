@@ -103,6 +103,23 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
     result
 }
 
+/// `write_atomic` for content already in a file: copied by the kernel in
+/// chunks, never read into memory — sidecar files reach hundreds of MB.
+pub fn copy_atomic(from: &Path, to: &Path) -> Result<(), CoreError> {
+    let parent = to.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let name = to.file_name().and_then(|n| n.to_str()).unwrap_or("file");
+    let tmp = parent.join(format!(".{name}.tmp-{}", std::process::id()));
+    let result = (|| {
+        fs::copy(from, &tmp).map_err(|e| CoreError::io(&tmp, e))?;
+        fs::File::open(&tmp).and_then(|f| f.sync_all()).map_err(|e| CoreError::io(&tmp, e))?;
+        fs::rename(&tmp, to).map_err(|e| CoreError::io(to, e))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
 /// Hex sha256 of a file, read in chunks: session files reach tens of
 /// megabytes and sidecar bundles hundreds, so never read one whole.
 pub fn sha256_file(path: &Path) -> Result<String, CoreError> {

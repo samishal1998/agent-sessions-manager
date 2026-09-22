@@ -11,7 +11,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use rusqlite::Connection;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::adapter::{ArchiveOutcome, DeleteReport, RelocateOutcome};
 use crate::model::{Session, SessionStatus};
@@ -43,43 +43,13 @@ fn sql_err(adapter: &OpenCodeAdapter) -> impl Fn(rusqlite::Error) -> CoreError +
     |e| CoreError::Sqlite { db: adapter.db().to_path_buf(), source: Box::new(e) }
 }
 
-fn table_exists(conn: &Connection, table: &str) -> bool {
+pub(super) fn table_exists(conn: &Connection, table: &str) -> bool {
     conn.query_row(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
         [table],
         |_| Ok(()),
     )
     .is_ok()
-}
-
-/// Dump all rows of `table` matching `key_column = id` as JSON objects.
-fn dump_rows(conn: &Connection, table: &str, key_column: &str, id: &str) -> Vec<Value> {
-    let Ok(mut stmt) = conn.prepare(&format!("SELECT * FROM {table} WHERE {key_column} = ?1"))
-    else {
-        return Vec::new();
-    };
-    let column_names: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
-    let rows = stmt.query_map([id], |row| {
-        let mut object = serde_json::Map::new();
-        for (i, name) in column_names.iter().enumerate() {
-            let value = match row.get_ref(i) {
-                Ok(rusqlite::types::ValueRef::Null) => Value::Null,
-                Ok(rusqlite::types::ValueRef::Integer(n)) => json!(n),
-                Ok(rusqlite::types::ValueRef::Real(f)) => json!(f),
-                Ok(rusqlite::types::ValueRef::Text(t)) => {
-                    Value::String(String::from_utf8_lossy(t).into_owned())
-                }
-                Ok(rusqlite::types::ValueRef::Blob(b)) => json!({ "blob_len": b.len() }),
-                Err(_) => Value::Null,
-            };
-            object.insert(name.clone(), value);
-        }
-        Ok(Value::Object(object))
-    });
-    match rows {
-        Ok(rows) => rows.filter_map(Result::ok).collect(),
-        Err(_) => Vec::new(),
-    }
 }
 
 /// Row-level JSON backup of everything a session-scoped operation touches.
@@ -97,12 +67,12 @@ fn backup_session_rows(
     let mut all = serde_json::Map::new();
     for target in ids {
         let mut dump = serde_json::Map::new();
-        dump.insert("session".into(), Value::Array(dump_rows(conn, "session", "id", target)));
+        dump.insert("session".into(), Value::Array(super::super::dump_rows(conn, "session", "id", target)));
         for table in ["message", "part", "todo", "session_share"] {
             if table_exists(conn, table) {
                 dump.insert(
                     table.into(),
-                    Value::Array(dump_rows(conn, table, "session_id", target)),
+                    Value::Array(super::super::dump_rows(conn, table, "session_id", target)),
                 );
             }
         }
@@ -125,7 +95,7 @@ fn backup_session_rows(
 /// The session and every session transitively parented to it. OpenCode's
 /// own `Session.remove` is recursive; deleting only the target would strand
 /// its subagent sessions and all their messages.
-fn with_descendants(conn: &Connection, root: &str) -> Vec<String> {
+pub(super) fn with_descendants(conn: &Connection, root: &str) -> Vec<String> {
     let mut all = vec![root.to_string()];
     let mut frontier = vec![root.to_string()];
     while let Some(parent) = frontier.pop() {
@@ -145,7 +115,7 @@ fn with_descendants(conn: &Connection, root: &str) -> Vec<String> {
     all
 }
 
-fn session_diff_path(adapter: &OpenCodeAdapter, id: &str) -> Option<PathBuf> {
+pub(super) fn session_diff_path(adapter: &OpenCodeAdapter, id: &str) -> Option<PathBuf> {
     adapter.db().parent().map(|d| d.join("storage/session_diff").join(format!("{id}.json")))
 }
 

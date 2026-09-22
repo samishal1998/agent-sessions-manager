@@ -33,6 +33,26 @@ pub fn alive(_pid: u32) -> bool {
     true
 }
 
+/// This machine's name. Linux keeps it in files; macOS has neither of
+/// those, so the last resort is the `hostname` command every unix ships.
+pub fn hostname() -> Option<String> {
+    if let Ok(name) = std::env::var("HOSTNAME")
+        && !name.trim().is_empty()
+    {
+        return Some(name.trim().to_string());
+    }
+    for path in ["/proc/sys/kernel/hostname", "/etc/hostname"] {
+        if let Ok(name) = std::fs::read_to_string(path)
+            && !name.trim().is_empty()
+        {
+            return Some(name.trim().to_string());
+        }
+    }
+    let output = std::process::Command::new("hostname").output().ok()?;
+    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (output.status.success() && !name.is_empty()).then_some(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -48,6 +68,11 @@ mod tests {
         let pid = child.id();
         child.wait().unwrap();
         assert!(!alive(pid));
+    }
+
+    #[test]
+    fn this_machine_has_a_name() {
+        assert!(hostname().is_some_and(|n| !n.is_empty()));
     }
 
     #[test]

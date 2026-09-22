@@ -1,0 +1,652 @@
+//! Claude Code over the hub: what a session uploads as, and how another
+//! machine installs it under its original id.
+//!
+//! The transcript is append-only, which is what makes a cross-machine
+//! update safe: if this machine's copy is a byte-prefix of the hub's, the
+//! difference can be appended and the result is exactly the hub's copy,
+//! without rewriting a byte background jobs may hold an offset into.
+//!
+//! One thing in the file is not shared history: `relocated` records. asm
+//! writes one when it installs a session at a different path, and Claude
+//! Code writes one itself when resumed from a directory other than the last
+//! record's (verified against 2.1.278). They are this machine's bookkeeping
+//! about where the session lives, they appear mid-file, and they carry no
+//! timestamp — so they are removed from what is uploaded and compared, and
+//! re-derived for this machine on install.
+
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+use serde_json::{Value, json};
+
+use super::{ClaudeAdapter, store, write};
+use crate::hub::bundle::{self, Bundle, InstallOutcome, Installed, Staged};
+use crate::hub::manifest::{FileEntry, Manifest};
+use crate::ir::PortablePath;
+use crate::model::{Session, SessionLocation};
+use crate::{CoreError, fsutil};
+
+/// Root-level sidecars keyed by session id, as `write::uuid_sidecars` has it.
+const ROOT_SIDECARS: [&str; 3] = ["file-history", "session-env", "tasks"];
+
+fn is_relocated(line: &[u8]) -> bool {
+    const NEEDLE: &[u8] = b"\"relocated\"";
+    line.windows(NEEDLE.len()).any(|w| w == NEEDLE)
+        && serde_json::from_slice::<Value>(line)
+            .is_ok_and(|v| v.get("type").and_then(Value::as_str) == Some("relocated"))
+}
+
+/// The transcript as another machine should see it: complete lines only,
+/// without this machine's `relocated` records.
+pub(crate) fn canonical_transcript(raw: &[u8]) -> Vec<u8> {
+    let complete = bundle::complete_lines(raw);
+    let mut out = Vec::with_capacity(complete.len());
+    for line in complete.split_inclusive(|&b| b == b'\n') {
+        if !is_relocated(line) {
+            out.extend_from_slice(line);
+        }
+    }
+    out
+}
+
+fn transcript_of(session: &Session) -> Result<&Path, CoreError> {
+    match &session.handle.location {
+        SessionLocation::JsonlFile { path } => Ok(path),
+        _ => Err(CoreError::Invalid { msg: "session has no transcript file".into() }),
+    }
+}
+
+pub(crate) fn collect(adapter: &ClaudeAdapter, session: &Session) -> Result<Bundle, CoreError> {
+    let id = &session.handle.native_id;
+    let transcript = transcript_of(session)?;
+    let raw = fs::read(transcript).map_err(|e| CoreError::io(transcript, e))?;
+    let canonical_bytes = canonical_transcript(&raw);
+    let canonical = fsutil::sha256_hex(&canonical_bytes);
+
+    let mut files = vec![Staged::bytes("transcript.jsonl", canonical_bytes)];
+    let sidecar = transcript.parent().map(|p| p.join(id)).unwrap_or_default();
+    files.extend(bundle::walk(&sidecar, "session-dir")?);
+    for dir in ROOT_SIDECARS {
+        files.extend(bundle::walk(&adapter.root().join(dir).join(id), dir)?);
+    }
+    Ok(Bundle {
+        files,
+        canonical,
+        // Where the sidecar lived on the pushing machine, so symlinks into
+        // it can be repointed on the receiving one.
+        extra: json!({ "sidecar_dir": sidecar.display().to_string() }),
+    })
+}
+
+/// Every copy of this id in any project directory. More than one already
+/// breaks Claude Code's cross-project resume for it.
+fn find_transcripts(root: &Path, id: &str) -> Vec<PathBuf> {
+    let Ok(projects) = fs::read_dir(root.join("projects")) else { return Vec::new() };
+    let mut found: Vec<PathBuf> = projects
+        .flatten()
+        .map(|p| p.path().join(format!("{id}.jsonl")))
+        .filter(|p| p.is_file())
+        .collect();
+    found.sort();
+    found
+}
+
+fn effective_cwd(transcript: &Path, id: &str) -> Option<PathBuf> {
+    store::scan_transcript(transcript, id).map(|s| s.project_root)
+}
+
+/// Append one `relocated` record if this machine would otherwise read the
+/// session as living somewhere else — which it does whenever the last
+/// records came from another machine's path, or a large append pushed an
+/// earlier marker out of the window `scan_transcript` reads.
+fn ensure_cwd(transcript: &Path, id: &str, want: &str) -> Result<(), CoreError> {
+    if effective_cwd(transcript, id).as_deref() != Some(Path::new(want)) {
+        fsutil::append_jsonl_line(transcript, &write::relocated_marker(id, want))?;
+    }
+    Ok(())
+}
+
+fn utf8(path: &Path) -> Result<&str, CoreError> {
+    path.to_str().ok_or_else(|| CoreError::Invalid { msg: format!("{} is not UTF-8", path.display()) })
+}
+
+fn private_dir(dir: &Path) -> Result<(), CoreError> {
+    fs::create_dir_all(dir).map_err(|e| CoreError::io(dir, e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+    }
+    Ok(())
+}
+
+/// Where a sidecar entry lands. `validate` has already refused `..` and
+/// absolute paths; the `starts_with` is there so that a bug elsewhere cannot
+/// quietly turn into a write outside the session's own directories.
+fn sidecar_dest(root: &Path, project_dir: &Path, id: &str, path: &str) -> Option<PathBuf> {
+    let (top, rest) = path.split_once('/')?;
+    let base = match top {
+        "session-dir" => project_dir.join(id),
+        dir if ROOT_SIDECARS.contains(&dir) => root.join(dir).join(id),
+        _ => return None,
+    };
+    let dest = base.join(rest);
+    dest.starts_with(&base).then_some(dest)
+}
+
+/// Write the hub's sidecar files. `overwrite` is false when this machine's
+/// transcript is at least as new as the hub's, so its sidecars are too.
+fn write_sidecars(
+    root: &Path,
+    project_dir: &Path,
+    manifest: &Manifest,
+    blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
+    overwrite: bool,
+) -> Result<(), CoreError> {
+    let local_sidecar = project_dir.join(&manifest.id);
+    let source_sidecar =
+        manifest.extra.get("sidecar_dir").and_then(Value::as_str).map(PathBuf::from);
+    for file in &manifest.files {
+        if file.path == "transcript.jsonl" {
+            continue;
+        }
+        let Some(dest) = sidecar_dest(root, project_dir, &manifest.id, &file.path) else {
+            return Err(CoreError::Invalid { msg: format!("unexpected entry {:?}", file.path) });
+        };
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
+        }
+        let exists = fs::symlink_metadata(&dest).is_ok();
+        match file {
+            FileEntry { symlink: Some(target), .. } => {
+                if exists && !overwrite {
+                    continue;
+                }
+                // A link into the pushing machine's sidecar is repointed to
+                // this one's, the same repair `asm move` makes.
+                let target = match &source_sidecar {
+                    Some(src) => match Path::new(target).strip_prefix(src) {
+                        Ok(rest) => local_sidecar.join(rest),
+                        Err(_) => PathBuf::from(target),
+                    },
+                    None => PathBuf::from(target),
+                };
+                if exists {
+                    fs::remove_file(&dest).map_err(|e| CoreError::io(&dest, e))?;
+                }
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(&target, &dest).map_err(|e| CoreError::io(&dest, e))?;
+            }
+            FileEntry { sha256: Some(sha), .. } => {
+                if exists
+                    && (!overwrite || fsutil::sha256_file(&dest).is_ok_and(|have| have == *sha))
+                {
+                    continue;
+                }
+                fsutil::copy_atomic(&blob(sha)?, &dest)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Install a pulled session on this machine, under its original id.
+///
+/// New here: placed under `project_dir` (else the pushing machine's path
+/// resolved against this home), with one `relocated` record if that differs
+/// from where its records say it ran. Already here: appended to when this
+/// copy is a prefix of the hub's, left alone when it is ahead or has
+/// diverged. Never rewrites existing transcript bytes, never makes a second
+/// copy of the id.
+pub(crate) fn install(
+    adapter: &ClaudeAdapter,
+    manifest: &Manifest,
+    blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
+    project_dir: Option<&Path>,
+) -> Result<Installed, CoreError> {
+    manifest.validate().map_err(|msg| CoreError::Invalid { msg })?;
+    let id = &manifest.id;
+    write::guard_not_live(adapter, id)?;
+    let root = adapter.root();
+
+    let entry = manifest
+        .files
+        .iter()
+        .find(|f| f.path == "transcript.jsonl")
+        .and_then(|f| f.sha256.as_deref())
+        .ok_or_else(|| CoreError::Invalid { msg: "bundle has no transcript".into() })?;
+    let src = blob(entry)?;
+    // Canonicalized again: a machine running another version could have
+    // uploaded markers, and they must never be installed as history.
+    let incoming = canonical_transcript(&fs::read(&src).map_err(|e| CoreError::io(&src, e))?);
+
+    let existing = find_transcripts(root, id);
+    match existing.as_slice() {
+        [] => install_new(adapter, manifest, &incoming, blob, project_dir),
+        [path] => update(adapter, manifest, path, &incoming, blob, project_dir),
+        many => Err(CoreError::Invalid {
+            msg: format!(
+                "session {id} already exists in {} project directories here, which breaks \
+                 `claude --resume` for it; resolve that first (asm doctor lists them)",
+                many.len()
+            ),
+        }),
+    }
+}
+
+fn install_new(
+    adapter: &ClaudeAdapter,
+    manifest: &Manifest,
+    incoming: &[u8],
+    blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
+    project_dir: Option<&Path>,
+) -> Result<Installed, CoreError> {
+    let id = &manifest.id;
+    let wanted = match project_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => PortablePath(manifest.project_root_portable.clone()).resolve(),
+    };
+    if !wanted.is_dir() {
+        return Err(CoreError::Invalid {
+            msg: format!(
+                "{} does not exist on this machine; pass --project-dir to put the session \
+                 somewhere else",
+                wanted.display()
+            ),
+        });
+    }
+    let target = wanted.canonicalize().map_err(|e| CoreError::io(&wanted, e))?;
+    let target_str = utf8(&target)?;
+
+    let root = adapter.root();
+    let dest_dir = root.join("projects").join(super::encode_project_dir(target_str));
+    private_dir(&root.join("projects"))?;
+    private_dir(&dest_dir)?;
+    let dest = dest_dir.join(format!("{id}.jsonl"));
+
+    // Sidecars first and the transcript last: until the transcript exists
+    // the session does not, so an interrupted install leaves nothing that
+    // looks like a session.
+    write_sidecars(root, &dest_dir, manifest, blob, true)?;
+    fsutil::write_atomic(&dest, incoming)?;
+    ensure_cwd(&dest, id, target_str)?;
+    finish(InstallOutcome::New, dest, id)
+}
+
+fn update(
+    adapter: &ClaudeAdapter,
+    manifest: &Manifest,
+    path: &Path,
+    incoming: &[u8],
+    blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
+    project_dir: Option<&Path>,
+) -> Result<Installed, CoreError> {
+    let id = &manifest.id;
+    let here = effective_cwd(path, id).unwrap_or_default();
+    if let Some(dir) = project_dir {
+        let dir = dir.canonicalize().map_err(|e| CoreError::io(dir, e))?;
+        if dir != here {
+            return Err(CoreError::Invalid {
+                msg: format!(
+                    "session {id} is already here, in {}; pull without --project-dir to update \
+                     it there, or `asm move` it first",
+                    here.display()
+                ),
+            });
+        }
+    }
+
+    let raw = fs::read(path).map_err(|e| CoreError::io(path, e))?;
+    if raw.last().is_some_and(|&b| b != b'\n') {
+        return Err(CoreError::Invalid {
+            msg: format!(
+                "{} ends in an unfinished line, so appending to it would join two records; \
+                 resume the session once so Claude Code finishes it",
+                path.display()
+            ),
+        });
+    }
+    let local = canonical_transcript(&raw);
+    let project = path.parent().unwrap_or(Path::new("/"));
+
+    let outcome = if local == incoming {
+        InstallOutcome::InSync
+    } else if incoming.starts_with(&local) {
+        let delta = &incoming[local.len()..];
+        // One write, so a reader never sees half of the new records.
+        let mut file = fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .map_err(|e| CoreError::io(path, e))?;
+        file.write_all(delta).map_err(|e| CoreError::io(path, e))?;
+        InstallOutcome::FastForward { appended: delta.len() as u64 }
+    } else if local.starts_with(incoming) {
+        InstallOutcome::Ahead
+    } else {
+        return finish(InstallOutcome::Diverged, path.to_path_buf(), id);
+    };
+
+    let newer = matches!(outcome, InstallOutcome::FastForward { .. });
+    write_sidecars(adapter.root(), project, manifest, blob, newer)?;
+    if newer {
+        ensure_cwd(path, id, utf8(&here)?)?;
+    }
+    finish(outcome, path.to_path_buf(), id)
+}
+
+fn finish(outcome: InstallOutcome, path: PathBuf, id: &str) -> Result<Installed, CoreError> {
+    let project_root = effective_cwd(&path, id).unwrap_or_default();
+    Ok(Installed { outcome, project_root, path })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hub::manifest::SCHEMA;
+    use std::collections::HashMap;
+
+    #[test]
+    fn relocated_records_and_torn_tails_are_not_history() {
+        let raw = concat!(
+            "{\"type\":\"user\",\"cwd\":\"/a\"}\n",
+            "{\"type\":\"relocated\",\"sessionId\":\"x\",\"relocatedCwd\":\"/b\"}\n",
+            "{\"type\":\"assistant\",\"cwd\":\"/a\"}\n",
+            "{\"type\":\"user\",\"cw",
+        );
+        assert_eq!(
+            canonical_transcript(raw.as_bytes()),
+            b"{\"type\":\"user\",\"cwd\":\"/a\"}\n{\"type\":\"assistant\",\"cwd\":\"/a\"}\n"
+        );
+    }
+
+    /// A record that merely mentions the word is conversation, not a marker.
+    #[test]
+    fn a_message_about_relocation_is_kept() {
+        let raw = b"{\"type\":\"user\",\"message\":{\"content\":\"why \\\"relocated\\\"?\"}}\n";
+        assert_eq!(canonical_transcript(raw), raw);
+    }
+
+    const ID: &str = "7f3a1c88-2d4e-4b91-9a05-6c7e8f201b43";
+
+    /// One simulated machine: a Claude store and a project directory, both
+    /// under a tempdir so two of them stand in for two computers.
+    struct Machine {
+        _dir: tempfile::TempDir,
+        adapter: ClaudeAdapter,
+        project: PathBuf,
+    }
+
+    impl Machine {
+        fn new(project_name: &str) -> Machine {
+            let dir = tempfile::tempdir().unwrap();
+            let project = dir.path().join(project_name);
+            fs::create_dir_all(&project).unwrap();
+            let project = project.canonicalize().unwrap();
+            let adapter = ClaudeAdapter::with_root(dir.path().join("claude"));
+            fs::create_dir_all(adapter.root().join("projects")).unwrap();
+            Machine { _dir: dir, adapter, project }
+        }
+
+        fn project_dir(&self) -> PathBuf {
+            self.adapter
+                .root()
+                .join("projects")
+                .join(super::super::encode_project_dir(self.project.to_str().unwrap()))
+        }
+
+        fn transcript(&self) -> PathBuf {
+            self.project_dir().join(format!("{ID}.jsonl"))
+        }
+
+        /// A real-shaped conversation record from this machine.
+        fn record(&self, text: &str) -> String {
+            format!(
+                "{{\"type\":\"user\",\"cwd\":\"{}\",\"sessionId\":\"{ID}\",\"timestamp\":\"2026-09-22T10:00:00Z\",\"message\":{{\"role\":\"user\",\"content\":\"{text}\"}}}}\n",
+                self.project.display()
+            )
+        }
+
+        fn start(&self, texts: &[&str]) {
+            fs::create_dir_all(self.project_dir()).unwrap();
+            let body: String = texts.iter().map(|t| self.record(t)).collect();
+            fs::write(self.transcript(), body).unwrap();
+        }
+
+        fn append(&self, text: &str) {
+            let mut f = fs::OpenOptions::new().append(true).open(self.transcript()).unwrap();
+            f.write_all(self.record(text).as_bytes()).unwrap();
+        }
+
+        fn session(&self) -> Session {
+            let path = super::super::hub::find_transcripts(self.adapter.root(), ID).pop().unwrap();
+            store::scan_transcript(&path, ID).unwrap()
+        }
+
+        fn project_root(&self) -> PathBuf {
+            self.session().project_root
+        }
+    }
+
+    /// What a push would upload, as a manifest plus a blob lookup — the hub
+    /// in between is tested on its own.
+    fn push(from: &Machine) -> (Manifest, HashMap<String, Vec<u8>>) {
+        let session = from.session();
+        let bundle = collect(&from.adapter, &session).unwrap();
+        let mut blobs = HashMap::new();
+        for f in &bundle.files {
+            if let (Some(sha), bundle_source) = (&f.entry.sha256, &f.source) {
+                let bytes = match bundle_source {
+                    bundle::Source::Bytes(b) => b.clone(),
+                    bundle::Source::Path(p) => fs::read(p).unwrap(),
+                    bundle::Source::Symlink => continue,
+                };
+                blobs.insert(sha.clone(), bytes);
+            }
+        }
+        let manifest = Manifest {
+            schema: SCHEMA,
+            agent: crate::model::AgentKind::ClaudeCode,
+            id: ID.into(),
+            title: None,
+            slug: None,
+            project_root: session.project_root.display().to_string(),
+            project_root_portable: session.project_root.display().to_string(),
+            git_origin: None,
+            git_branch: None,
+            agent_version: None,
+            created: None,
+            updated: None,
+            machine: None,
+            pushed_at: None,
+            canonical: bundle.canonical,
+            parent_rev: None,
+            files: bundle.files.iter().map(|f| f.entry.clone()).collect(),
+            extra: bundle.extra,
+        };
+        (manifest, blobs)
+    }
+
+    fn pull(into: &Machine, pushed: &(Manifest, HashMap<String, Vec<u8>>), dir: Option<&Path>)
+        -> Result<Installed, CoreError>
+    {
+        let scratch = tempfile::tempdir().unwrap();
+        let blob = |sha: &str| -> Result<PathBuf, CoreError> {
+            let path = scratch.path().join(sha);
+            fs::write(&path, &pushed.1[sha]).unwrap();
+            Ok(path)
+        };
+        install(&into.adapter, &pushed.0, &blob, dir)
+    }
+
+    fn transcript_of_b(b: &Machine) -> Vec<u8> {
+        fs::read(find_transcripts(b.adapter.root(), ID).pop().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_new_install_elsewhere_lands_under_its_own_id_and_path() {
+        let (a, b) = (Machine::new("proj-a"), Machine::new("work/proj-b"));
+        a.start(&["remember PELICAN", "second"]);
+        let pushed = push(&a);
+
+        let installed = pull(&b, &pushed, Some(&b.project)).unwrap();
+        assert_eq!(installed.outcome, InstallOutcome::New);
+        assert_eq!(installed.path, b.transcript(), "filed under B's own project directory");
+        // The records still say machine A; the marker is what makes B read
+        // it as its own.
+        assert_eq!(b.project_root(), b.project);
+        assert_eq!(canonical_transcript(&transcript_of_b(&b)), fs::read(a.transcript()).unwrap());
+    }
+
+    #[test]
+    fn a_later_push_fast_forwards_and_stays_where_it_was_put() {
+        let (a, b) = (Machine::new("proj-a"), Machine::new("proj-b"));
+        a.start(&["one"]);
+        pull(&b, &push(&a), Some(&b.project)).unwrap();
+        let before = transcript_of_b(&b);
+
+        a.append("two");
+        a.append("three");
+        let installed = pull(&b, &push(&a), None).unwrap();
+        assert!(matches!(installed.outcome, InstallOutcome::FastForward { appended } if appended > 0));
+        let after = transcript_of_b(&b);
+        assert!(after.starts_with(&before), "only appended, never rewritten");
+        assert_eq!(canonical_transcript(&after), fs::read(a.transcript()).unwrap());
+        assert_eq!(b.project_root(), b.project, "foreign cwds after the marker do not move it");
+        assert_eq!(find_transcripts(b.adapter.root(), ID).len(), 1, "never a second copy");
+    }
+
+    /// asm reads location from the last 256 KiB. A big fast-forward pushes
+    /// the first marker out of that window; the install must notice and
+    /// write another, or the session silently moves back to machine A's path.
+    #[test]
+    fn a_marker_pushed_out_of_the_tail_window_is_rewritten() {
+        let (a, b) = (Machine::new("proj-a"), Machine::new("proj-b"));
+        a.start(&["one"]);
+        pull(&b, &push(&a), Some(&b.project)).unwrap();
+        let filler = "x".repeat(4000);
+        for _ in 0..100 {
+            a.append(&filler);
+        }
+        pull(&b, &push(&a), None).unwrap();
+        assert_eq!(b.project_root(), b.project);
+    }
+
+    #[test]
+    fn nothing_changes_when_this_machine_is_ahead_or_both_diverged() {
+        let (a, b) = (Machine::new("proj-a"), Machine::new("proj-b"));
+        a.start(&["one"]);
+        let first = push(&a);
+        pull(&b, &first, Some(&b.project)).unwrap();
+
+        // B continued; A's old copy arriving again changes nothing.
+        let path = find_transcripts(b.adapter.root(), ID).pop().unwrap();
+        let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(b.record("b continued").as_bytes()).unwrap();
+        let ahead = transcript_of_b(&b);
+        assert_eq!(pull(&b, &first, None).unwrap().outcome, InstallOutcome::Ahead);
+        assert_eq!(transcript_of_b(&b), ahead);
+
+        // A continued too, differently: neither is a prefix of the other.
+        a.append("a continued");
+        assert_eq!(pull(&b, &push(&a), None).unwrap().outcome, InstallOutcome::Diverged);
+        assert_eq!(transcript_of_b(&b), ahead, "a divergence touches nothing");
+    }
+
+    #[test]
+    fn sidecars_arrive_and_symlinks_into_them_are_repointed() {
+        let (a, b) = (Machine::new("proj-a"), Machine::new("proj-b"));
+        a.start(&["one"]);
+        let sidecar = a.project_dir().join(ID);
+        fs::create_dir_all(sidecar.join("subagents")).unwrap();
+        fs::write(sidecar.join("subagents/agent-1.jsonl"), b"{}\n").unwrap();
+        fs::create_dir_all(a.adapter.root().join("file-history").join(ID)).unwrap();
+        fs::write(a.adapter.root().join("file-history").join(ID).join("f@v1"), b"old").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(sidecar.join("subagents/agent-1.jsonl"), sidecar.join("out"))
+            .unwrap();
+
+        pull(&b, &push(&a), Some(&b.project)).unwrap();
+        let b_sidecar = b.project_dir().join(ID);
+        assert_eq!(fs::read(b_sidecar.join("subagents/agent-1.jsonl")).unwrap(), b"{}\n");
+        assert_eq!(fs::read(b.adapter.root().join("file-history").join(ID).join("f@v1")).unwrap(), b"old");
+        #[cfg(unix)]
+        assert_eq!(
+            fs::read_link(b_sidecar.join("out")).unwrap(),
+            b_sidecar.join("subagents/agent-1.jsonl"),
+            "repointed into B's sidecar, not left pointing at machine A's"
+        );
+    }
+
+    #[test]
+    fn the_refusals() {
+        let (a, b) = (Machine::new("proj-a"), Machine::new("proj-b"));
+        a.start(&["one"]);
+        let mut pushed = push(&a);
+
+        // Nowhere to put it: A's path does not exist here, and none was
+        // given. (Both "machines" share this host, so point A's path at
+        // somewhere that really is absent.)
+        pushed.0.project_root_portable = "/nonexistent/asm-test/proj-a".into();
+        let err = pull(&b, &pushed, None).unwrap_err().to_string();
+        assert!(err.contains("--project-dir"), "{err}");
+
+        pull(&b, &pushed, Some(&b.project)).unwrap();
+        // Already here, somewhere else than asked.
+        let other = b.project.parent().unwrap().join("other");
+        fs::create_dir_all(&other).unwrap();
+        assert!(pull(&b, &pushed, Some(&other)).is_err());
+
+        // A torn tail: appending after it would glue two records together.
+        let path = find_transcripts(b.adapter.root(), ID).pop().unwrap();
+        let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        f.write_all(b"{\"type\":\"user\",\"cw").unwrap();
+        drop(f);
+        a.append("two");
+        assert!(pull(&b, &push(&a), None).unwrap_err().to_string().contains("unfinished line"));
+    }
+
+    #[test]
+    fn a_live_session_and_a_duplicated_id_are_never_touched() {
+        let (a, b) = (Machine::new("proj-a"), Machine::new("proj-b"));
+        a.start(&["one"]);
+        let pushed = push(&a);
+
+        fs::create_dir_all(b.adapter.root().join("sessions")).unwrap();
+        let pid = std::process::id();
+        fs::write(
+            b.adapter.root().join("sessions").join(format!("{pid}.json")),
+            format!("{{\"pid\":{pid},\"sessionId\":\"{ID}\"}}"),
+        )
+        .unwrap();
+        assert!(matches!(pull(&b, &pushed, Some(&b.project)), Err(CoreError::SessionLive { .. })));
+        fs::remove_dir_all(b.adapter.root().join("sessions")).unwrap();
+
+        for dir in ["x", "y"] {
+            let d = b.adapter.root().join("projects").join(dir);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join(format!("{ID}.jsonl")), a.record("dup")).unwrap();
+        }
+        assert!(pull(&b, &pushed, Some(&b.project)).unwrap_err().to_string().contains("2 project"));
+    }
+
+    /// Another machine running an older asm could upload markers; they must
+    /// not be installed as history.
+    #[test]
+    fn a_foreign_marker_in_the_bundle_is_not_installed() {
+        let (a, b) = (Machine::new("proj-a"), Machine::new("proj-b"));
+        a.start(&["one"]);
+        let (mut manifest, mut blobs) = push(&a);
+        let mut raw = fs::read(a.transcript()).unwrap();
+        raw.extend_from_slice(write::relocated_marker(ID, "/elsewhere").as_bytes());
+        raw.push(b'\n');
+        let sha = fsutil::sha256_hex(&raw);
+        blobs.insert(sha.clone(), raw);
+        manifest.files.iter_mut().find(|f| f.path == "transcript.jsonl").unwrap().sha256 = Some(sha);
+        pull(&b, &(manifest, blobs), Some(&b.project)).unwrap();
+        let installed = String::from_utf8(transcript_of_b(&b)).unwrap();
+        assert!(!installed.contains("/elsewhere"));
+        assert_eq!(b.project_root(), b.project);
+    }
+}

@@ -18,6 +18,48 @@ use serde::{Deserialize, Serialize};
 use crate::CoreError;
 use crate::model::{AgentKind, Session};
 
+/// Open another program's SQLite store for reading. READ_ONLY without
+/// `immutable`, so a running agent's WAL is honoured and recent writes are
+/// visible, and nothing done through it can write.
+pub(crate) fn open_ro(db: &Path) -> Result<rusqlite::Connection, CoreError> {
+    use rusqlite::OpenFlags;
+    rusqlite::Connection::open_with_flags(
+        db,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|e| CoreError::Sqlite { db: db.to_path_buf(), source: Box::new(e) })
+}
+
+/// Dump all rows of `table` matching `key_column = id` as JSON objects.
+pub(crate) fn dump_rows(conn: &rusqlite::Connection, table: &str, key_column: &str, id: &str) -> Vec<serde_json::Value> {
+    let Ok(mut stmt) = conn.prepare(&format!("SELECT * FROM {table} WHERE {key_column} = ?1"))
+    else {
+        return Vec::new();
+    };
+    let column_names: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+    let rows = stmt.query_map([id], |row| {
+        let mut object = serde_json::Map::new();
+        for (i, name) in column_names.iter().enumerate() {
+            let value = match row.get_ref(i) {
+                Ok(rusqlite::types::ValueRef::Null) => serde_json::Value::Null,
+                Ok(rusqlite::types::ValueRef::Integer(n)) => serde_json::json!(n),
+                Ok(rusqlite::types::ValueRef::Real(f)) => serde_json::json!(f),
+                Ok(rusqlite::types::ValueRef::Text(t)) => {
+                    serde_json::Value::String(String::from_utf8_lossy(t).into_owned())
+                }
+                Ok(rusqlite::types::ValueRef::Blob(b)) => serde_json::json!({ "blob_len": b.len() }),
+                Err(_) => serde_json::Value::Null,
+            };
+            object.insert(name.clone(), value);
+        }
+        Ok(serde_json::Value::Object(object))
+    });
+    match rows {
+        Ok(rows) => rows.filter_map(Result::ok).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// What an adapter supports. Flags flip on as milestones land.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct Capabilities {

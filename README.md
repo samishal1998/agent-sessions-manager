@@ -123,6 +123,13 @@ asm update --check           # just say whether there is a newer one
 asm doctor                   # store health, duplicate ids, stale locks
 asm worktrees                # git worktrees of a repo, with the sessions in each
 asm sync init && asm sync status
+
+asm hub serve                # on one machine: a hub, prints the join command
+asm join https://hub.example.ts.net --token asmj_…   # on each of the others
+asm push --all               # upload what changed since the last push
+asm remote list              # this machine and the hub, grouped by project
+asm pull 7f3a1c88            # install a session from another machine here
+
 asm serve                    # web UI on http://127.0.0.1:7433
 asm serve --port 8080
 asm serve --host 0.0.0.0     # every interface — read the warning it prints
@@ -220,7 +227,13 @@ kept verbatim so the history still reads), and nested subagent transcripts.
 | Import **from** (source) | yes | yes | yes | yes | yes |
 | Import **into** (target) | yes | yes | no | no | no |
 | Send a message into a session | yes | yes | no | yes | yes |
-| Verified against a real install | 2.1.234 | 1.17.18 | 0.78.0 | 0.148.0 | 1.1.16 |
+| Back up to a hub | yes | yes | yes | yes | yes |
+| Restore from a hub | yes | no | no | no | no |
+| Verified against a real install | 2.1.234 | 1.17.18 | 0.78.0 | 0.151.0 | 1.1.16 |
+
+Restore through a hub was verified separately, against Claude Code 2.1.278: a
+session pushed from one machine and pulled onto another at a different path
+resumed there in `claude --resume`, with its conversation intact.
 
 ## Replying to a session
 
@@ -279,6 +292,60 @@ contents.
 `asm doctor --json` reports each agent's capabilities, and the web UI greys out
 what an agent cannot do, so the limits are visible rather than discovered by
 error.
+
+## Multiple machines
+
+One machine runs a hub; the others join it and push their sessions to it, and
+any of them can pull a session another machine pushed. The hub is an archive,
+not a peer: it stores what machines upload and never runs an agent, so a
+headless server can be one. Machines see each other through it — nothing needs
+to reach a laptop directly.
+
+```sh
+# on the hub
+asm hub serve --port 7434
+#   join with  asm join http://hub-host:7434 --token asmj_…
+
+# on each machine
+asm join https://hub.example.ts.net --token asmj_…
+asm push --all
+asm remote list
+asm pull 7f3a1c88 [--project-dir ~/src/elsewhere]
+```
+
+What crosses is each session's **own files under its original id**, so a
+pulled session is the same session — `claude --resume <id>` works on the other
+machine, not a copy with a new name. A pull lands at the same place relative to
+your home directory, or wherever `--project-dir` says; a session that lives
+somewhere else on the second machine is told so rather than duplicated.
+
+**Nothing is merged, and nothing is guessed.** Every push names the hub
+revision it started from, and the hub refuses one that would replace another
+machine's newer copy. When both machines continued the same session, both are
+told it diverged; `asm push --force` makes one copy the head, and the other
+stays on the hub as a revision. Timestamps are shown in `remote list` but never
+decide anything — clocks differ between machines, and a rename does not move a
+session's timestamp.
+
+Every agent's sessions are **backed up**; restore works for **Claude Code**,
+where the transcript is append-only and a newer copy can be appended to an
+older one without rewriting a byte. The other agents' sessions are safe on the
+hub and restorable once each agent has been seen resuming a restored copy.
+
+Security, deliberately plain:
+
+- The hub speaks HTTP and **you** provide TLS: run it on a tailnet or LAN you
+  trust, or behind a reverse proxy (`tailscale serve`, Caddy). `asm join`
+  refuses plain HTTP to anything outside loopback, private ranges and VPN
+  ranges unless you pass `--insecure-http`.
+- The join token buys a machine its **own** credential. The hub keeps only its
+  hash; `asm hub revoke <machine>` shuts one laptop out without touching the
+  rest, and `asm hub token --rotate` retires the join token.
+- Credentials never appear in a process list — asm hands them to `curl` on
+  stdin — and `curl` is run with `-q` and `--noproxy '*'`, so neither a
+  `~/.curlrc` nor an `http_proxy` sees them.
+- Every joined machine can read every session on the hub. It is one person's
+  hub, not a shared one.
 
 ## What counts as a project
 
@@ -366,6 +433,9 @@ This tool writes into stores owned by other programs, so the rules are strict:
   OpenCode instance holds its lock directory.
 - **Only ever write through sanctioned paths where they exist** — imports into
   OpenCode go through `opencode import`, not raw SQL.
+- **A pull obeys all of the above.** It refuses a live session, never makes a
+  second copy of an id, and only ever appends to a transcript that is a prefix
+  of the hub's. Pushing is a read, so running sessions are backed up too.
 
 The web UI has **no authentication** and is a personal dashboard, not a service.
 It binds `127.0.0.1` by default. `--host` accepts any IP or hostname, and
@@ -400,8 +470,14 @@ index/sessions.db       the search index (derived; safe to delete)
 ```
 
 `asm sync init` turns `archive/` into a git repository so archived sessions can
-be versioned and pushed to a remote of your choosing. asm does not manage the
-transport — `sync status` prints the git command to run.
+be versioned and pushed to a remote of your choosing. That path leaves the
+transport to you — `sync status` prints the git command to run; the hub above
+is the one asm runs itself.
+
+Joined to a hub, a machine also keeps `hub-client.json` (its credential, mode
+`0600`) and `hub-state.json` (what it last agreed with the hub about). A hub
+keeps its store in `hub/`: content-addressed `blobs/`, every revision of every
+session under `sessions/`, and the joined machines' credential hashes.
 
 ## License
 

@@ -1,0 +1,495 @@
+//! `push`, `pull`, and the listing that puts both machines side by side.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use jiff::Timestamp;
+use serde::Serialize;
+
+use super::bundle::{self, Bundle, InstallOutcome, Installed, Source};
+use super::client::{PutOutcome, Remote};
+use super::manifest::{Manifest, SCHEMA, valid_id};
+use super::state::{SyncState, Tracked};
+use super::store::{Head, random_hex};
+use crate::bulk::{BulkItem, BulkReport, ItemOutcome};
+use crate::ir::PortablePath;
+use crate::model::{AgentKind, Session, short_id_of};
+use crate::{CoreError, paths};
+
+fn invalid(msg: impl Into<String>) -> CoreError {
+    CoreError::Invalid { msg: msg.into() }
+}
+
+fn key(agent: AgentKind, id: &str) -> String {
+    format!("{agent}:{id}")
+}
+
+fn scratch_dir(prefix: &str) -> Result<PathBuf, CoreError> {
+    let dir = paths::data_dir()
+        .ok_or_else(|| invalid("cannot determine asm data dir"))?
+        .join("tmp")
+        .join(format!("{prefix}-{}", random_hex(8)?));
+    std::fs::create_dir_all(&dir).map_err(|e| CoreError::io(&dir, e))?;
+    Ok(dir)
+}
+
+/// Removes a scratch directory however the operation using it ends.
+struct Scratch(PathBuf);
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A project's git origin, asked of git once per directory per run.
+fn origin_of(root: &Path, origins: &mut HashMap<PathBuf, Option<String>>) -> Option<String> {
+    if root.as_os_str().is_empty() {
+        return None;
+    }
+    origins.entry(root.to_path_buf()).or_insert_with(|| crate::git::origin(root)).clone()
+}
+
+/// The key two machines agree on for "the same project": the repository's
+/// origin when there is one, else the path with `${HOME}` tokenized.
+fn project_key(root: &Path, origins: &mut HashMap<PathBuf, Option<String>>) -> String {
+    origin_of(root, origins).unwrap_or_else(|| PortablePath::from_path(root).0)
+}
+
+fn manifest_for(
+    session: &Session,
+    bundle: &Bundle,
+    parent: Option<String>,
+    origin: Option<String>,
+) -> Manifest {
+    Manifest {
+        schema: SCHEMA,
+        agent: session.handle.agent,
+        id: session.handle.native_id.clone(),
+        title: session.title.clone(),
+        slug: session.slug.clone(),
+        project_root: session.project_root.display().to_string(),
+        project_root_portable: PortablePath::from_path(&session.project_root).0,
+        git_origin: origin,
+        git_branch: session.git_branch.clone(),
+        agent_version: session.agent_version.clone(),
+        created: session.created,
+        updated: session.updated,
+        machine: None,
+        pushed_at: None,
+        canonical: bundle.canonical.clone(),
+        parent_rev: parent,
+        files: bundle.files.iter().map(|f| f.entry.clone()).collect(),
+        extra: bundle.extra.clone(),
+    }
+}
+
+fn human(bytes: u64) -> String {
+    crate::fmt::human_bytes(bytes)
+}
+
+/// Push each session, attempting every one: a failure never stops the rest.
+///
+/// A session is sent only when it changed since this machine last synced
+/// it, and every push names the revision it is based on, so the hub refuses
+/// one that would silently replace another machine's newer copy. `force`
+/// overrides that refusal; the replaced head stays on the hub as a revision.
+pub fn push(remote: &Remote, sessions: &[Session], force: bool) -> Result<BulkReport, CoreError> {
+    let heads: HashMap<String, Head> = remote
+        .heads()?
+        .into_iter()
+        .map(|h| (key(h.manifest.agent, &h.manifest.id), h))
+        .collect();
+    let mut state = SyncState::load(remote)?;
+    let mut origins = HashMap::new();
+    let mut report = BulkReport::default();
+    for session in sessions {
+        let outcome = push_one(remote, &mut state, &heads, &mut origins, session, force)
+            .unwrap_or_else(|e| ItemOutcome::Failed { error: e.to_string() });
+        report.items.push(BulkItem {
+            agent: session.handle.agent,
+            native_id: session.handle.native_id.clone(),
+            label: format!("{} {}", session.handle.agent, session.short_id()),
+            outcome,
+        });
+    }
+    Ok(report)
+}
+
+fn in_sync() -> ItemOutcome {
+    ItemOutcome::Ok { note: "in sync".into() }
+}
+
+fn push_one(
+    remote: &Remote,
+    state: &mut SyncState,
+    heads: &HashMap<String, Head>,
+    origins: &mut HashMap<PathBuf, Option<String>>,
+    session: &Session,
+    force: bool,
+) -> Result<ItemOutcome, CoreError> {
+    let (agent, id) = (session.handle.agent, &session.handle.native_id);
+    if !valid_id(id) {
+        return Ok(ItemOutcome::Skipped { reason: "its id cannot be stored on a hub".into() });
+    }
+    let k = key(agent, id);
+    let fingerprint = crate::index::fingerprint(session);
+    let tracked = state.get(&k).cloned();
+    let head = heads.get(&k);
+
+    // Nothing moved on either side: no need to read the session at all.
+    // ponytail: the fingerprint is the transcript's size and mtime, so a
+    // sidecar that changes while the transcript does not waits for the
+    // transcript's next write. Claude Code writes them together (a tool
+    // result and the record that names it); fold sidecar mtimes into the
+    // fingerprint if a case turns up where it does not.
+    if let (Some(t), Some(h)) = (&tracked, head)
+        && t.fingerprint == fingerprint
+        && t.hub_rev == h.rev
+    {
+        return Ok(in_sync());
+    }
+
+    let bundle = bundle::collect(session)?;
+    let record = |state: &mut SyncState, rev: &str| {
+        state.record(
+            &k,
+            Tracked { hub_rev: rev.to_string(), canonical: bundle.canonical.clone(), fingerprint: fingerprint.clone() },
+        )
+    };
+    let who = |h: &Head| h.manifest.machine.as_ref().map(|m| m.name.clone()).unwrap_or("another machine".into());
+
+    let parent = match (&tracked, head) {
+        (Some(t), Some(h)) if h.rev == t.hub_rev => {
+            if bundle.canonical == t.canonical {
+                record(state, &h.rev)?;
+                return Ok(in_sync());
+            }
+            Some(h.rev.clone())
+        }
+        (Some(t), Some(h)) => {
+            if h.manifest.canonical == bundle.canonical {
+                record(state, &h.rev)?;
+                return Ok(in_sync());
+            }
+            if bundle.canonical == t.canonical {
+                return Ok(ItemOutcome::Skipped {
+                    reason: format!("{} has a newer copy; `asm pull` it", who(h)),
+                });
+            }
+            if !force {
+                return Ok(ItemOutcome::Failed {
+                    error: format!(
+                        "diverged: this machine and {} both continued it since they last \
+                         synced. `asm push --force` makes this copy the head (the other stays \
+                         on the hub as a revision)",
+                        who(h)
+                    ),
+                });
+            }
+            Some(h.rev.clone())
+        }
+        // Tracked here, gone from the hub (a new hub, or one reset): push
+        // it as new.
+        (Some(_), None) | (None, None) => None,
+        (None, Some(h)) => {
+            if h.manifest.canonical == bundle.canonical {
+                record(state, &h.rev)?;
+                return Ok(in_sync());
+            }
+            if !force {
+                return Ok(ItemOutcome::Failed {
+                    error: format!(
+                        "the hub already has this session from {}, with different content, and \
+                         this machine has no record of syncing it. `asm pull` it, or `asm push \
+                         --force` to make this copy the head",
+                        who(h)
+                    ),
+                });
+            }
+            Some(h.rev.clone())
+        }
+    };
+
+    // Upload what the hub does not have, then the manifest naming it.
+    let shas: Vec<String> = bundle.files.iter().filter_map(|f| f.entry.sha256.clone()).collect();
+    let missing: std::collections::HashSet<String> = remote.missing(&shas)?.into_iter().collect();
+    let scratch = Scratch(scratch_dir("push")?);
+    let mut uploaded = 0u64;
+    let mut sent = std::collections::HashSet::new();
+    for file in &bundle.files {
+        let Some(sha) = &file.entry.sha256 else { continue };
+        if !missing.contains(sha) || !sent.insert(sha.clone()) {
+            continue;
+        }
+        match &file.source {
+            Source::Path(path) => remote.put_blob(sha, path)?,
+            Source::Bytes(bytes) => {
+                let tmp = scratch.0.join(sha);
+                std::fs::write(&tmp, bytes).map_err(|e| CoreError::io(&tmp, e))?;
+                remote.put_blob(sha, &tmp)?;
+            }
+            Source::Symlink => continue,
+        }
+        uploaded += file.entry.size;
+    }
+
+    let origin = origin_of(&session.project_root, origins);
+    let manifest = manifest_for(session, &bundle, parent, origin);
+    match remote.put_revision(&manifest, force)? {
+        PutOutcome::Created { rev } => {
+            record(state, &rev)?;
+            Ok(ItemOutcome::Ok {
+                note: format!(
+                    "pushed {} ({} uploaded)",
+                    human(manifest.total_size()),
+                    human(uploaded)
+                ),
+            })
+        }
+        PutOutcome::Conflict { .. } => Ok(ItemOutcome::Failed {
+            error: "another machine pushed it while this one was; run push again".into(),
+        }),
+    }
+}
+
+/// Resolve what the user typed against the hub's listing: an id, a unique
+/// id prefix, `agent:prefix`, or the memorable name an agent uses.
+fn resolve_head<'a>(heads: &'a [Head], query: &str) -> Result<&'a Head, CoreError> {
+    let (agent, needle) = match query.split_once(':') {
+        Some((a, rest)) if AgentKind::parse(a).is_some() => (AgentKind::parse(a), rest),
+        _ => (None, query),
+    };
+    let candidates: Vec<&Head> = heads
+        .iter()
+        .filter(|h| agent.is_none_or(|a| h.manifest.agent == a))
+        .filter(|h| {
+            h.manifest.id.starts_with(needle) || h.manifest.slug.as_deref() == Some(needle)
+        })
+        .collect();
+    if let Some(exact) = candidates.iter().find(|h| h.manifest.id == needle) {
+        return Ok(exact);
+    }
+    match candidates.as_slice() {
+        [one] => Ok(one),
+        [] => Err(invalid(format!("no session on the hub matches {query:?}"))),
+        many => Err(invalid(format!(
+            "{query:?} matches {} sessions on the hub: {}",
+            many.len(),
+            many.iter().map(|h| key(h.manifest.agent, &h.manifest.id)).collect::<Vec<_>>().join(", ")
+        ))),
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct Pulled {
+    pub agent: AgentKind,
+    pub id: String,
+    pub title: Option<String>,
+    /// The machine that pushed this revision.
+    pub from: Option<String>,
+    #[serde(flatten)]
+    pub installed: Installed,
+}
+
+/// Bring one session from the hub onto this machine.
+pub fn pull(remote: &Remote, query: &str, project_dir: Option<&Path>) -> Result<Pulled, CoreError> {
+    let heads = remote.heads()?;
+    let head = resolve_head(&heads, query)?;
+    let (agent, id) = (head.manifest.agent, head.manifest.id.clone());
+    if !bundle::restorable(agent) {
+        return Err(invalid(format!(
+            "{agent} sessions are backed up on the hub, but asm cannot restore them onto a \
+             machine yet"
+        )));
+    }
+    let history = remote
+        .history(agent.as_str(), &id)?
+        .ok_or_else(|| invalid(format!("{} is no longer on the hub", key(agent, &id))))?;
+    let manifest = &history.manifest;
+
+    let scratch = Scratch(scratch_dir("pull")?);
+    let blob = |sha: &str| -> Result<PathBuf, CoreError> {
+        let path = scratch.0.join(sha);
+        if !path.is_file() {
+            remote.get_blob(sha, &path)?;
+        }
+        Ok(path)
+    };
+    let installed = match agent {
+        AgentKind::ClaudeCode => {
+            let adapter = crate::adapter::claude::ClaudeAdapter::default_store()
+                .ok_or_else(|| invalid("cannot locate the Claude Code store"))?;
+            crate::adapter::claude::hub::install(&adapter, manifest, &blob, project_dir)?
+        }
+        _ => unreachable!("restorable() admitted {agent}"),
+    };
+
+    if installed.outcome != InstallOutcome::Diverged {
+        // Recorded after installing, from the installed file: an install
+        // rewrites the file's mtime, and a fingerprint from before it would
+        // make the next push re-send what was just pulled. A copy that is
+        // ahead records no fingerprint, so the next push looks at it.
+        let fingerprint = if installed.outcome == InstallOutcome::Ahead {
+            String::new()
+        } else {
+            crate::ops::resolve_ref(&key(agent, &id), &Default::default())
+                .map(|s| crate::index::fingerprint(&s))
+                .unwrap_or_default()
+        };
+        SyncState::load(remote)?.record(
+            &key(agent, &id),
+            Tracked { hub_rev: history.head.clone(), canonical: manifest.canonical.clone(), fingerprint },
+        )?;
+    }
+    Ok(Pulled {
+        agent,
+        id,
+        title: manifest.title.clone(),
+        from: manifest.machine.as_ref().map(|m| m.name.clone()),
+        installed,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowState {
+    InSync,
+    /// Changed here since the last sync; push it.
+    Ahead,
+    /// Changed on the hub since the last sync; pull it.
+    Behind,
+    Diverged,
+    /// On this machine, never pushed.
+    Local,
+    /// On the hub, not on this machine.
+    Remote,
+    /// On both, but this machine has no record of syncing it.
+    Untracked,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Row {
+    /// The project both machines agree on: the git origin, else the path.
+    pub project: String,
+    pub agent: AgentKind,
+    pub id: String,
+    pub short_id: String,
+    pub title: Option<String>,
+    /// The machine that pushed the hub's copy, or this one when it is only
+    /// here.
+    pub machine: String,
+    pub updated: Option<Timestamp>,
+    pub state: RowState,
+    /// Whether `asm pull` can bring it here.
+    pub restorable: bool,
+}
+
+/// Every session on this machine and on the hub, grouped by project. The
+/// same session on both is one row, with how the two copies relate.
+pub fn remote_list(remote: &Remote, local: &[Session]) -> Result<Vec<Row>, CoreError> {
+    let heads = remote.heads()?;
+    let state = SyncState::load(remote)?;
+    let mut origins = HashMap::new();
+    let by_key: HashMap<String, &Session> =
+        local.iter().map(|s| (key(s.handle.agent, &s.handle.native_id), s)).collect();
+
+    let mut rows = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for head in &heads {
+        let m = &head.manifest;
+        let k = key(m.agent, &m.id);
+        seen.insert(k.clone());
+        let row_state = match (by_key.get(&k), state.get(&k)) {
+            (None, _) => RowState::Remote,
+            (Some(_), None) => RowState::Untracked,
+            (Some(s), Some(t)) => {
+                let changed_here = crate::index::fingerprint(s) != t.fingerprint;
+                let moved_there = head.rev != t.hub_rev;
+                match (changed_here, moved_there) {
+                    (false, false) => RowState::InSync,
+                    (true, false) => RowState::Ahead,
+                    (false, true) => RowState::Behind,
+                    (true, true) => RowState::Diverged,
+                }
+            }
+        };
+        rows.push(Row {
+            project: m.git_origin.clone().unwrap_or_else(|| m.project_root_portable.clone()),
+            agent: m.agent,
+            id: m.id.clone(),
+            short_id: short_id_of(m.agent, &m.id, m.slug.as_deref()).to_string(),
+            title: m.title.clone(),
+            machine: m.machine.as_ref().map(|x| x.name.clone()).unwrap_or_default(),
+            updated: m.updated,
+            state: row_state,
+            restorable: bundle::restorable(m.agent),
+        });
+    }
+    for s in local {
+        let k = key(s.handle.agent, &s.handle.native_id);
+        if seen.contains(&k) {
+            continue;
+        }
+        rows.push(Row {
+            project: project_key(&s.project_root, &mut origins),
+            agent: s.handle.agent,
+            id: s.handle.native_id.clone(),
+            short_id: s.short_id().to_string(),
+            title: s.title.clone(),
+            machine: remote.machine.name.clone(),
+            updated: s.updated,
+            state: RowState::Local,
+            restorable: bundle::restorable(s.handle.agent),
+        });
+    }
+    rows.sort_by(|a, b| a.project.cmp(&b.project).then(b.updated.cmp(&a.updated)));
+    Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hub::manifest::Manifest;
+
+    fn head(agent: AgentKind, id: &str, slug: Option<&str>) -> Head {
+        Head {
+            rev: "r".into(),
+            file_count: 0,
+            total_size: 0,
+            manifest: Manifest {
+                schema: SCHEMA,
+                agent,
+                id: id.into(),
+                title: None,
+                slug: slug.map(String::from),
+                project_root: String::new(),
+                project_root_portable: String::new(),
+                git_origin: None,
+                git_branch: None,
+                agent_version: None,
+                created: None,
+                updated: None,
+                machine: None,
+                pushed_at: None,
+                canonical: String::new(),
+                parent_rev: None,
+                files: vec![],
+                extra: serde_json::Value::Null,
+            },
+        }
+    }
+
+    #[test]
+    fn a_hub_session_resolves_by_id_prefix_agent_and_memorable_name() {
+        let heads = vec![
+            head(AgentKind::ClaudeCode, "7f3a1c88-aaaa", None),
+            head(AgentKind::ClaudeCode, "7f3b0000-bbbb", None),
+            head(AgentKind::JCode, "session_boar_17887_d6ef", Some("boar")),
+        ];
+        assert_eq!(resolve_head(&heads, "7f3a").unwrap().manifest.id, "7f3a1c88-aaaa");
+        assert!(resolve_head(&heads, "7f3").is_err(), "ambiguous prefix");
+        assert_eq!(resolve_head(&heads, "boar").unwrap().manifest.agent, AgentKind::JCode);
+        assert!(resolve_head(&heads, "codex:7f3a").is_err());
+        assert!(resolve_head(&heads, "nothing").is_err());
+    }
+}

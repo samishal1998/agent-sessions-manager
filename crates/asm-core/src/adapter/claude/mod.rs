@@ -10,6 +10,7 @@
 //!   DIFFERENT, sparse field that may hold unrelated ids — never read it.
 //! - Live sessions are announced by PID-keyed records in `<root>/sessions/`.
 
+pub(crate) mod hub;
 mod live;
 mod export_ir;
 mod import_ir;
@@ -45,6 +46,13 @@ impl ClaudeAdapter {
     pub fn with_global_config(mut self, path: impl Into<PathBuf>) -> Self {
         self.global_config = Some(path.into());
         self
+    }
+
+    /// Adapter over the default store location whether or not it exists
+    /// yet — a machine receiving its first Claude session through the hub
+    /// may never have run Claude Code in a project before.
+    pub fn default_store() -> Option<Self> {
+        default_root().map(Self::with_root)
     }
 
     /// Adapter over the default store, if one exists on this machine.

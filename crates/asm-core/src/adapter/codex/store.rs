@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 
 use crate::CoreError;
 use crate::model::{AgentKind, Session, SessionLocation, SessionRef, SessionStatus, Usage};
@@ -22,14 +22,6 @@ use super::CodexAdapter;
 const OPTIONAL_COLUMNS: &[&str] =
     &["model", "cli_version", "preview", "first_user_message", "name"];
 
-fn open_ro(db: &Path) -> Result<Connection, CoreError> {
-    // READ_ONLY without immutable, so a running codex's WAL is honored.
-    Connection::open_with_flags(
-        db,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|e| CoreError::Sqlite { db: db.to_path_buf(), source: Box::new(e) })
-}
 
 fn present_columns(conn: &Connection, table: &str) -> HashSet<String> {
     let mut found = HashSet::new();
@@ -61,7 +53,7 @@ pub(super) fn sessions(
 
     let db = adapter.state_db();
     if db.is_file() {
-        let conn = open_ro(&db)?;
+        let conn = super::super::open_ro(&db)?;
         let available = present_columns(&conn, "threads");
         let children = spawned_children(&conn);
         let optional: Vec<&str> =

@@ -140,6 +140,48 @@ enum Command {
         #[arg(long)]
         version: Option<String>,
     },
+    /// Run or manage a hub that machines sync sessions through.
+    #[command(subcommand)]
+    Hub(HubCommand),
+    /// Join this machine to a hub, with the token `asm hub serve` printed.
+    Join {
+        /// The hub's URL, e.g. https://hub.example.ts.net
+        url: String,
+        #[arg(long)]
+        token: String,
+        /// How this machine is named to the others (default: its hostname).
+        #[arg(long)]
+        name: Option<String>,
+        /// Allow plain HTTP to an address outside loopback, a private LAN
+        /// or a VPN. Every transcript would cross the network unencrypted.
+        #[arg(long)]
+        insecure_http: bool,
+    },
+    /// Upload sessions to the hub. A session is sent only if it changed.
+    Push {
+        /// Sessions to push (ids, prefixes, `agent:prefix`).
+        refs: Vec<String>,
+        /// Push every session on this machine (respects --agent/--project).
+        #[arg(long)]
+        all: bool,
+        /// Make this machine's copy the hub's head even when another
+        /// machine's newer copy is there. The replaced copy stays on the
+        /// hub as a revision.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Bring a session from the hub onto this machine.
+    Pull {
+        /// The session on the hub (id, prefix, `agent:prefix`).
+        r#ref: String,
+        /// Where to put it, when the pushing machine's path does not exist
+        /// here.
+        #[arg(long)]
+        project_dir: Option<PathBuf>,
+    },
+    /// See what is on the hub, beside what is here.
+    #[command(subcommand)]
+    Remote(RemoteCommand),
     /// Open the interactive TUI browser.
     Tui,
     /// Serve the web UI (loopback by default).
@@ -170,11 +212,47 @@ enum SyncCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum HubCommand {
+    /// Serve a hub from this machine (loopback by default).
+    Serve {
+        #[arg(long, default_value_t = 7434)]
+        port: u16,
+        /// Address to bind. Plain HTTP: bind a network you trust, or keep
+        /// loopback and put HTTPS in front of it.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Largest single file the hub accepts, in MiB.
+        #[arg(long, default_value_t = 4096)]
+        max_file_mb: u64,
+    },
+    /// Print the command that joins another machine to this hub.
+    Token {
+        /// Replace the token; the old one stops working. Joined machines
+        /// keep their access.
+        #[arg(long)]
+        rotate: bool,
+    },
+    /// Machines that have joined this hub.
+    Machines,
+    /// Remove a machine's access, by id or unique name.
+    Revoke { machine: String },
+}
+
+#[derive(Subcommand)]
+enum RemoteCommand {
+    /// Sessions here and on the hub, grouped by project.
+    List,
+    /// The machines on the hub this one joined.
+    Machines,
+}
+
 /// A frontend the binary should launch after argument parsing (the CLI
 /// crate stays free of TUI/web dependencies).
 pub enum Frontend {
     Tui,
     Serve { host: String, port: u16 },
+    Hub { host: String, port: u16, max_file_bytes: u64 },
 }
 
 pub fn run() -> anyhow::Result<Option<Frontend>> {
@@ -192,6 +270,16 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
     match cli.command.unwrap_or(default_command) {
         Command::Tui => return Ok(Some(Frontend::Tui)),
         Command::Serve { port, host } => return Ok(Some(Frontend::Serve { host, port })),
+        Command::Hub(HubCommand::Serve { port, host, max_file_mb }) => {
+            return Ok(Some(Frontend::Hub { host, port, max_file_bytes: max_file_mb * 1024 * 1024 }));
+        }
+        Command::Hub(command) => hub(command, cli.json),
+        Command::Join { url, token, name, insecure_http } => {
+            join(&url, &token, name.as_deref(), insecure_http, cli.json)
+        }
+        Command::Push { refs, all, force } => push(&refs, all, force, &filter, cli.json),
+        Command::Pull { r#ref, project_dir } => pull(&r#ref, project_dir.as_deref(), cli.json),
+        Command::Remote(command) => remote(command, &filter, cli.json),
         Command::List => list(&filter, cli.json),
         Command::Projects { worktrees } => projects(cli.json, worktrees),
         Command::Show { r#ref } => show(&r#ref, &filter, cli.json),
@@ -802,4 +890,153 @@ fn send(
         Some(error) => anyhow::bail!("{error}"),
         None => Ok(()),
     }
+}
+
+fn print_json(value: &impl serde::Serialize) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
+fn hub_store() -> anyhow::Result<asm_core::hub::store::Hub> {
+    let root = asm_core::hub::store::Hub::default_root().context("cannot determine asm's data directory")?;
+    Ok(asm_core::hub::store::Hub::open(&root)?)
+}
+
+/// Hub management runs on the hub machine and reads its store directly, so
+/// there is no admin API for a stolen credential to reach.
+fn hub(command: HubCommand, json: bool) -> anyhow::Result<()> {
+    let store = hub_store()?;
+    match command {
+        HubCommand::Serve { .. } => unreachable!("dispatched as a frontend"),
+        HubCommand::Token { rotate } => {
+            let token = if rotate { store.rotate_join_token()? } else { store.join_token()? };
+            if json {
+                return print_json(&serde_json::json!({ "token": token }));
+            }
+            println!("asm join <hub-url> --token {token}");
+        }
+        HubCommand::Machines => {
+            let machines = store.machines()?;
+            if json {
+                return print_json(&machines);
+            }
+            if machines.is_empty() {
+                println!("No machines have joined. `asm hub token` prints the join command.");
+            } else {
+                format::machine_table(&machines, None);
+            }
+        }
+        HubCommand::Revoke { machine } => {
+            let removed = store.revoke(&machine).map_err(|e| anyhow::anyhow!("{machine}: {e}"))?;
+            if json {
+                return print_json(&removed);
+            }
+            println!("Revoked {} ({}). Its credential no longer works.", removed.name, removed.id);
+        }
+    }
+    Ok(())
+}
+
+fn join(url: &str, token: &str, name: Option<&str>, insecure_http: bool, json: bool) -> anyhow::Result<()> {
+    let name = name
+        .map(String::from)
+        .or_else(asm_core::process::hostname)
+        .context("could not tell this machine's name; pass --name")?;
+    let remote = asm_core::hub::client::join(url, token, &name, insecure_http)?;
+    if json {
+        return print_json(&serde_json::json!({ "url": remote.url, "machine": remote.machine }));
+    }
+    println!("Joined {} as {} ({}).", remote.url, remote.machine.name, remote.machine.id);
+    println!("Push this machine's sessions with `asm push --all`.");
+    Ok(())
+}
+
+fn push(refs: &[String], all: bool, force: bool, filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
+    let sessions = match (all, refs.is_empty()) {
+        (true, true) => ops::list_sessions(filter)?,
+        (false, false) => refs
+            .iter()
+            .map(|r| ops::resolve_ref(r, filter).with_context(|| format!("resolving {r}")))
+            .collect::<anyhow::Result<Vec<_>>>()?,
+        (true, false) => bail!("name sessions or pass --all, not both"),
+        (false, true) => bail!("name the sessions to push, or pass --all"),
+    };
+    let remote = asm_core::hub::client::load()?;
+    let report = asm_core::hub::actions::push(&remote, &sessions, force)?;
+    if json {
+        return print_json(&report);
+    }
+    for item in &report.items {
+        if let asm_core::bulk::ItemOutcome::Ok { note } = &item.outcome
+            && note != "in sync"
+        {
+            println!("{}: {note}", item.label);
+        }
+    }
+    println!("{}", report.summary("Push"));
+    for line in report.problems() {
+        eprintln!("  {line}");
+    }
+    if report.failed() > 0 {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn pull(query: &str, project_dir: Option<&std::path::Path>, json: bool) -> anyhow::Result<()> {
+    use asm_core::hub::bundle::InstallOutcome;
+    let remote = asm_core::hub::client::load()?;
+    let pulled = asm_core::hub::actions::pull(&remote, query, project_dir)?;
+    if json {
+        return print_json(&pulled);
+    }
+    let from = pulled.from.as_deref().unwrap_or("the hub");
+    let label = format!("{} {}", pulled.agent, asm_core::model::short_id_of(pulled.agent, &pulled.id, None));
+    let project = pulled.installed.project_root.display();
+    match pulled.installed.outcome {
+        InstallOutcome::New => println!("Installed {label} from {from} in {project}."),
+        InstallOutcome::FastForward { appended } => println!(
+            "Updated {label} from {from}: {} of new conversation appended.",
+            asm_core::fmt::human_bytes(appended)
+        ),
+        InstallOutcome::InSync => println!("{label} is already in sync with {from}."),
+        InstallOutcome::Ahead => {
+            println!("{label} here is ahead of the hub's copy; nothing changed. `asm push` it.")
+        }
+        InstallOutcome::Diverged => bail!(
+            "{label} has been continued both here and on {from} since they last synced, so \
+             neither copy is a prefix of the other. Nothing was changed. `asm push --force` \
+             makes this machine's copy the head; the other stays on the hub as a revision"
+        ),
+    }
+    if pulled.installed.outcome != InstallOutcome::Ahead {
+        println!("Resume with: cd {project} && claude --resume {}", pulled.id);
+    }
+    Ok(())
+}
+
+fn remote(command: RemoteCommand, filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
+    let remote = asm_core::hub::client::load()?;
+    match command {
+        RemoteCommand::List => {
+            let local = ops::list_sessions(filter)?;
+            let rows = asm_core::hub::actions::remote_list(&remote, &local)?;
+            if json {
+                return print_json(&rows);
+            }
+            if rows.is_empty() {
+                println!("Nothing here or on the hub yet.");
+            } else {
+                format::remote_table(&rows);
+            }
+        }
+        RemoteCommand::Machines => {
+            let machines = remote.machines()?;
+            if json {
+                return print_json(&machines);
+            }
+            format::machine_table(&machines, Some(&remote.machine.id));
+        }
+    }
+    Ok(())
 }

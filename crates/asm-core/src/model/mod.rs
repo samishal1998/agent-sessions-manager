@@ -4,4 +4,4 @@ mod session;
 
 pub use agent::AgentKind;
 pub use project::{Project, ProjectWorktree};
-pub use session::{Session, SessionLocation, SessionRef, SessionStatus, Usage};
+pub use session::{Session, SessionLocation, SessionRef, SessionStatus, Usage, short_id_of};

@@ -295,11 +295,25 @@ cx.close()
 # JSONL — the copy asm reads, rather than decoding the protobuf blobs.
 def agy_conversation(cid, cwd, title, day, steps, workspace=True):
     import datetime
-    # asm only ever sizes the database; the WAL is where most of a fresh
-    # conversation actually lives, so a size that ignored it would mislead.
-    (AGY / "conversations" / f"{cid}.db").write_bytes(
-        b"SQLite format 3\x00" + bytes(49_000))
-    (AGY / "conversations" / f"{cid}.db-wal").write_bytes(bytes(210_000))
+    # A real per-conversation database, with antigravity's own table layout
+    # (read from a 1.1.x install). Its steps are protobuf blobs asm never
+    # decodes; the hub snapshots the file with VACUUM INTO, so it has to be
+    # a real database for that to be exercised.
+    db = sqlite3.connect(AGY / "conversations" / f"{cid}.db")
+    db.executescript("""
+        CREATE TABLE trajectory_meta (trajectory_id text, cascade_id text, trajectory_type integer,
+            source integer, PRIMARY KEY (trajectory_id));
+        CREATE TABLE steps (idx integer, step_type integer NOT NULL DEFAULT 0,
+            status integer NOT NULL DEFAULT 0, has_subtrajectory numeric NOT NULL DEFAULT false,
+            metadata blob, error_details blob, permissions blob, task_details blob,
+            render_info blob, step_payload blob, step_format integer NOT NULL DEFAULT 0,
+            PRIMARY KEY (idx));
+    """)
+    db.execute("INSERT INTO trajectory_meta VALUES (?, ?, 4, 17)", (str(uuid.uuid4()), cid))
+    for i, (kind, content) in enumerate(steps):
+        db.execute("INSERT INTO steps (idx, step_type, status, step_payload) VALUES (?, ?, 3, ?)",
+                   (i, 14 if kind == "USER_INPUT" else 15, content.encode()))
+    db.commit(); db.close()
 
     logs = AGY / "brain" / cid / ".system_generated/logs"
     logs.mkdir(parents=True, exist_ok=True)

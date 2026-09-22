@@ -27,7 +27,7 @@ use super::{ClaudeAdapter, liveness};
 
 const AGENT: &str = "claude-code";
 
-fn guard_not_live(adapter: &ClaudeAdapter, session_id: &str) -> Result<(), CoreError> {
+pub(super) fn guard_not_live(adapter: &ClaudeAdapter, session_id: &str) -> Result<(), CoreError> {
     if let Some(pid) = liveness::live_sessions(adapter.root()).get(session_id) {
         return Err(CoreError::SessionLive { id: session_id.to_string(), pid: Some(*pid) });
     }
@@ -140,12 +140,7 @@ pub(super) fn relocate(
 
     // Step 6: append the relocation marker — this is what keeps the session
     // out of the old directory's picker and records the authoritative cwd.
-    let marker = json!({
-        "type": "relocated",
-        "sessionId": id,
-        "relocatedCwd": new_dir_str,
-    });
-    fsutil::append_jsonl_line(&dest_transcript, &marker.to_string())?;
+    fsutil::append_jsonl_line(&dest_transcript, &relocated_marker(id, &new_dir_str))?;
 
     // Step 7: repoint symlinks inside the moved sidecar dir whose targets
     // referenced the old sidecar location (task-output symlinks).
@@ -164,6 +159,12 @@ pub(super) fn relocate(
     // deliberately untouched.
 
     Ok(RelocateOutcome { new_transcript: Some(dest_transcript), warnings })
+}
+
+/// The record that says where a session lives now. Claude Code writes the
+/// same three fields itself when resumed from another directory.
+pub(super) fn relocated_marker(id: &str, cwd: &str) -> String {
+    json!({ "type": "relocated", "sessionId": id, "relocatedCwd": cwd }).to_string()
 }
 
 fn repoint_symlinks(dir: &Path, old_prefix: &Path, new_prefix: &Path) -> Result<(), CoreError> {

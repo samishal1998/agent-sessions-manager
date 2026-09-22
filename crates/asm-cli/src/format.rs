@@ -27,6 +27,52 @@ pub fn session_table(sessions: &[Session]) {
     );
 }
 
+/// This machine's sessions and the hub's, one row per session, grouped by
+/// the project both machines agree on.
+pub fn remote_table(rows: &[asm_core::hub::actions::Row]) {
+    use asm_core::hub::actions::RowState;
+    let rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| {
+            let state = match r.state {
+                RowState::InSync => "in sync",
+                RowState::Ahead => "ahead — push",
+                RowState::Behind => "behind — pull",
+                RowState::Diverged => "diverged",
+                RowState::Local => "only here",
+                RowState::Remote if r.restorable => "on hub — pull",
+                RowState::Remote => "on hub (backup)",
+                RowState::Untracked => "on both, untracked",
+            };
+            vec![
+                truncate(&home_relative(&r.project), 40),
+                r.agent.to_string(),
+                r.short_id.clone(),
+                truncate(r.title.as_deref().unwrap_or("(untitled)"), 40),
+                r.machine.clone(),
+                r.updated.map(humanize).unwrap_or_default(),
+                state.to_string(),
+            ]
+        })
+        .collect();
+    print_table(&["PROJECT", "AGENT", "ID", "TITLE", "MACHINE", "UPDATED", "STATE"], &rows);
+}
+
+pub fn machine_table(machines: &[asm_core::hub::store::Machine], this: Option<&str>) {
+    let rows: Vec<Vec<String>> = machines
+        .iter()
+        .map(|m| {
+            vec![
+                if Some(m.id.as_str()) == this { format!("{} (this one)", m.name) } else { m.name.clone() },
+                m.id.clone(),
+                humanize(m.joined),
+                m.last_seen.map(humanize).unwrap_or_default(),
+            ]
+        })
+        .collect();
+    print_table(&["MACHINE", "ID", "JOINED", "LAST SEEN"], &rows);
+}
+
 pub fn project_table(projects: &[Project]) {
     let rows: Vec<Vec<String>> = projects
         .iter()
@@ -142,12 +188,19 @@ pub fn humanize(ts: Timestamp) -> String {
     }
 }
 
+/// `~/x` for a path under home, whether it arrives absolute or in the
+/// hub's `${HOME}/x` form. Matched by path component, so a sibling such as
+/// `/home/sami-old` is not mistaken for `/home/sami`.
 fn home_relative(path: &str) -> String {
-    if let Ok(home) = etcetera::home_dir() {
-        let home = home.display().to_string();
-        if let Some(rest) = path.strip_prefix(&home) {
-            return format!("~{rest}");
-        }
+    if let Some(rest) = path.strip_prefix("${HOME}")
+        && (rest.is_empty() || rest.starts_with('/'))
+    {
+        return format!("~{rest}");
+    }
+    if let Ok(home) = etcetera::home_dir()
+        && let Ok(rest) = std::path::Path::new(path).strip_prefix(&home)
+    {
+        return if rest.as_os_str().is_empty() { "~".into() } else { format!("~/{}", rest.display()) };
     }
     path.to_string()
 }

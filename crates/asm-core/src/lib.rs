@@ -8,6 +8,7 @@ pub mod error;
 pub mod fmt;
 pub mod fsutil;
 pub mod git;
+pub mod hub;
 pub mod import;
 pub mod index;
 pub mod ir;

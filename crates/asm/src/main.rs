@@ -16,6 +16,9 @@ fn main() -> anyhow::Result<()> {
     match asm_cli::run()? {
         Some(asm_cli::Frontend::Tui) => asm_tui::run(),
         Some(asm_cli::Frontend::Serve { host, port }) => asm_web::run(&host, port),
+        Some(asm_cli::Frontend::Hub { host, port, max_file_bytes }) => {
+            asm_web::hub::run(&host, port, max_file_bytes)
+        }
         None => Ok(()),
     }
 }

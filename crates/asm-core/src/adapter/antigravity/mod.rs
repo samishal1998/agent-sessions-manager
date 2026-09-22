@@ -29,6 +29,7 @@
 //! file is a gap asm can report.
 
 mod export_ir;
+pub(crate) mod hub;
 mod live;
 mod store;
 

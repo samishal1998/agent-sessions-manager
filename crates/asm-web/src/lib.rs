@@ -3,6 +3,7 @@
 //! service — and says so loudly when bound anywhere else.
 
 mod api;
+pub mod hub;
 mod statics;
 
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
@@ -45,7 +46,7 @@ pub fn run(host: &str, port: u16) -> anyhow::Result<()> {
 /// A bare IP is used as given (which is also how an IPv6 literal like `::1`
 /// avoids being mistaken for a `host:port` string); anything else goes
 /// through name resolution.
-fn resolve_bind(host: &str, port: u16) -> anyhow::Result<SocketAddr> {
+pub(crate) fn resolve_bind(host: &str, port: u16) -> anyhow::Result<SocketAddr> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Ok(SocketAddr::new(ip, port));
     }
@@ -58,7 +59,7 @@ fn resolve_bind(host: &str, port: u16) -> anyhow::Result<SocketAddr> {
 
 /// `0.0.0.0` is not a browsable address; point the user at something they
 /// can actually open.
-fn display_addr(addr: &SocketAddr) -> String {
+pub(crate) fn display_addr(addr: &SocketAddr) -> String {
     if addr.ip().is_unspecified() {
         match addr.ip() {
             IpAddr::V4(_) => format!("127.0.0.1:{}", addr.port()),

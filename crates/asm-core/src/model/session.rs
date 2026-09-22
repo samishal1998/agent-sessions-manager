@@ -87,14 +87,20 @@ impl Session {
     /// is unique in practice and still a valid id prefix, so it round-trips
     /// back through `resolve_ref`.
     pub fn short_id(&self) -> &str {
-        if self.handle.agent == AgentKind::JCode
-            && let Some(name) = self.slug.as_deref()
-            && !name.is_empty()
-        {
-            return name;
-        }
-        let id = self.handle.native_id.strip_prefix("session_").unwrap_or(&self.handle.native_id);
-        let width = if self.handle.agent == AgentKind::Codex { 13 } else { 8 };
-        &id[..id.len().min(width)]
+        short_id_of(self.handle.agent, &self.handle.native_id, self.slug.as_deref())
     }
+}
+
+/// `Session::short_id` for a session known only by its parts — one listed
+/// by a hub, say, that is not on this machine.
+pub fn short_id_of<'a>(agent: AgentKind, native_id: &'a str, slug: Option<&'a str>) -> &'a str {
+    if agent == AgentKind::JCode
+        && let Some(name) = slug
+        && !name.is_empty()
+    {
+        return name;
+    }
+    let id = native_id.strip_prefix("session_").unwrap_or(native_id);
+    let width = if agent == AgentKind::Codex { 13 } else { 8 };
+    &id[..id.len().min(width)]
 }

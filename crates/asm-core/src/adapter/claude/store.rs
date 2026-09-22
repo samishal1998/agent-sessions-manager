@@ -186,7 +186,7 @@ impl ScanState {
     }
 }
 
-fn scan_transcript(path: &Path, session_id: &str) -> Option<Session> {
+pub(super) fn scan_transcript(path: &Path, session_id: &str) -> Option<Session> {
     let mut state = ScanState::default();
 
     // Head: stream lines until the first conversation record fixes cwd/slug/

@@ -45,7 +45,7 @@ fn snapshot_path(session: &Session) -> Result<PathBuf, CoreError> {
 
 /// Every file that belongs to this session: the snapshot, the backup jcode
 /// writes beside it, and the append-only journal.
-fn session_files(session: &Session) -> Result<Vec<(String, PathBuf)>, CoreError> {
+pub(super) fn session_files(session: &Session) -> Result<Vec<(String, PathBuf)>, CoreError> {
     let snapshot = snapshot_path(session)?;
     let mut files = vec![("snapshot.json".to_string(), snapshot.clone())];
     for (name, path) in [
