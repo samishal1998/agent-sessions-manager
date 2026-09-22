@@ -192,7 +192,7 @@ impl App {
     fn selection_status(&self) -> String {
         match self.selection.len() {
             0 => format!("{} sessions", self.sessions.len()),
-            n => format!("{n} selected — a archive · d delete · m move · e export · i import"),
+            n => format!("{n} selected — a archive · d delete · m move · e export · i import · p push"),
         }
     }
 
@@ -659,6 +659,16 @@ impl App {
             // list means "open". This one spends money, so it gets a key of
             // its own rather than overloading an existing one.
             KeyCode::Char('c') => self.begin_send(),
+            // Push to the hub. Nothing here is overwritten, so one session
+            // goes straight away; a batch is confirmed like the others.
+            KeyCode::Char('p') => {
+                if !self.selection.is_empty() {
+                    self.begin_bulk(BulkAction::Push, None);
+                } else if let Some(session) = self.selected_session().cloned() {
+                    self.status = "pushing…".to_string();
+                    let _ = self.worker.tx.send(Request::Bulk(vec![session], BulkAction::Push));
+                }
+            }
             KeyCode::Char('r') => {
                 if let Some(session) = self.selected_session().cloned() {
                     self.input = session.title.clone().unwrap_or_default();

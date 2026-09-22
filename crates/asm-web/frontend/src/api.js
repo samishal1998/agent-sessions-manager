@@ -20,7 +20,7 @@ const post = (path, body) =>
 const sessionPath = (s, action) =>
   `/api/session/${encodeURIComponent(s.ref.agent)}/${encodeURIComponent(s.ref.native_id)}/${action}`
 
-export default {
+const api = {
   meta: () => request('/api/meta'),
   // One verb over many sessions. `action` is the tagged BulkAction the
   // core defines: {action:'archive'} | {action:'move',dir} | …
@@ -41,6 +41,12 @@ export default {
   indexStats: () => request('/api/index'),
   indexRefresh: () => post('/api/index/refresh'),
   ir: (s) => request(sessionPath(s, 'ir')),
+  // The hub this machine joined, with every session here and there side by
+  // side; {joined:false} when there is none.
+  hub: () => request('/api/hub'),
+  push: (sessions) => api.bulk(sessions, { action: 'push' }),
+  pull: (agent, id, projectDir) =>
+    post('/api/hub/pull', { agent, id, project_dir: projectDir || null }),
   rename: (s, title) => post(sessionPath(s, 'rename'), { title }),
   archive: (s) => post(sessionPath(s, 'archive')),
   unarchive: (s) => post(sessionPath(s, 'unarchive')),
@@ -95,3 +101,5 @@ export default {
     return { done, abort: () => controller.abort() }
   },
 }
+
+export default api

@@ -90,6 +90,8 @@ pub fn router() -> axum::Router {
         .route("/api/session/{agent}/{id}/import", post(import))
         .route("/api/session/{agent}/{id}/send", post(send))
         .route("/api/bulk", post(bulk))
+        .route("/api/hub", get(hub))
+        .route("/api/hub/pull", post(hub_pull))
         .layer(axum::middleware::from_fn(guard_mutations))
 }
 
@@ -100,6 +102,45 @@ async fn meta() -> Json<serde_json::Value> {
     Json(json!({
         "home": asm_core::paths::home().map(|h| h.display().to_string()),
     }))
+}
+
+/// The hub this machine joined, and every session here and there side by
+/// side (`asm remote list`). `joined: false` when it has not joined one —
+/// the UI then shows nothing hub-related.
+async fn hub() -> ApiResult<Value> {
+    blocking(|| {
+        let Ok(remote) = asm_core::hub::client::load() else {
+            return Ok(json!({ "joined": false }));
+        };
+        let local = ops::list_sessions(&SessionFilter::default()).map_err(internal)?;
+        let rows = asm_core::hub::actions::remote_list(&remote, &local)
+            .map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
+        Ok(json!({ "joined": true, "url": remote.url, "machine": remote.machine, "rows": rows }))
+    })
+    .await
+    .map(Json)
+}
+
+#[derive(Deserialize)]
+struct PullBody {
+    agent: String,
+    id: String,
+    project_dir: Option<std::path::PathBuf>,
+}
+
+async fn hub_pull(Json(body): Json<PullBody>) -> ApiResult<Value> {
+    blocking(move || {
+        let remote = asm_core::hub::client::load().map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+        let pulled = asm_core::hub::actions::pull(
+            &remote,
+            &format!("{}:{}", body.agent, body.id),
+            body.project_dir.as_deref(),
+        )
+        .map_err(|e| err(StatusCode::CONFLICT, e))?;
+        serde_json::to_value(pulled).map_err(internal)
+    })
+    .await
+    .map(Json)
 }
 
 #[derive(Deserialize)]

@@ -6,6 +6,8 @@ import {
   ArrowLeft,
   ArrowLeftRight,
   Boxes,
+  CloudDownload,
+  CloudUpload,
   Download,
   FolderInput,
   GitBranch,
@@ -70,6 +72,36 @@ async function refresh() {
   }
 }
 
+// The hub is another machine, so it is asked less often than the local
+// stores: on load, every minute, and after a push or pull.
+const hub = ref(null)
+async function loadHub() {
+  try {
+    hub.value = await api.hub()
+  } catch (e) {
+    hub.value = { joined: true, error: e.message, rows: [] }
+  }
+}
+const hubRows = computed(() =>
+  Object.fromEntries((hub.value?.rows || []).map((r) => [`${r.agent}:${r.id}`, r])),
+)
+const hubRow = (s) => hubRows.value[`${s.ref.agent}:${s.ref.native_id}`]
+const hubOnly = computed(() => (hub.value?.rows || []).filter((r) => r.state === 'remote'))
+const HUB_LABELS = {
+  in_sync: 'Synced',
+  ahead: 'Ahead of hub',
+  behind: 'Behind hub',
+  diverged: 'Diverged',
+  untracked: 'On hub, untracked',
+}
+const HUB_HINTS = {
+  in_sync: 'The hub has exactly this copy.',
+  ahead: 'Changed here since the last sync: push it.',
+  behind: 'Another machine pushed a newer copy: pull it.',
+  diverged: 'Continued both here and elsewhere. `asm push --force` picks this copy.',
+  untracked: 'The hub has this session, but this machine has no record of syncing it.',
+}
+
 async function loadDoctor() {
   try {
     doctor.value = await api.doctor()
@@ -81,9 +113,13 @@ async function loadDoctor() {
 onMounted(() => {
   refresh()
   loadDoctor()
+  loadHub()
   narrowQuery.addEventListener('change', onNarrowChange)
+  let ticks = 0
   pollTimer = setInterval(() => {
-    if (!document.hidden) refresh()
+    if (document.hidden) return
+    refresh()
+    if (++ticks % 12 === 0) loadHub()
   }, 5000)
 })
 onUnmounted(() => {
@@ -359,6 +395,7 @@ async function runBulk(action, confirmText) {
 }
 
 const bulkArchive = () => runBulk({ action: 'archive' })
+const bulkPush = () => runBulk({ action: 'push' }).then(loadHub)
 const bulkUnarchive = () => runBulk({ action: 'unarchive' })
 const bulkDelete = () =>
   runBulk({ action: 'delete' }, 'Delete {n} sessions?\n\nEach is backed up first.')
@@ -405,6 +442,35 @@ function doRename(s) {
 function doArchive(s) {
   if (statusOf(s) === 'archived') act('Unarchive', () => api.unarchive(s))
   else act('Archive', () => api.archive(s))
+}
+
+function doPush(s) {
+  act('Push', async () => {
+    const report = await api.push([s])
+    if (report.failed) throw new Error(report.problems.join('; '))
+    await loadHub()
+  })
+}
+
+// A pull that has nowhere to go (the pushing machine's path does not exist
+// here) asks for a directory once, then tries again with it.
+async function doPull(row, projectDir) {
+  status.value = `Pulling ${row.short_id}…`
+  try {
+    const pulled = await api.pull(row.agent, row.id, projectDir)
+    const outcome = pulled.outcome?.result
+    status.value =
+      outcome === 'diverged'
+        ? `${row.short_id} was continued both here and on ${pulled.from}; nothing changed.`
+        : `Pulled ${row.short_id} into ${shortDir(pulled.project_root)} (${outcome.replace('_', ' ')}).`
+    await Promise.all([refresh(), loadHub()])
+  } catch (e) {
+    if (!projectDir && e.message.includes('--project-dir')) {
+      const dir = prompt(`${e.message}\n\nPut it in which directory?`)
+      if (dir?.trim()) return doPull(row, dir.trim())
+    }
+    status.value = `Pull failed: ${e.message}`
+  }
 }
 
 function doDelete(s) {
@@ -563,6 +629,38 @@ function pickProject(root) {
         </div>
       </div>
 
+      <div v-if="hub?.joined">
+        <div class="side-heading">Hub</div>
+        <div class="side-empty faint" :title="hub.url">
+          This machine is {{ hub.machine?.name }} on {{ hub.url }}
+        </div>
+        <div v-if="hub.error" class="warning">
+          <TriangleAlert :size="15" />
+          <span>{{ hub.error }}</span>
+        </div>
+        <div v-else-if="!hubOnly.length" class="side-empty faint">Nothing on the hub that is not here.</div>
+        <div class="side-list">
+          <button
+            v-for="r in hubOnly"
+            :key="r.agent + r.id"
+            class="side-item"
+            :disabled="!r.restorable"
+            :title="
+              r.restorable
+                ? `Pull ${r.short_id} from ${r.machine}`
+                : `${r.agent} sessions are backed up, but cannot be restored here yet`
+            "
+            @click="doPull(r)"
+          >
+            <span class="ico"><CloudDownload :size="13" class="faint" /></span>
+            <span class="stack">
+              <span class="label">{{ r.title || r.short_id }}</span>
+              <span class="sublabel">{{ r.machine }} · {{ r.agent }}</span>
+            </span>
+          </button>
+        </div>
+      </div>
+
       <div v-if="warnings.length" class="warnings">
         <div v-for="w in warnings" :key="w" class="warning">
           <TriangleAlert :size="15" />
@@ -701,6 +799,7 @@ function pickProject(root) {
               <button class="btn" @click="bulkImport">Import</button>
               <button class="btn" @click="bulkMove">Move</button>
               <button class="btn" @click="bulkExport">Export</button>
+              <button v-if="hub?.joined" class="btn" @click="bulkPush">Push</button>
               <button class="btn danger" @click="bulkDelete">Delete</button>
               <button class="btn ghost" @click="clearTicks">Clear</button>
             </div>
@@ -759,15 +858,28 @@ function pickProject(root) {
                 </div>
               </div>
 
-              <Tooltip :label="statusHint(s)">
-                <span class="pill" :class="statusOf(s)">
-                  <span v-if="statusOf(s) === 'live'" class="dot" />
-                  {{ statusLabel(s) }}
-                </span>
-              </Tooltip>
+              <!-- One grid cell for both, so the row keeps its columns. -->
+              <div class="pills">
+                <Tooltip :label="statusHint(s)">
+                  <span class="pill" :class="statusOf(s)">
+                    <span v-if="statusOf(s) === 'live'" class="dot" />
+                    {{ statusLabel(s) }}
+                  </span>
+                </Tooltip>
+                <Tooltip v-if="hubRow(s) && HUB_LABELS[hubRow(s).state]" :label="HUB_HINTS[hubRow(s).state]">
+                  <span class="pill hub" :class="hubRow(s).state">{{ HUB_LABELS[hubRow(s).state] }}</span>
+                </Tooltip>
+              </div>
 
               <div class="actions" @click.stop>
                 <IconButton label="Copy resume command" :icon="Play" @click="copyResume(s)" />
+                <IconButton v-if="hub?.joined" label="Push to hub" :icon="CloudUpload" @click="doPush(s)" />
+                <IconButton
+                  v-if="hubRow(s)?.state === 'behind' && hubRow(s).restorable"
+                  label="Pull the hub's newer copy"
+                  :icon="CloudDownload"
+                  @click="doPull(hubRow(s))"
+                />
                 <IconButton label="Rename" :icon="Pencil" :disabled="!can(s, 'rename')" @click="doRename(s)" />
                 <IconButton
                   :label="statusOf(s) === 'archived' ? 'Restore from archive' : 'Archive'"

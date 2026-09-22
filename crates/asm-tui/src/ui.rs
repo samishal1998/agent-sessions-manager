@@ -335,7 +335,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             };
             format!(
                 "{}{scanning}{health}  —  ⏎ resume · ␣ select · * all · r rename · \
-                 a (un)archive · d delete · e export · m move · i import · c reply · \
+                 a (un)archive · d delete · e export · m move · i import · p push · c reply · \
                  s search · / filter · D health · ⇥ focus · R rescan · q quit",
                 app.status
             )

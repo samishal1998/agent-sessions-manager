@@ -321,6 +321,10 @@ machine, not a copy with a new name. A pull lands at the same place relative to
 your home directory, or wherever `--project-dir` says; a session that lives
 somewhere else on the second machine is told so rather than duplicated.
 
+The TUI pushes the selected (or ticked) sessions with `p`. The web UI marks
+each session as synced, ahead or behind the hub, pushes and pulls from the
+row, and lists what is only on the hub in the sidebar, one click to pull.
+
 **Moving** a session is `asm push <id> --move` on the first machine — it is
 archived there once the hub holds it (`asm unarchive` undoes that) — then
 `asm pull <id>` on the second.

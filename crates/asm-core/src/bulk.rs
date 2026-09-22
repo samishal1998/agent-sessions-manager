@@ -36,6 +36,8 @@ pub enum BulkAction {
     /// One `<short-id>.ir.json` per session, written into this directory.
     Export { dir: PathBuf },
     Import { to: AgentKind },
+    /// Upload to the hub this machine joined; see [`crate::hub::actions::push`].
+    Push,
 }
 
 impl BulkAction {
@@ -48,6 +50,7 @@ impl BulkAction {
             BulkAction::Move { .. } => "Move",
             BulkAction::Export { .. } => "Export",
             BulkAction::Import { .. } => "Import",
+            BulkAction::Push => "Push",
         }
     }
 
@@ -140,12 +143,31 @@ fn unsupported(agent: AgentKind, action: &BulkAction) -> Option<String> {
         // Import reads from this session; the destination is checked
         // separately, once, before the loop.
         BulkAction::Import { .. } => caps.export_ir,
+        // Every agent's sessions can be backed up.
+        BulkAction::Push => true,
     };
     (!ok).then(|| format!("{agent} does not support {}", action.verb().to_lowercase()))
 }
 
 /// Run `action` over `sessions`, in order, attempting every one.
 pub fn run(sessions: &[Session], action: &BulkAction) -> BulkReport {
+    // One pass against the hub for the whole batch: it lists the hub's
+    // heads once, and already attempts every item.
+    if let BulkAction::Push = action {
+        let pushed = crate::hub::client::load()
+            .and_then(|remote| crate::hub::actions::push(&remote, sessions, false));
+        return pushed.unwrap_or_else(|e| BulkReport {
+            items: sessions
+                .iter()
+                .map(|s| BulkItem {
+                    agent: s.handle.agent,
+                    native_id: s.handle.native_id.clone(),
+                    label: format!("{} {}", s.handle.agent, s.short_id()),
+                    outcome: ItemOutcome::Failed { error: e.to_string() },
+                })
+                .collect(),
+        });
+    }
     // The destination's own capability is a property of the batch, not of
     // any one session, so it is resolved once and turns every item into a
     // skip rather than repeating the same failure N times.
@@ -209,6 +231,7 @@ fn apply(session: &Session, action: &BulkAction) -> ItemOutcome {
             }
         }
         BulkAction::Export { dir } => export_one(session, dir),
+        BulkAction::Push => unreachable!("run() pushes the whole batch at once"),
         BulkAction::Import { to } => {
             if session.handle.agent == *to {
                 return ItemOutcome::Skipped { reason: format!("already a {to} session") };

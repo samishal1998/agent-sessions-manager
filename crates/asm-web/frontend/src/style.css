@@ -528,6 +528,29 @@ button:hover,
   background: rgba(180, 142, 245, 0.12);
   border-color: rgba(180, 142, 245, 0.28);
 }
+.pills {
+  display: inline-flex;
+  gap: var(--space-1);
+}
+.pill.hub {
+  color: var(--fg-faint);
+  background: var(--bg-hover);
+}
+.pill.hub.ahead,
+.pill.hub.behind {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.pill.hub.diverged,
+.pill.hub.untracked {
+  color: var(--amber);
+  background: rgba(232, 195, 122, 0.12);
+  border-color: rgba(232, 195, 122, 0.3);
+}
+.side-empty {
+  padding: var(--space-1) var(--space-2);
+  font-size: 12px;
+}
 .dot {
   width: 6px;
   height: 6px;
