@@ -129,6 +129,8 @@ ASM_JOIN_TOKEN=asmj_… asm join https://hub.example.ts.net   # on each of the o
 asm push --all               # upload what changed since the last push
 asm remote list              # this machine and the hub, grouped by project
 asm pull 7f3a1c88            # install a session from another machine here
+asm push 7f3a1c88 --move     # hand a session to another machine: push, then archive here
+asm daemon                   # keep pushing whatever changes, so a closed laptop loses nothing
 
 asm serve                    # web UI on http://127.0.0.1:7433
 asm serve --port 8080
@@ -318,6 +320,67 @@ pulled session is the same session — `claude --resume <id>` works on the other
 machine, not a copy with a new name. A pull lands at the same place relative to
 your home directory, or wherever `--project-dir` says; a session that lives
 somewhere else on the second machine is told so rather than duplicated.
+
+**Moving** a session is `asm push <id> --move` on the first machine — it is
+archived there once the hub holds it (`asm unarchive` undoes that) — then
+`asm pull <id>` on the second.
+
+**Keeping the hub current** is `asm daemon`. Every 30 seconds (`--interval`) it
+pushes each session that changed and then held still for a whole interval, so
+a turn being streamed goes up when it ends. It only ever pushes: it never
+writes into an agent's store, so it cannot disturb a session in use, and two
+machines running it do not echo each other's work back. Run it as a service:
+
+```ini
+# ~/.config/systemd/user/asm-daemon.service
+#   systemctl --user enable --now asm-daemon
+[Unit]
+Description=Push coding-agent sessions to the asm hub
+
+[Service]
+ExecStart=%h/.local/bin/asm daemon
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
+```
+
+On macOS, as `~/Library/LaunchAgents/dev.asm.daemon.plist`, then
+`launchctl load` it:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.asm.daemon</string>
+  <key>ProgramArguments</key>
+  <array><string>/Users/you/.local/bin/asm</string><string>daemon</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardErrorPath</key><string>/tmp/asm-daemon.log</string>
+</dict></plist>
+```
+
+Closing the lid loses at most one interval. To lose nothing on Linux, push
+once more on the way to sleep (a system unit, since `sleep.target` is one):
+
+```ini
+# /etc/systemd/system/asm-push-before-sleep.service
+#   systemctl enable asm-push-before-sleep
+[Unit]
+Description=Push asm sessions before sleeping
+Before=sleep.target
+
+[Service]
+Type=oneshot
+User=you
+ExecStart=/home/you/.local/bin/asm push --all
+TimeoutStartSec=60
+
+[Install]
+WantedBy=sleep.target
+```
 
 **Nothing is merged, and nothing is guessed.** Every push names the hub
 revision it started from, and the hub refuses one that would replace another

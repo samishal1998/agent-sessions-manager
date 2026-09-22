@@ -19,6 +19,7 @@
 pub mod actions;
 pub mod bundle;
 pub mod client;
+pub mod daemon;
 pub mod manifest;
 pub mod state;
 pub mod store;

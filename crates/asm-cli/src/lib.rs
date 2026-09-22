@@ -173,6 +173,18 @@ enum Command {
         /// hub as a revision.
         #[arg(long)]
         force: bool,
+        /// Archive each session here once the hub has it (`asm unarchive`
+        /// brings it back), to continue it on another machine with `asm pull`.
+        #[arg(long = "move")]
+        move_away: bool,
+    },
+    /// Keep pushing this machine's sessions to the hub, each once it has been
+    /// still for an interval. Never pulls. Runs until stopped.
+    Daemon {
+        /// Seconds between passes; a changed session goes up after one
+        /// quiet pass.
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
+        interval: u64,
     },
     /// Bring a session from the hub onto this machine.
     Pull {
@@ -282,7 +294,19 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
         Command::Join { url, token, name, insecure_http } => {
             join(&url, token.as_deref(), name.as_deref(), insecure_http, cli.json)
         }
-        Command::Push { refs, all, force } => push(&refs, all, force, &filter, cli.json),
+        Command::Push { refs, all, force, move_away } => {
+            push(&refs, all, force, move_away, &filter, cli.json)
+        }
+        Command::Daemon { interval } => {
+            let remote = asm_core::hub::client::load()?;
+            eprintln!(
+                "Pushing to {} as {} every {interval}s (ctrl-c to stop).",
+                remote.url, remote.machine.name
+            );
+            asm_core::hub::daemon::run(&remote, &filter, std::time::Duration::from_secs(interval), |line| {
+                eprintln!("{line}")
+            })
+        }
         Command::Pull { r#ref, project_dir } => pull(&r#ref, project_dir.as_deref(), cli.json),
         Command::Remote(command) => remote(command, &filter, cli.json),
         Command::List => list(&filter, cli.json),
@@ -966,7 +990,18 @@ fn join(url: &str, token: Option<&str>, name: Option<&str>, insecure_http: bool,
     Ok(())
 }
 
-fn push(refs: &[String], all: bool, force: bool, filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
+fn push(
+    refs: &[String],
+    all: bool,
+    force: bool,
+    move_away: bool,
+    filter: &SessionFilter,
+    json: bool,
+) -> anyhow::Result<()> {
+    use asm_core::bulk::ItemOutcome;
+    if move_away && all {
+        bail!("--move takes the sessions to move by name, not --all");
+    }
     let sessions = match (all, refs.is_empty()) {
         (true, true) => ops::list_sessions(filter)?,
         (false, false) => refs
@@ -976,13 +1011,39 @@ fn push(refs: &[String], all: bool, force: bool, filter: &SessionFilter, json: b
         (true, false) => bail!("name sessions or pass --all, not both"),
         (false, true) => bail!("name the sessions to push, or pass --all"),
     };
+    if move_away
+        && let Some(s) = sessions.iter().find(|s| !asm_core::hub::bundle::restorable(s.handle.agent))
+    {
+        bail!(
+            "{} sessions cannot be restored on another machine yet, so {} is not moved; push it \
+             without --move",
+            s.handle.agent,
+            s.short_id()
+        );
+    }
     let remote = asm_core::hub::client::load()?;
-    let report = asm_core::hub::actions::push(&remote, &sessions, force)?;
+    let mut report = asm_core::hub::actions::push(&remote, &sessions, force)?;
+    // Archived only once the hub holds exactly this copy, which an Ok means.
+    if move_away {
+        for item in &mut report.items {
+            let ItemOutcome::Ok { note } = &item.outcome else { continue };
+            let Some(session) = sessions
+                .iter()
+                .find(|s| s.handle.agent == item.agent && s.handle.native_id == item.native_id)
+            else {
+                continue;
+            };
+            item.outcome = match ops::archive(session) {
+                Ok(_) => ItemOutcome::Ok { note: format!("{note}; archived here, `asm pull` it on the other machine") },
+                Err(e) => ItemOutcome::Failed { error: format!("on the hub, but not archived here: {e}") },
+            };
+        }
+    }
     if json {
         print_json(&report)?;
     } else {
         for item in &report.items {
-            if let asm_core::bulk::ItemOutcome::Ok { note } = &item.outcome
+            if let ItemOutcome::Ok { note } = &item.outcome
                 && note != "in sync"
             {
                 println!("{}: {note}", item.label);

@@ -20,7 +20,7 @@ fn invalid(msg: impl Into<String>) -> CoreError {
     CoreError::Invalid { msg: msg.into() }
 }
 
-fn key(agent: AgentKind, id: &str) -> String {
+pub(super) fn key(agent: AgentKind, id: &str) -> String {
     format!("{agent}:{id}")
 }
 

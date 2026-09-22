@@ -220,7 +220,9 @@ fn run_curl(
         let output = child.wait_with_output().map_err(|e| invalid(format!("curl failed: {e}")))?;
         if !output.status.success() {
             let code = output.status.code().unwrap_or(-1);
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            // One line per retry; the last says it.
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr = stderr.trim().lines().last().unwrap_or_default().to_string();
             // 55/56 during an upload is almost always the hub refusing it
             // before reading the body — a revoked credential or a size cap —
             // not a network blip worth retrying forever.
