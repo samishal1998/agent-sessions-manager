@@ -1011,12 +1011,18 @@ fn push(
         (true, false) => bail!("name sessions or pass --all, not both"),
         (false, true) => bail!("name the sessions to push, or pass --all"),
     };
+    // Checked before anything is pushed: a move that uploads and then
+    // cannot archive here is a copy the user did not ask for.
     if move_away
-        && let Some(s) = sessions.iter().find(|s| !asm_core::hub::bundle::restorable(s.handle.agent))
+        && let Some(s) = sessions.iter().find(|s| {
+            !asm_core::hub::bundle::restorable(s.handle.agent)
+                || !ops::adapter_for(s.handle.agent)
+                    .is_some_and(|a| asm_core::adapter::AgentRead::capabilities(&a).archive)
+        })
     {
         bail!(
-            "{} sessions cannot be restored on another machine yet, so {} is not moved; push it \
-             without --move",
+            "{} sessions cannot both be restored elsewhere and archived here, so {} is not \
+             moved; push it without --move",
             s.handle.agent,
             s.short_id()
         );
