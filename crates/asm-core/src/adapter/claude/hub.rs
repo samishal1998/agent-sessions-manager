@@ -23,7 +23,6 @@ use serde_json::{Value, json};
 use super::{ClaudeAdapter, store, write};
 use crate::hub::bundle::{self, Bundle, InstallOutcome, Installed, Staged};
 use crate::hub::manifest::{FileEntry, Manifest};
-use crate::ir::PortablePath;
 use crate::model::{Session, SessionLocation};
 use crate::{CoreError, fsutil};
 
@@ -343,25 +342,6 @@ pub(crate) fn install(
     }
 }
 
-/// Where a session with no location of its own here goes: `--project-dir`,
-/// else the pushing machine's path resolved against this home.
-fn target_dir(manifest: &Manifest, project_dir: Option<&Path>) -> Result<PathBuf, CoreError> {
-    let wanted = match project_dir {
-        Some(dir) => dir.to_path_buf(),
-        None => PortablePath(manifest.project_root_portable.clone()).resolve(),
-    };
-    if !wanted.is_dir() {
-        return Err(CoreError::Invalid {
-            msg: format!(
-                "{} does not exist on this machine; pass --project-dir to put the session \
-                 somewhere else",
-                wanted.display()
-            ),
-        });
-    }
-    wanted.canonicalize().map_err(|e| CoreError::io(&wanted, e))
-}
-
 fn install_new(
     adapter: &ClaudeAdapter,
     manifest: &Manifest,
@@ -370,7 +350,7 @@ fn install_new(
     project_dir: Option<&Path>,
 ) -> Result<Installed, CoreError> {
     let id = &manifest.id;
-    let target = target_dir(manifest, project_dir)?;
+    let target = bundle::target_dir(manifest, project_dir)?;
     let target_str = utf8(&target)?;
 
     let root = adapter.root();
@@ -417,7 +397,7 @@ fn update(
         // No record here says where it ran yet. Take the place a new install
         // would, but only if that is the project directory it is filed in.
         None => {
-            let target = target_dir(manifest, project_dir)?;
+            let target = bundle::target_dir(manifest, project_dir)?;
             let filed = project.file_name().and_then(|n| n.to_str());
             if filed != Some(super::encode_project_dir(utf8(&target)?).as_str()) {
                 return Err(CoreError::Invalid {

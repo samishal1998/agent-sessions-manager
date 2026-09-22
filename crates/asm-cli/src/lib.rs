@@ -1080,18 +1080,25 @@ fn pull(query: &str, project_dir: Option<&std::path::Path>, json: bool) -> anyho
             "Updated {label} from {from}: {} of new conversation appended.",
             asm_core::fmt::human_bytes(appended)
         ),
+        InstallOutcome::Replaced => println!(
+            "Updated {label} from {from}: the older copy here was backed up and replaced."
+        ),
         InstallOutcome::InSync => println!("{label} is already in sync with {from}."),
         InstallOutcome::Ahead => {
             println!("{label} here is ahead of the hub's copy; nothing changed. `asm push` it.")
         }
         InstallOutcome::Diverged => bail!(
             "{label} has been continued both here and on {from} since they last synced, so \
-             neither copy is a prefix of the other. Nothing was changed. `asm push --force` \
+             neither copy contains the other. Nothing was changed. `asm push --force` \
              makes this machine's copy the head; the other stays on the hub as a revision"
         ),
     }
-    if pulled.installed.outcome != InstallOutcome::Ahead {
-        println!("Resume with: cd {project} && claude --resume {}", pulled.id);
+    if pulled.installed.outcome != InstallOutcome::Ahead
+        && let Ok(session) = ops::resolve_ref(&format!("{}:{}", pulled.agent, pulled.id), &SessionFilter::default())
+        && let Ok(cmd) = ops::resume_command(&session)
+    {
+        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy()).collect();
+        println!("Resume with: cd {project} && {} {}", cmd.get_program().to_string_lossy(), args.join(" "));
     }
     Ok(())
 }

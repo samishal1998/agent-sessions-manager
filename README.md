@@ -230,7 +230,7 @@ kept verbatim so the history still reads), and nested subagent transcripts.
 | Import **into** (target) | yes | yes | no | no | no |
 | Send a message into a session | yes | yes | no | yes | yes |
 | Back up to a hub | yes | yes | yes | yes | yes |
-| Restore from a hub | yes | no | no | no | no |
+| Restore from a hub | yes | yes | no | no | no |
 | Verified against a real install | 2.1.234 | 1.17.18 | 0.78.0 | 0.151.0 | 1.1.16 |
 
 Restore through a hub was verified separately, against Claude Code 2.1.278: a
@@ -390,10 +390,14 @@ stays on the hub as a revision. Timestamps are shown in `remote list` but never
 decide anything — clocks differ between machines, and a rename does not move a
 session's timestamp.
 
-Every agent's sessions are **backed up**; restore works for **Claude Code**,
-where the transcript is append-only and a newer copy can be appended to an
-older one without rewriting a byte. The other agents' sessions are safe on the
-hub and restorable once each agent has been seen resuming a restored copy.
+Every agent's sessions are **backed up**; restore works for **Claude Code** and
+**OpenCode**. A Claude transcript is append-only, so a newer copy is appended
+to an older one without rewriting a byte. An OpenCode session is rows, with
+its subagent sessions, todos and queued inputs: an older copy here is replaced
+by the hub's only when every row here is also in the hub's copy, and it is
+backed up first (OpenCode itself files it under this machine's project). The
+other agents' sessions are safe on the hub and restorable once each agent has
+been seen resuming a restored copy.
 
 Security, deliberately plain:
 

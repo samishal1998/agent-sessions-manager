@@ -363,6 +363,11 @@ pub fn pull(remote: &Remote, query: &str, project_dir: Option<&Path>) -> Result<
                 .ok_or_else(|| invalid("cannot locate the Claude Code store"))?;
             crate::adapter::claude::hub::install(&adapter, manifest, &blob, project_dir)?
         }
+        AgentKind::OpenCode => {
+            let adapter = crate::adapter::opencode::OpenCodeAdapter::default_store()
+                .ok_or_else(|| invalid("cannot locate the OpenCode store"))?;
+            crate::adapter::opencode::hub::install(&adapter, manifest, &blob, project_dir)?
+        }
         _ => unreachable!("restorable() admitted {agent}"),
     };
 

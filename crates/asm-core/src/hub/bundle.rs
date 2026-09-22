@@ -159,6 +159,9 @@ pub enum InstallOutcome {
     New,
     /// It was here and behind; the hub's newer content was appended.
     FastForward { appended: u64 },
+    /// It was here and behind, and is kept as rows rather than a log: the
+    /// older copy was backed up and replaced by the hub's.
+    Replaced,
     InSync,
     /// This machine has more than the hub; push it.
     Ahead,
@@ -173,10 +176,30 @@ pub struct Installed {
     pub path: PathBuf,
 }
 
+/// Where a pulled session with no copy here goes: `--project-dir`, else the
+/// pushing machine's path resolved against this home. Canonical, and it
+/// must exist — an agent binds a session to a real directory.
+pub(crate) fn target_dir(manifest: &super::manifest::Manifest, project_dir: Option<&Path>) -> Result<PathBuf, CoreError> {
+    let wanted = match project_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => crate::ir::PortablePath(manifest.project_root_portable.clone()).resolve(),
+    };
+    if !wanted.is_dir() {
+        return Err(CoreError::Invalid {
+            msg: format!(
+                "{} does not exist on this machine; pass --project-dir to put the session \
+                 somewhere else",
+                wanted.display()
+            ),
+        });
+    }
+    wanted.canonicalize().map_err(|e| CoreError::io(&wanted, e))
+}
+
 /// Agents whose pull asm can perform today. The rest are backed up only;
 /// each is added once its own CLI has been seen to resume a restored copy.
 pub fn restorable(agent: AgentKind) -> bool {
-    matches!(agent, AgentKind::ClaudeCode)
+    matches!(agent, AgentKind::ClaudeCode | AgentKind::OpenCode)
 }
 
 #[cfg(test)]

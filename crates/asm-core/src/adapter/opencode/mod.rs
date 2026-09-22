@@ -45,6 +45,13 @@ impl OpenCodeAdapter {
         self
     }
 
+    /// The default store, whether or not OpenCode has created it yet — a
+    /// pull onto a machine that never ran it lets `opencode import` do so.
+    pub fn default_store() -> Option<Self> {
+        let lock_dir = state_dir().map(|d| d.join("opencode/locks"));
+        default_db().map(|db| OpenCodeAdapter { db, lock_dir })
+    }
+
     pub fn detect_default() -> Option<Self> {
         let db = default_db()?;
         let lock_dir = state_dir().map(|d| d.join("opencode/locks"));

@@ -34,7 +34,7 @@ pub(super) fn guard_not_busy(adapter: &OpenCodeAdapter) -> Result<(), CoreError>
     Ok(())
 }
 
-fn open_rw(adapter: &OpenCodeAdapter) -> Result<Connection, CoreError> {
+pub(super) fn open_rw(adapter: &OpenCodeAdapter) -> Result<Connection, CoreError> {
     Connection::open(adapter.db())
         .map_err(|e| CoreError::Sqlite { db: adapter.db().to_path_buf(), source: Box::new(e) })
 }
@@ -54,7 +54,7 @@ pub(super) fn table_exists(conn: &Connection, table: &str) -> bool {
 
 /// Row-level JSON backup of everything a session-scoped operation touches.
 /// `ids` is the session plus, for a delete, its descendants.
-fn backup_session_rows(
+pub(super) fn backup_session_rows(
     adapter: &OpenCodeAdapter,
     conn: &Connection,
     id: &str,
