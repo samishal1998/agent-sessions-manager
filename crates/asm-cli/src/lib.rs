@@ -144,11 +144,15 @@ enum Command {
     #[command(subcommand)]
     Hub(HubCommand),
     /// Join this machine to a hub, with the token `asm hub serve` printed.
+    /// The token is read from $ASM_JOIN_TOKEN, which keeps it out of the
+    /// process list.
     Join {
         /// The hub's URL, e.g. https://hub.example.ts.net
         url: String,
+        /// `-` reads the token from stdin. A token given here is visible to
+        /// every user of this machine while asm runs.
         #[arg(long)]
-        token: String,
+        token: Option<String>,
         /// How this machine is named to the others (default: its hostname).
         #[arg(long)]
         name: Option<String>,
@@ -271,11 +275,12 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
         Command::Tui => return Ok(Some(Frontend::Tui)),
         Command::Serve { port, host } => return Ok(Some(Frontend::Serve { host, port })),
         Command::Hub(HubCommand::Serve { port, host, max_file_mb }) => {
-            return Ok(Some(Frontend::Hub { host, port, max_file_bytes: max_file_mb * 1024 * 1024 }));
+            let max_file_bytes = max_file_mb.saturating_mul(1024 * 1024);
+            return Ok(Some(Frontend::Hub { host, port, max_file_bytes }));
         }
         Command::Hub(command) => hub(command, cli.json),
         Command::Join { url, token, name, insecure_http } => {
-            join(&url, &token, name.as_deref(), insecure_http, cli.json)
+            join(&url, token.as_deref(), name.as_deref(), insecure_http, cli.json)
         }
         Command::Push { refs, all, force } => push(&refs, all, force, &filter, cli.json),
         Command::Pull { r#ref, project_dir } => pull(&r#ref, project_dir.as_deref(), cli.json),
@@ -913,7 +918,7 @@ fn hub(command: HubCommand, json: bool) -> anyhow::Result<()> {
             if json {
                 return print_json(&serde_json::json!({ "token": token }));
             }
-            println!("asm join <hub-url> --token {token}");
+            println!("ASM_JOIN_TOKEN={token} asm join <hub-url>");
         }
         HubCommand::Machines => {
             let machines = store.machines()?;
@@ -937,12 +942,22 @@ fn hub(command: HubCommand, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn join(url: &str, token: &str, name: Option<&str>, insecure_http: bool, json: bool) -> anyhow::Result<()> {
+fn join(url: &str, token: Option<&str>, name: Option<&str>, insecure_http: bool, json: bool) -> anyhow::Result<()> {
+    let token = match token {
+        Some("-") => {
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line).context("reading the join token from stdin")?;
+            line.trim().to_string()
+        }
+        Some(token) => token.to_string(),
+        None => std::env::var("ASM_JOIN_TOKEN")
+            .context("set ASM_JOIN_TOKEN to the token `asm hub token` prints, or pass --token -")?,
+    };
     let name = name
         .map(String::from)
         .or_else(asm_core::process::hostname)
         .context("could not tell this machine's name; pass --name")?;
-    let remote = asm_core::hub::client::join(url, token, &name, insecure_http)?;
+    let remote = asm_core::hub::client::join(url, &token, &name, insecure_http)?;
     if json {
         return print_json(&serde_json::json!({ "url": remote.url, "machine": remote.machine }));
     }
@@ -964,18 +979,19 @@ fn push(refs: &[String], all: bool, force: bool, filter: &SessionFilter, json: b
     let remote = asm_core::hub::client::load()?;
     let report = asm_core::hub::actions::push(&remote, &sessions, force)?;
     if json {
-        return print_json(&report);
-    }
-    for item in &report.items {
-        if let asm_core::bulk::ItemOutcome::Ok { note } = &item.outcome
-            && note != "in sync"
-        {
-            println!("{}: {note}", item.label);
+        print_json(&report)?;
+    } else {
+        for item in &report.items {
+            if let asm_core::bulk::ItemOutcome::Ok { note } = &item.outcome
+                && note != "in sync"
+            {
+                println!("{}: {note}", item.label);
+            }
         }
-    }
-    println!("{}", report.summary("Push"));
-    for line in report.problems() {
-        eprintln!("  {line}");
+        println!("{}", report.summary("Push"));
+        for line in report.problems() {
+            eprintln!("  {line}");
+        }
     }
     if report.failed() > 0 {
         std::process::exit(1);
@@ -988,7 +1004,11 @@ fn pull(query: &str, project_dir: Option<&std::path::Path>, json: bool) -> anyho
     let remote = asm_core::hub::client::load()?;
     let pulled = asm_core::hub::actions::pull(&remote, query, project_dir)?;
     if json {
-        return print_json(&pulled);
+        print_json(&pulled)?;
+        if pulled.installed.outcome == InstallOutcome::Diverged {
+            std::process::exit(1);
+        }
+        return Ok(());
     }
     let from = pulled.from.as_deref().unwrap_or("the hub");
     let label = format!("{} {}", pulled.agent, asm_core::model::short_id_of(pulled.agent, &pulled.id, None));

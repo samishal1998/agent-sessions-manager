@@ -94,18 +94,8 @@ fn status_name(status: &crate::model::SessionStatus) -> &'static str {
 pub fn fingerprint(session: &Session) -> String {
     let updated_ms = session.updated.map(|t| t.as_millisecond()).unwrap_or(0);
     match &session.handle.location {
-        SessionLocation::JsonlFile { path } => {
-            let meta = std::fs::metadata(path).ok();
-            let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-            let mtime_ms = meta
-                .as_ref()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis())
-                .unwrap_or(0);
-            // Transcripts are append-only, so size plus mtime is decisive.
-            format!("file:{size}:{mtime_ms}")
-        }
+        // Transcripts are append-only, so size plus mtime is decisive.
+        SessionLocation::JsonlFile { path } => format!("file:{}", stat(path)),
         SessionLocation::SqliteRow { db, .. } => {
             // `session.time_updated` LAGS: measured against the real store,
             // message rows carry a `time_updated` newer than their
@@ -114,11 +104,39 @@ pub fn fingerprint(session: &Session) -> String {
             // Ask the message table instead.
             match message_watermark(db, &session.handle.native_id) {
                 Some((count, max_updated)) => format!("rows:{count}:{max_updated}:{updated_ms}"),
-                None => format!("rows:?:{updated_ms}"),
+                // No message table (Antigravity keeps one database per
+                // conversation). New steps land in the WAL, and in the
+                // brain transcript, long before the database's own mtime
+                // moves at a checkpoint.
+                None => {
+                    let mut wal = db.clone().into_os_string();
+                    wal.push("-wal");
+                    let mut fp = format!("rows:?:{updated_ms}:{}:{}", stat(db), stat(wal.as_ref()));
+                    if session.handle.agent == AgentKind::Antigravity
+                        && let Some(root) = db.parent().and_then(std::path::Path::parent)
+                    {
+                        let transcript = crate::adapter::antigravity::AntigravityAdapter::with_root(root)
+                            .transcript_of(&session.handle.native_id);
+                        fp = format!("{fp}:{}", stat(&transcript));
+                    }
+                    fp
+                }
             }
         }
         SessionLocation::Archive { dir } => format!("archive:{}:{updated_ms}", dir.display()),
     }
+}
+
+/// `size:mtime_ms` of a file, `0:0` when it is not there.
+fn stat(path: &std::path::Path) -> String {
+    let meta = std::fs::metadata(path).ok();
+    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+    let mtime_ms = meta
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("{size}:{mtime_ms}")
 }
 
 /// (message count, newest message timestamp) for a row-backed session.

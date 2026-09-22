@@ -8,13 +8,13 @@ use serde::Serialize;
 
 use super::bundle::{self, Bundle, InstallOutcome, Installed, Source};
 use super::client::{PutOutcome, Remote};
-use super::manifest::{Manifest, SCHEMA, valid_id};
+use super::manifest::{Manifest, SCHEMA, files_hash, valid_id};
 use super::state::{SyncState, Tracked};
 use super::store::{Head, random_hex};
 use crate::bulk::{BulkItem, BulkReport, ItemOutcome};
 use crate::ir::PortablePath;
 use crate::model::{AgentKind, Session, short_id_of};
-use crate::{CoreError, paths};
+use crate::{CoreError, fsutil, paths};
 
 fn invalid(msg: impl Into<String>) -> CoreError {
     CoreError::Invalid { msg: msg.into() }
@@ -25,10 +25,7 @@ fn key(agent: AgentKind, id: &str) -> String {
 }
 
 fn scratch_dir(prefix: &str) -> Result<PathBuf, CoreError> {
-    let dir = paths::data_dir()
-        .ok_or_else(|| invalid("cannot determine asm data dir"))?
-        .join("tmp")
-        .join(format!("{prefix}-{}", random_hex(8)?));
+    let dir = paths::tmp_dir()?.join(format!("{prefix}-{}", random_hex(8)?));
     std::fs::create_dir_all(&dir).map_err(|e| CoreError::io(&dir, e))?;
     Ok(dir)
 }
@@ -92,23 +89,50 @@ fn human(bytes: u64) -> String {
 /// A session is sent only when it changed since this machine last synced
 /// it, and every push names the revision it is based on, so the hub refuses
 /// one that would silently replace another machine's newer copy. `force`
-/// overrides that refusal; the replaced head stays on the hub as a revision.
+/// names the hub's current head as the parent instead, making this copy the
+/// head; the replaced one stays on the hub as a revision.
 pub fn push(remote: &Remote, sessions: &[Session], force: bool) -> Result<BulkReport, CoreError> {
     let heads: HashMap<String, Head> = remote
         .heads()?
         .into_iter()
         .map(|h| (key(h.manifest.agent, &h.manifest.id), h))
         .collect();
+    // The same file named twice is one session. The same id filed in two
+    // places is two copies, and pushing both would swap the hub's head
+    // between them on every run.
+    let mut places: HashMap<String, Vec<&crate::model::SessionLocation>> = HashMap::new();
+    for s in sessions {
+        let here = places.entry(key(s.handle.agent, &s.handle.native_id)).or_default();
+        if !here.contains(&&s.handle.location) {
+            here.push(&s.handle.location);
+        }
+    }
     let mut state = SyncState::load(remote)?;
     let mut origins = HashMap::new();
     let mut report = BulkReport::default();
+    let mut done = std::collections::HashSet::new();
     for session in sessions {
-        let outcome = push_one(remote, &mut state, &heads, &mut origins, session, force)
-            .unwrap_or_else(|e| ItemOutcome::Failed { error: e.to_string() });
+        let (agent, id) = (session.handle.agent, &session.handle.native_id);
+        let k = key(agent, id);
+        if !done.insert(k.clone()) {
+            continue;
+        }
+        let copies = places[&k].len();
+        let outcome = if copies > 1 {
+            ItemOutcome::Failed {
+                error: format!(
+                    "session {id} exists in {copies} places here; resolve that first (asm \
+                     doctor lists them)"
+                ),
+            }
+        } else {
+            push_one(remote, &mut state, &heads, &mut origins, session, force)
+                .unwrap_or_else(|e| ItemOutcome::Failed { error: e.to_string() })
+        };
         report.items.push(BulkItem {
-            agent: session.handle.agent,
-            native_id: session.handle.native_id.clone(),
-            label: format!("{} {}", session.handle.agent, session.short_id()),
+            agent,
+            native_id: id.clone(),
+            label: format!("{agent} {}", session.short_id()),
             outcome,
         });
     }
@@ -132,16 +156,16 @@ fn push_one(
         return Ok(ItemOutcome::Skipped { reason: "its id cannot be stored on a hub".into() });
     }
     let k = key(agent, id);
-    let fingerprint = crate::index::fingerprint(session);
+    let fingerprint = bundle::fingerprint(session);
     let tracked = state.get(&k).cloned();
     let head = heads.get(&k);
 
     // Nothing moved on either side: no need to read the session at all.
-    // ponytail: the fingerprint is the transcript's size and mtime, so a
-    // sidecar that changes while the transcript does not waits for the
-    // transcript's next write. Claude Code writes them together (a tool
-    // result and the record that names it); fold sidecar mtimes into the
-    // fingerprint if a case turns up where it does not.
+    // ponytail: the fingerprint covers what the agent writes on every turn
+    // (a transcript, a database), so a sidecar that changes while that does
+    // not waits for its next write. Claude Code writes them together (a tool
+    // result and the record that names it); fold sidecar mtimes in if a case
+    // turns up where it does not.
     if let (Some(t), Some(h)) = (&tracked, head)
         && t.fingerprint == fingerprint
         && t.hub_rev == h.rev
@@ -149,34 +173,43 @@ fn push_one(
         return Ok(in_sync());
     }
 
-    let bundle = bundle::collect(session)?;
-    let record = |state: &mut SyncState, rev: &str| {
-        state.record(
-            &k,
-            Tracked { hub_rev: rev.to_string(), canonical: bundle.canonical.clone(), fingerprint: fingerprint.clone() },
-        )
+    let mut bundle = bundle::collect(session)?;
+    let canonical = bundle.canonical.clone();
+    let record = |state: &mut SyncState, rev: &str, files: String| {
+        let tracked = Tracked {
+            hub_rev: rev.to_string(),
+            canonical: canonical.clone(),
+            fingerprint: fingerprint.clone(),
+            files,
+        };
+        state.record(&k, tracked)
     };
+    let files_now = |bundle: &Bundle| files_hash(bundle.files.iter().map(|f| &f.entry));
     let who = |h: &Head| h.manifest.machine.as_ref().map(|m| m.name.clone()).unwrap_or("another machine".into());
+    // The head came from this machine: its last push reached the hub but
+    // was never recorded here (a lost reply, a killed process). This copy
+    // continues it, so it is a fast-forward, not a divergence with itself.
+    let ours = |h: &Head| h.manifest.machine.as_ref().is_some_and(|m| m.id == remote.machine.id);
 
     let parent = match (&tracked, head) {
         (Some(t), Some(h)) if h.rev == t.hub_rev => {
-            if bundle.canonical == t.canonical {
-                record(state, &h.rev)?;
+            if canonical == t.canonical && files_now(&bundle) == t.files {
+                record(state, &h.rev, t.files.clone())?;
                 return Ok(in_sync());
             }
             Some(h.rev.clone())
         }
         (Some(t), Some(h)) => {
-            if h.manifest.canonical == bundle.canonical {
-                record(state, &h.rev)?;
+            if h.manifest.canonical == canonical {
+                record(state, &h.rev, files_now(&bundle))?;
                 return Ok(in_sync());
             }
-            if bundle.canonical == t.canonical {
-                return Ok(ItemOutcome::Skipped {
-                    reason: format!("{} has a newer copy; `asm pull` it", who(h)),
-                });
-            }
-            if !force {
+            if !force && !ours(h) {
+                if canonical == t.canonical {
+                    return Ok(ItemOutcome::Skipped {
+                        reason: format!("{} has a newer copy; `asm pull` it", who(h)),
+                    });
+                }
                 return Ok(ItemOutcome::Failed {
                     error: format!(
                         "diverged: this machine and {} both continued it since they last \
@@ -192,11 +225,11 @@ fn push_one(
         // it as new.
         (Some(_), None) | (None, None) => None,
         (None, Some(h)) => {
-            if h.manifest.canonical == bundle.canonical {
-                record(state, &h.rev)?;
+            if h.manifest.canonical == canonical {
+                record(state, &h.rev, files_now(&bundle))?;
                 return Ok(in_sync());
             }
-            if !force {
+            if !force && !ours(h) {
                 return Ok(ItemOutcome::Failed {
                     error: format!(
                         "the hub already has this session from {}, with different content, and \
@@ -216,28 +249,37 @@ fn push_one(
     let scratch = Scratch(scratch_dir("push")?);
     let mut uploaded = 0u64;
     let mut sent = std::collections::HashSet::new();
-    for file in &bundle.files {
-        let Some(sha) = &file.entry.sha256 else { continue };
-        if !missing.contains(sha) || !sent.insert(sha.clone()) {
+    for (n, file) in bundle.files.iter_mut().enumerate() {
+        let Some(sha) = file.entry.sha256.clone() else { continue };
+        if !missing.contains(&sha) {
             continue;
         }
+        let tmp = scratch.0.join(n.to_string());
         match &file.source {
-            Source::Path(path) => remote.put_blob(sha, path)?,
-            Source::Bytes(bytes) => {
-                let tmp = scratch.0.join(sha);
-                std::fs::write(&tmp, bytes).map_err(|e| CoreError::io(&tmp, e))?;
-                remote.put_blob(sha, &tmp)?;
+            // Copied, then the copy hashed and sent: a live session's
+            // sidecar can grow between collecting and uploading, and what
+            // is sent must be exactly what the manifest names.
+            Source::Path(path) => {
+                std::fs::copy(path, &tmp).map_err(|e| CoreError::io(path, e))?;
+                let size = std::fs::metadata(&tmp).map_err(|e| CoreError::io(&tmp, e))?.len();
+                file.entry.sha256 = Some(fsutil::sha256_file(&tmp)?);
+                file.entry.size = size;
             }
+            Source::Bytes(bytes) => std::fs::write(&tmp, bytes).map_err(|e| CoreError::io(&tmp, e))?,
             Source::Symlink => continue,
         }
-        uploaded += file.entry.size;
+        let sha = file.entry.sha256.clone().unwrap_or(sha);
+        if sent.insert(sha.clone()) {
+            remote.put_blob(&sha, &tmp)?;
+            uploaded += file.entry.size;
+        }
     }
 
     let origin = origin_of(&session.project_root, origins);
     let manifest = manifest_for(session, &bundle, parent, origin);
-    match remote.put_revision(&manifest, force)? {
+    match remote.put_revision(&manifest)? {
         PutOutcome::Created { rev } => {
-            record(state, &rev)?;
+            record(state, &rev, files_now(&bundle))?;
             Ok(ItemOutcome::Ok {
                 note: format!(
                     "pushed {} ({} uploaded)",
@@ -333,12 +375,17 @@ pub fn pull(remote: &Remote, query: &str, project_dir: Option<&Path>) -> Result<
             String::new()
         } else {
             crate::ops::resolve_ref(&key(agent, &id), &Default::default())
-                .map(|s| crate::index::fingerprint(&s))
+                .map(|s| bundle::fingerprint(&s))
                 .unwrap_or_default()
         };
         SyncState::load(remote)?.record(
             &key(agent, &id),
-            Tracked { hub_rev: history.head.clone(), canonical: manifest.canonical.clone(), fingerprint },
+            Tracked {
+                hub_rev: history.head.clone(),
+                canonical: manifest.canonical.clone(),
+                fingerprint,
+                files: files_hash(&manifest.files),
+            },
         )?;
     }
     Ok(Pulled {
@@ -403,7 +450,7 @@ pub fn remote_list(remote: &Remote, local: &[Session]) -> Result<Vec<Row>, CoreE
             (None, _) => RowState::Remote,
             (Some(_), None) => RowState::Untracked,
             (Some(s), Some(t)) => {
-                let changed_here = crate::index::fingerprint(s) != t.fingerprint;
+                let changed_here = bundle::fingerprint(s) != t.fingerprint;
                 let moved_there = head.rev != t.hub_rev;
                 match (changed_here, moved_there) {
                     (false, false) => RowState::InSync,

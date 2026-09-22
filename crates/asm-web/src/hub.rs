@@ -17,7 +17,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use axum::Json;
 use axum::body::{Body, Bytes};
-use axum::extract::{DefaultBodyLimit, Extension, Path, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, Extension, Path, Request, State};
 use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -94,7 +94,10 @@ async fn authenticate(State(state): State<Shared>, mut request: Request, next: N
 
 pub fn router(state: Shared) -> axum::Router {
     axum::Router::new()
-        .route("/hub/v1/join", post(join))
+        // The one route open to anyone: it gets no more body than a join
+        // needs, so an unauthenticated caller cannot make the hub buffer
+        // the 64 MiB the routes below allow.
+        .route("/hub/v1/join", post(join).layer(DefaultBodyLimit::max(4096)))
         .route("/hub/v1/machines", get(machines))
         .route("/hub/v1/sessions", get(sessions))
         .route("/hub/v1/sessions/{agent}/{id}", get(history).put(put_revision))
@@ -143,21 +146,13 @@ async fn history(State(state): State<Shared>, Path((agent, id)): Path<(String, S
     }
 }
 
-#[derive(Deserialize)]
-struct PutQuery {
-    #[serde(default)]
-    force: Option<String>,
-}
-
 async fn put_revision(
     State(state): State<Shared>,
     Extension(machine): Extension<Machine>,
     Path((agent, id)): Path<(String, String)>,
-    Query(query): Query<PutQuery>,
     body: Bytes,
 ) -> Response {
-    let force = query.force.is_some_and(|f| f == "1" || f == "true");
-    match blocking(move || state.hub.put_revision(&agent, &id, &body, &machine, force)).await {
+    match blocking(move || state.hub.put_revision(&agent, &id, &body, &machine)).await {
         Ok(rev) => (StatusCode::CREATED, Json(json!({ "rev": rev }))).into_response(),
         Err(e) => hub_error(e),
     }
@@ -298,7 +293,7 @@ pub fn run(host: &str, port: u16, max_blob: u64) -> anyhow::Result<()> {
         };
         eprintln!("asm hub on http://{}/  (ctrl-c to stop)", crate::display_addr(&addr));
         eprintln!("  store      {}", root.display());
-        eprintln!("  join with  asm join http://{advertise}:{} --token {token}", addr.port());
+        eprintln!("  join with  ASM_JOIN_TOKEN={token} asm join http://{advertise}:{}", addr.port());
         if addr.ip().is_loopback() {
             eprintln!(
                 "\n  Bound to loopback: only this machine can reach it. Publish it through \
@@ -385,6 +380,11 @@ mod tests {
         let (status, _) = send(&app, "POST", "/hub/v1/join", None, Body::from(body)).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert!(state.hub.machines().unwrap().is_empty());
+
+        // Nothing near the 64 MiB the authenticated routes take.
+        let padded = json!({ "token": "x".repeat(8192), "name": "x" }).to_string();
+        let (status, _) = send(&app, "POST", "/hub/v1/join", None, Body::from(padded)).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
 
         let cred = credential(&app, &state).await;
         let (status, v) = send(&app, "GET", "/hub/v1/machines", Some(&cred), Body::empty()).await;

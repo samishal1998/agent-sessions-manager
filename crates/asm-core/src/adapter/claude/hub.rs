@@ -101,6 +101,9 @@ fn effective_cwd(transcript: &Path, id: &str) -> Option<PathBuf> {
 /// records came from another machine's path, or a large append pushed an
 /// earlier marker out of the window `scan_transcript` reads.
 fn ensure_cwd(transcript: &Path, id: &str, want: &str) -> Result<(), CoreError> {
+    if !Path::new(want).is_absolute() {
+        return Err(CoreError::Invalid { msg: format!("refusing to relocate {id} to {want:?}") });
+    }
     if effective_cwd(transcript, id).as_deref() != Some(Path::new(want)) {
         fsutil::append_jsonl_line(transcript, &write::relocated_marker(id, want))?;
     }
@@ -121,10 +124,11 @@ fn private_dir(dir: &Path) -> Result<(), CoreError> {
     Ok(())
 }
 
-/// Where a sidecar entry lands. `validate` has already refused `..` and
-/// absolute paths; the `starts_with` is there so that a bug elsewhere cannot
-/// quietly turn into a write outside the session's own directories.
-fn sidecar_dest(root: &Path, project_dir: &Path, id: &str, path: &str) -> Option<PathBuf> {
+/// Where a sidecar entry lands, and the session's own directory it must
+/// stay inside. `validate` has already refused `..` and absolute paths; the
+/// `starts_with` is there so that a bug elsewhere cannot quietly turn into a
+/// write outside that directory.
+fn sidecar_dest(root: &Path, project_dir: &Path, id: &str, path: &str) -> Option<(PathBuf, PathBuf)> {
     let (top, rest) = path.split_once('/')?;
     let base = match top {
         "session-dir" => project_dir.join(id),
@@ -132,17 +136,75 @@ fn sidecar_dest(root: &Path, project_dir: &Path, id: &str, path: &str) -> Option
         _ => return None,
     };
     let dest = base.join(rest);
-    dest.starts_with(&base).then_some(dest)
+    dest.starts_with(&base).then_some((base, dest))
 }
 
-/// Write the hub's sidecar files. `overwrite` is false when this machine's
-/// transcript is at least as new as the hub's, so its sidecars are too.
+/// Create `dir` one level at a time from `base`'s parent, refusing to pass
+/// through anything that is not a real directory. A symlink planted by an
+/// earlier pull, or by a hostile manifest, must never become a way to write
+/// outside the session's own directories.
+fn real_dirs(base: &Path, dir: &Path) -> Result<(), CoreError> {
+    let trusted = base.parent().unwrap_or(base);
+    fs::create_dir_all(trusted).map_err(|e| CoreError::io(trusted, e))?;
+    let mut at = trusted.to_path_buf();
+    for part in dir.strip_prefix(trusted).unwrap_or(Path::new("")).components() {
+        at.push(part);
+        match fs::symlink_metadata(&at) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => {
+                return Err(CoreError::Invalid {
+                    msg: format!("{} is not a directory; refusing to write through it", at.display()),
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&at).map_err(|e| CoreError::io(&at, e))?;
+            }
+            Err(e) => return Err(CoreError::io(&at, e)),
+        }
+    }
+    Ok(())
+}
+
+/// A link is installed only if it stays inside this session's own
+/// directories: a relative target that only descends, or an absolute one
+/// into the session's sidecar (repointed from the pushing machine's).
+/// Anything else named a place on the other machine's disk, which means
+/// nothing here — and would be a way out of the store if it were followed.
+fn contained_target(target: &str, source: Option<&Path>, local: &Path) -> Option<PathBuf> {
+    use std::path::Component;
+    let target = Path::new(target);
+    if target.components().all(|c| matches!(c, Component::Normal(_))) {
+        return Some(target.to_path_buf());
+    }
+    let target = match source.and_then(|src| target.strip_prefix(src).ok()) {
+        Some(rest) => local.join(rest),
+        None => target.to_path_buf(),
+    };
+    let plain = target.components().all(|c| matches!(c, Component::Normal(_) | Component::RootDir));
+    (plain && target.is_absolute() && target.starts_with(local)).then_some(target)
+}
+
+/// True when `have` is an earlier state of `want`: its bytes a proper
+/// prefix of `want`'s, as an appended-to JSONL sidecar's are.
+// ponytail: reads both files whole; stream the comparison if sidecars
+// (file-history keeps copies of edited files) ever get large enough to matter.
+fn behind(have: &Path, want: &Path) -> bool {
+    match (fs::read(have), fs::read(want)) {
+        (Ok(have), Ok(want)) => want.len() > have.len() && want.starts_with(&have),
+        _ => false,
+    }
+}
+
+/// Write the hub's sidecar files. `newer` is true only when the hub's
+/// transcript extends this machine's; even then a local sidecar is replaced
+/// only when it is an earlier state of the hub's, so nothing written here
+/// and not yet pushed is lost.
 fn write_sidecars(
     root: &Path,
     project_dir: &Path,
     manifest: &Manifest,
     blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
-    overwrite: bool,
+    newer: bool,
 ) -> Result<(), CoreError> {
     let local_sidecar = project_dir.join(&manifest.id);
     let source_sidecar =
@@ -151,45 +213,84 @@ fn write_sidecars(
         if file.path == "transcript.jsonl" {
             continue;
         }
-        let Some(dest) = sidecar_dest(root, project_dir, &manifest.id, &file.path) else {
+        let Some((base, dest)) = sidecar_dest(root, project_dir, &manifest.id, &file.path) else {
             return Err(CoreError::Invalid { msg: format!("unexpected entry {:?}", file.path) });
         };
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
-        }
-        let exists = fs::symlink_metadata(&dest).is_ok();
+        real_dirs(&base, dest.parent().unwrap_or(&base))?;
+        let existing = fs::symlink_metadata(&dest).ok();
         match file {
             FileEntry { symlink: Some(target), .. } => {
-                if exists && !overwrite {
+                let Some(target) =
+                    contained_target(target, source_sidecar.as_deref(), &local_sidecar)
+                else {
                     continue;
-                }
-                // A link into the pushing machine's sidecar is repointed to
-                // this one's, the same repair `asm move` makes.
-                let target = match &source_sidecar {
-                    Some(src) => match Path::new(target).strip_prefix(src) {
-                        Ok(rest) => local_sidecar.join(rest),
-                        Err(_) => PathBuf::from(target),
-                    },
-                    None => PathBuf::from(target),
                 };
-                if exists {
-                    fs::remove_file(&dest).map_err(|e| CoreError::io(&dest, e))?;
+                match existing {
+                    None => {}
+                    // Only a link replaces a link; a real file here is data.
+                    Some(meta) if meta.is_symlink() && newer => {
+                        fs::remove_file(&dest).map_err(|e| CoreError::io(&dest, e))?;
+                    }
+                    Some(_) => continue,
                 }
                 #[cfg(unix)]
                 std::os::unix::fs::symlink(&target, &dest).map_err(|e| CoreError::io(&dest, e))?;
             }
             FileEntry { sha256: Some(sha), .. } => {
-                if exists
-                    && (!overwrite || fsutil::sha256_file(&dest).is_ok_and(|have| have == *sha))
-                {
-                    continue;
+                let src = blob(sha)?;
+                // An existing file is replaced only on a fast-forward and only
+                // by a later state of itself. A link there is never followed,
+                // not even to read it.
+                let replace = match existing {
+                    None => true,
+                    Some(meta) => newer && meta.is_file() && behind(&dest, &src),
+                };
+                if replace {
+                    fsutil::copy_atomic(&src, &dest)?;
                 }
-                fsutil::copy_atomic(&blob(sha)?, &dest)?;
             }
             _ => {}
         }
     }
     Ok(())
+}
+
+/// Held while one pull installs one id, so two pulls at once cannot both see
+/// no copy and each file one — two copies of an id break `claude --resume`.
+struct InstallLock(PathBuf);
+
+impl InstallLock {
+    fn take(root: &Path, id: &str) -> Result<InstallLock, CoreError> {
+        let projects = root.join("projects");
+        private_dir(&projects)?;
+        let path = projects.join(format!(".asm-install-{id}.lock"));
+        for _ in 0..2 {
+            match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut f) => {
+                    let _ = write!(f, "{}", std::process::id());
+                    return Ok(InstallLock(path));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let holder = fs::read_to_string(&path).ok().and_then(|s| s.trim().parse().ok());
+                    if holder.is_some_and(crate::process::alive) {
+                        return Err(CoreError::Invalid {
+                            msg: format!("another asm pull of session {id} is running"),
+                        });
+                    }
+                    // Left by a pull that was killed.
+                    let _ = fs::remove_file(&path);
+                }
+                Err(e) => return Err(CoreError::io(&path, e)),
+            }
+        }
+        Err(CoreError::Invalid { msg: format!("could not take {}", path.display()) })
+    }
+}
+
+impl Drop for InstallLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
 }
 
 /// Install a pulled session on this machine, under its original id.
@@ -208,8 +309,14 @@ pub(crate) fn install(
 ) -> Result<Installed, CoreError> {
     manifest.validate().map_err(|msg| CoreError::Invalid { msg })?;
     let id = &manifest.id;
-    write::guard_not_live(adapter, id)?;
+    // Every download first (`blob` keeps what it fetched), so nothing below
+    // waits on the network between the liveness check and the writes.
+    for sha in manifest.blob_shas() {
+        blob(sha)?;
+    }
     let root = adapter.root();
+    let _lock = InstallLock::take(root, id)?;
+    write::guard_not_live(adapter, id)?;
 
     let entry = manifest
         .files
@@ -236,14 +343,9 @@ pub(crate) fn install(
     }
 }
 
-fn install_new(
-    adapter: &ClaudeAdapter,
-    manifest: &Manifest,
-    incoming: &[u8],
-    blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
-    project_dir: Option<&Path>,
-) -> Result<Installed, CoreError> {
-    let id = &manifest.id;
+/// Where a session with no location of its own here goes: `--project-dir`,
+/// else the pushing machine's path resolved against this home.
+fn target_dir(manifest: &Manifest, project_dir: Option<&Path>) -> Result<PathBuf, CoreError> {
     let wanted = match project_dir {
         Some(dir) => dir.to_path_buf(),
         None => PortablePath(manifest.project_root_portable.clone()).resolve(),
@@ -257,7 +359,18 @@ fn install_new(
             ),
         });
     }
-    let target = wanted.canonicalize().map_err(|e| CoreError::io(&wanted, e))?;
+    wanted.canonicalize().map_err(|e| CoreError::io(&wanted, e))
+}
+
+fn install_new(
+    adapter: &ClaudeAdapter,
+    manifest: &Manifest,
+    incoming: &[u8],
+    blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
+    project_dir: Option<&Path>,
+) -> Result<Installed, CoreError> {
+    let id = &manifest.id;
+    let target = target_dir(manifest, project_dir)?;
     let target_str = utf8(&target)?;
 
     let root = adapter.root();
@@ -284,19 +397,40 @@ fn update(
     project_dir: Option<&Path>,
 ) -> Result<Installed, CoreError> {
     let id = &manifest.id;
-    let here = effective_cwd(path, id).unwrap_or_default();
-    if let Some(dir) = project_dir {
-        let dir = dir.canonicalize().map_err(|e| CoreError::io(dir, e))?;
-        if dir != here {
-            return Err(CoreError::Invalid {
-                msg: format!(
-                    "session {id} is already here, in {}; pull without --project-dir to update \
-                     it there, or `asm move` it first",
-                    here.display()
-                ),
-            });
+    let project = path.parent().unwrap_or(Path::new("/"));
+    let here = match effective_cwd(path, id) {
+        Some(here) => {
+            if let Some(dir) = project_dir {
+                let dir = dir.canonicalize().map_err(|e| CoreError::io(dir, e))?;
+                if dir != here {
+                    return Err(CoreError::Invalid {
+                        msg: format!(
+                            "session {id} is already here, in {}; pull without --project-dir \
+                             to update it there, or `asm move` it first",
+                            here.display()
+                        ),
+                    });
+                }
+            }
+            here
         }
-    }
+        // No record here says where it ran yet. Take the place a new install
+        // would, but only if that is the project directory it is filed in.
+        None => {
+            let target = target_dir(manifest, project_dir)?;
+            let filed = project.file_name().and_then(|n| n.to_str());
+            if filed != Some(super::encode_project_dir(utf8(&target)?).as_str()) {
+                return Err(CoreError::Invalid {
+                    msg: format!(
+                        "cannot tell which directory session {id} belongs to here; pass \
+                         --project-dir with the one {} stands for",
+                        project.display()
+                    ),
+                });
+            }
+            target
+        }
+    };
 
     let raw = fs::read(path).map_err(|e| CoreError::io(path, e))?;
     if raw.last().is_some_and(|&b| b != b'\n') {
@@ -309,7 +443,6 @@ fn update(
         });
     }
     let local = canonical_transcript(&raw);
-    let project = path.parent().unwrap_or(Path::new("/"));
 
     let outcome = if local == incoming {
         InstallOutcome::InSync
@@ -328,11 +461,11 @@ fn update(
         return finish(InstallOutcome::Diverged, path.to_path_buf(), id);
     };
 
+    // The marker before the sidecars: if a sidecar fails, the appended
+    // foreign records must not already be moving the session elsewhere.
+    ensure_cwd(path, id, utf8(&here)?)?;
     let newer = matches!(outcome, InstallOutcome::FastForward { .. });
     write_sidecars(adapter.root(), project, manifest, blob, newer)?;
-    if newer {
-        ensure_cwd(path, id, utf8(&here)?)?;
-    }
     finish(outcome, path.to_path_buf(), id)
 }
 
@@ -629,6 +762,147 @@ mod tests {
             fs::write(d.join(format!("{ID}.jsonl")), a.record("dup")).unwrap();
         }
         assert!(pull(&b, &pushed, Some(&b.project)).unwrap_err().to_string().contains("2 project"));
+    }
+
+    type Pushed = (Manifest, HashMap<String, Vec<u8>>);
+
+    /// Add an entry to a pushed bundle, as a hostile or buggy machine could.
+    fn add_file(pushed: &mut Pushed, path: &str, bytes: &[u8]) {
+        let sha = fsutil::sha256_hex(bytes);
+        pushed.1.insert(sha.clone(), bytes.to_vec());
+        pushed.0.files.retain(|f| f.path != path);
+        pushed.0.files.push(FileEntry {
+            path: path.into(),
+            sha256: Some(sha),
+            size: bytes.len() as u64,
+            symlink: None,
+        });
+    }
+
+    /// A symlink planted on disk earlier, by an older asm or a hostile
+    /// revision, is never written through — under any of the four sidecar
+    /// directories, on a new install or a fast-forward.
+    #[cfg(unix)]
+    #[test]
+    fn nothing_is_written_through_a_symlink_already_on_disk() {
+        for top in ["session-dir", "file-history", "session-env", "tasks"] {
+            let (a, b) = (Machine::new("proj-a"), Machine::new("proj-b"));
+            a.start(&["one"]);
+            pull(&b, &push(&a), Some(&b.project)).unwrap();
+            let victim = b.project.parent().unwrap().join("victim");
+            fs::create_dir_all(&victim).unwrap();
+            fs::write(victim.join("planted"), b"original").unwrap();
+            let base = match top {
+                "session-dir" => b.project_dir().join(ID),
+                dir => b.adapter.root().join(dir).join(ID),
+            };
+            fs::create_dir_all(&base).unwrap();
+            std::os::unix::fs::symlink(&victim, base.join("evil")).unwrap();
+
+            a.append("two");
+            let mut pushed = push(&a);
+            add_file(&mut pushed, &format!("{top}/evil/planted"), b"REPLACED");
+            add_file(&mut pushed, &format!("{top}/evil/new"), b"NEW");
+            let err = pull(&b, &pushed, None).unwrap_err().to_string();
+            assert!(err.contains("not a directory"), "{top}: {err}");
+            assert_eq!(fs::read(victim.join("planted")).unwrap(), b"original", "{top}");
+            assert!(!victim.join("new").exists(), "{top}");
+            // The transcript still moved and still reads as B's own.
+            assert_eq!(canonical_transcript(&transcript_of_b(&b)), fs::read(a.transcript()).unwrap());
+            assert_eq!(b.project_root(), b.project, "{top}: marker written before the sidecars");
+        }
+    }
+
+    /// A link is installed only when it points inside the session's own
+    /// sidecar directory; one naming any other place is dropped.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_the_sidecar_is_never_installed() {
+        let (a, b) = (Machine::new("proj-a"), Machine::new("proj-b"));
+        a.start(&["one"]);
+        let mut pushed = push(&a);
+        let sidecar = pushed.0.extra["sidecar_dir"].as_str().unwrap().to_string();
+        for (path, target) in [
+            ("session-dir/ssh", "/home/someone/.ssh".to_string()),
+            ("session-dir/up", format!("{sidecar}/../../..")),
+            ("tasks/rel", "../../x".to_string()),
+            ("session-dir/ok", format!("{sidecar}/subagents")),
+            ("session-dir/rel", "subagents/agent-1.jsonl".to_string()),
+        ] {
+            pushed.0.files.push(FileEntry {
+                path: path.into(),
+                sha256: None,
+                size: 0,
+                symlink: Some(target),
+            });
+        }
+        pull(&b, &pushed, Some(&b.project)).unwrap();
+        let b_sidecar = b.project_dir().join(ID);
+        for gone in [b_sidecar.join("ssh"), b_sidecar.join("up"), b.adapter.root().join("tasks").join(ID).join("rel")] {
+            assert!(fs::symlink_metadata(&gone).is_err(), "{}", gone.display());
+        }
+        assert_eq!(fs::read_link(b_sidecar.join("ok")).unwrap(), b_sidecar.join("subagents"));
+        assert_eq!(fs::read_link(b_sidecar.join("rel")).unwrap(), Path::new("subagents/agent-1.jsonl"));
+    }
+
+    /// On a fast-forward a sidecar is replaced only by a later state of
+    /// itself; one this machine changed differently is left alone.
+    #[test]
+    fn a_fast_forward_keeps_sidecars_changed_here() {
+        let (a, b) = (Machine::new("proj-a"), Machine::new("proj-b"));
+        a.start(&["one"]);
+        let mut first = push(&a);
+        add_file(&mut first, "tasks/t.json", b"{\"v\":1}");
+        add_file(&mut first, "session-dir/subagents/s.jsonl", b"{}\n");
+        pull(&b, &first, Some(&b.project)).unwrap();
+        let tasks = b.adapter.root().join("tasks").join(ID).join("t.json");
+        fs::write(&tasks, b"{\"v\":2,\"here\":true}").unwrap();
+
+        a.append("two");
+        let mut second = push(&a);
+        add_file(&mut second, "tasks/t.json", b"{\"v\":1,\"there\":true}");
+        add_file(&mut second, "session-dir/subagents/s.jsonl", b"{}\n{}\n");
+        let installed = pull(&b, &second, None).unwrap();
+        assert!(matches!(installed.outcome, InstallOutcome::FastForward { .. }));
+        assert_eq!(fs::read(&tasks).unwrap(), b"{\"v\":2,\"here\":true}");
+        let sub = b.project_dir().join(ID).join("subagents/s.jsonl");
+        assert_eq!(fs::read(sub).unwrap(), b"{}\n{}\n", "an appended sidecar follows");
+    }
+
+    /// A copy here with no record of where it ran is filed only where it
+    /// already sits, and never gets a marker with an empty path.
+    #[test]
+    fn a_copy_with_no_location_is_placed_only_where_it_is_filed() {
+        let (a, b) = (Machine::new("proj-a"), Machine::new("proj-b"));
+        a.start(&["one"]);
+        fs::create_dir_all(b.project_dir()).unwrap();
+        fs::write(b.transcript(), b"").unwrap();
+        let pushed = push(&a);
+
+        let err = pull(&b, &pushed, None).unwrap_err().to_string();
+        assert!(err.contains("--project-dir"), "{err}");
+        assert!(fs::read(b.transcript()).unwrap().is_empty());
+
+        let installed = pull(&b, &pushed, Some(&b.project)).unwrap();
+        assert!(matches!(installed.outcome, InstallOutcome::FastForward { .. }));
+        assert_eq!(b.project_root(), b.project);
+        assert!(!String::from_utf8(transcript_of_b(&b)).unwrap().contains("\"relocatedCwd\":\"\""));
+    }
+
+    #[test]
+    fn one_pull_of_an_id_at_a_time() {
+        let (a, b) = (Machine::new("proj-a"), Machine::new("proj-b"));
+        a.start(&["one"]);
+        let pushed = push(&a);
+        let lock = b.adapter.root().join("projects").join(format!(".asm-install-{ID}.lock"));
+        fs::write(&lock, std::process::id().to_string()).unwrap();
+        assert!(pull(&b, &pushed, Some(&b.project)).unwrap_err().to_string().contains("running"));
+        assert!(find_transcripts(b.adapter.root(), ID).is_empty());
+
+        // Left by a pull that was killed: taken over, and gone afterwards.
+        fs::write(&lock, "999999999").unwrap();
+        pull(&b, &pushed, Some(&b.project)).unwrap();
+        assert!(!lock.exists());
     }
 
     /// Another machine running an older asm could upload markers; they must

@@ -154,7 +154,10 @@ impl ScanState {
                 }
             }
             Some("relocated") => {
-                if let Some(c) = record.get("relocatedCwd").and_then(Value::as_str) {
+                // An empty one (written by an older asm pull) says nothing.
+                if let Some(c) = record.get("relocatedCwd").and_then(Value::as_str)
+                    && !c.is_empty()
+                {
                     self.relocated_cwd = Some(c.to_string());
                 }
             }

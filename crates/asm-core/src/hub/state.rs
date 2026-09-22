@@ -4,7 +4,8 @@
 //! it is what a push names as its parent. `canonical` is the conversation's
 //! identity at that moment; if it has moved since, this machine changed the
 //! session. `fingerprint` is the cheap local check (size and mtime) that
-//! lets an unchanged session be skipped without reading it.
+//! lets an unchanged session be skipped without reading it. `files` is the
+//! bundle's file list at that moment, so a changed sidecar is a change too.
 //!
 //! Losing this file is safe: a push with no record of a session it finds on
 //! the hub is refused as unknown rather than guessed at.
@@ -22,6 +23,8 @@ pub struct Tracked {
     pub hub_rev: String,
     pub canonical: String,
     pub fingerprint: String,
+    #[serde(default)]
+    pub files: String,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]

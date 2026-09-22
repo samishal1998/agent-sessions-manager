@@ -11,6 +11,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::fsutil;
 use crate::model::AgentKind;
 
 pub const SCHEMA: u32 = 1;
@@ -129,6 +130,17 @@ impl FileEntry {
     }
 }
 
+/// One hash of which files a bundle holds and what is in them. A link's
+/// target is left out: it names a place on one machine's disk.
+pub fn files_hash<'a>(files: impl IntoIterator<Item = &'a FileEntry>) -> String {
+    let mut lines: Vec<String> = files
+        .into_iter()
+        .map(|f| format!("{}\0{}", f.path, f.sha256.as_deref().unwrap_or("symlink")))
+        .collect();
+    lines.sort();
+    fsutil::sha256_hex(lines.join("\n").as_bytes())
+}
+
 impl Manifest {
     /// Everything a path or a directory name will be built from, checked.
     pub fn validate(&self) -> Result<(), String> {
@@ -165,6 +177,21 @@ impl Manifest {
             }
             if !seen.insert(file.path.as_str()) {
                 return Err(format!("{:?} appears twice", file.path));
+            }
+        }
+        // A symlink entry must be a leaf. Otherwise `dir -> /anywhere`
+        // followed by `dir/file` would make an install write `file`
+        // wherever the link points — outside the session, into any file the
+        // pulling user can write.
+        let links: std::collections::HashSet<&str> =
+            self.files.iter().filter(|f| f.is_symlink()).map(|f| f.path.as_str()).collect();
+        for file in &self.files {
+            let mut prefix = file.path.as_str();
+            while let Some((parent, _)) = prefix.rsplit_once('/') {
+                if links.contains(parent) {
+                    return Err(format!("{:?} would be written through the symlink {parent:?}", file.path));
+                }
+                prefix = parent;
             }
         }
         if let Some(parent) = &self.parent_rev
@@ -281,6 +308,29 @@ mod tests {
             FileEntry { path: "transcript.jsonl".into(), sha256: None, size: 0, symlink: None };
         assert!(manifest(vec![neither]).validate().is_err());
         assert!(manifest(vec![file("transcript.jsonl"), file("transcript.jsonl")]).validate().is_err());
+    }
+
+    /// Reported by review: a link entry followed by an entry beneath it
+    /// would write through the link on install. Refused at every depth.
+    #[test]
+    fn nothing_may_live_beneath_a_symlink_entry() {
+        let link = |path: &str| FileEntry {
+            path: path.into(),
+            sha256: None,
+            size: 0,
+            symlink: Some("/home/victim".into()),
+        };
+        for (l, f) in [
+            ("session-dir/evil", "session-dir/evil/.bashrc"),
+            ("session-dir/a", "session-dir/a/b/c/d"),
+            ("tasks/x", "tasks/x/y"),
+        ] {
+            let m = manifest(vec![file("transcript.jsonl"), link(l), file(f)]);
+            assert!(m.validate().is_err(), "{f} beneath {l} was accepted");
+        }
+        // A sibling that merely shares a prefix is fine.
+        let m = manifest(vec![file("transcript.jsonl"), link("session-dir/a"), file("session-dir/ab")]);
+        assert_eq!(m.validate(), Ok(()));
     }
 
     /// A layout is per agent: a Claude name in a codex manifest is refused.

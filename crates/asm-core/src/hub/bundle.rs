@@ -138,6 +138,19 @@ pub fn collect(session: &Session) -> Result<Bundle, CoreError> {
     }
 }
 
+/// The cheap "did it change" check a push compares before reading a
+/// session: the search index's, except for OpenCode, whose bundle carries
+/// every descendant session too.
+pub fn fingerprint(session: &Session) -> String {
+    if matches!(session.handle.location, crate::model::SessionLocation::SqliteRow { .. })
+        && let Some(Adapter::OpenCode(a)) = crate::ops::adapter_for(session.handle.agent)
+        && let Some(fp) = crate::adapter::opencode::hub::fingerprint(&a, session)
+    {
+        return fp;
+    }
+    crate::index::fingerprint(session)
+}
+
 /// How a pull changed this machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case", tag = "result")]

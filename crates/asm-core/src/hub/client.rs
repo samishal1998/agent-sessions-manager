@@ -77,12 +77,6 @@ fn config_path() -> Result<PathBuf, CoreError> {
         .ok_or_else(|| invalid("cannot determine asm data dir"))
 }
 
-fn tmp_dir() -> Result<PathBuf, CoreError> {
-    let dir = paths::data_dir().ok_or_else(|| invalid("cannot determine asm data dir"))?.join("tmp");
-    std::fs::create_dir_all(&dir).map_err(|e| CoreError::io(&dir, e))?;
-    Ok(dir)
-}
-
 /// A value curl's config syntax can carry inside double quotes without
 /// escaping. Everything asm puts there — URLs it validated, hex tokens,
 /// validated ids — already is; this is the guard for when that stops being
@@ -169,7 +163,7 @@ fn run_curl(
 ) -> Result<Response, CoreError> {
     let out = match save_to {
         Some(path) => path.to_path_buf(),
-        None => tmp_dir()?.join(format!("curl-{}.out", random_hex(8)?)),
+        None => paths::tmp_dir()?.join(format!("curl-{}.out", random_hex(8)?)),
     };
     let mut cmd = Command::new("curl");
     cmd.args(["-q", "-K", "-", "-sS", "--noproxy", "*", "--connect-timeout", "5"])
@@ -198,7 +192,7 @@ fn run_curl(
             cmd.args(["-X", method]);
         }
         Body::Json(bytes) => {
-            let json_file = tmp_dir()?.join(format!("curl-{}.json", random_hex(8)?));
+            let json_file = paths::tmp_dir()?.join(format!("curl-{}.json", random_hex(8)?));
             std::fs::write(&json_file, bytes).map_err(|e| CoreError::io(&json_file, e))?;
             cmd.args(["-X", method]).arg("--data-binary").arg(format!("@{}", json_file.display()));
             json_file_path = Some(json_file);
@@ -318,7 +312,7 @@ pub fn load() -> Result<Remote, CoreError> {
     let bytes = match std::fs::read(&path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(invalid("this machine has not joined a hub; run `asm join <url> --token <token>`"));
+            return Err(invalid("this machine has not joined a hub; run `ASM_JOIN_TOKEN=<token> asm join <url>`"));
         }
         Err(e) => return Err(CoreError::io(&path, e)),
     };
@@ -336,13 +330,8 @@ impl Remote {
             credential: self.credential.clone(),
         })
         .unwrap();
-        fsutil::write_atomic(&path, &body)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-        }
-        Ok(())
+        // write_atomic's file is 0600 from the moment it exists.
+        fsutil::write_atomic(&path, &body)
     }
 
     fn call(&self, method: &str, path: &str, body: Body, profile: Profile) -> Result<Response, CoreError> {
@@ -414,13 +403,8 @@ impl Remote {
         result
     }
 
-    pub fn put_revision(&self, manifest: &Manifest, force: bool) -> Result<PutOutcome, CoreError> {
-        let path = format!(
-            "/hub/v1/sessions/{}/{}{}",
-            manifest.agent,
-            manifest.id,
-            if force { "?force=1" } else { "" }
-        );
+    pub fn put_revision(&self, manifest: &Manifest) -> Result<PutOutcome, CoreError> {
+        let path = format!("/hub/v1/sessions/{}/{}", manifest.agent, manifest.id);
         let body = serde_json::to_vec(manifest).unwrap();
         let r = self.call("PUT", &path, Body::Json(body), Profile::Control)?;
         match r.status {

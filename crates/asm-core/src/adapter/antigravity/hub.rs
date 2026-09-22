@@ -17,10 +17,7 @@ pub(crate) fn collect(adapter: &AntigravityAdapter, session: &Session) -> Result
     let id = &session.handle.native_id;
     let db = adapter.conversations_dir().join(format!("{id}.db"));
 
-    let tmp_dir = paths::data_dir()
-        .ok_or_else(|| CoreError::Invalid { msg: "cannot determine asm data dir".into() })?
-        .join("tmp");
-    std::fs::create_dir_all(&tmp_dir).map_err(|e| CoreError::io(&tmp_dir, e))?;
+    let tmp_dir = paths::tmp_dir()?;
     let snapshot = tmp_dir.join(format!("antigravity-{id}-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&snapshot);
     let conn = super::super::open_ro(&db)?;

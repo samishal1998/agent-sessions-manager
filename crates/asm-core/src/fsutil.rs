@@ -85,12 +85,20 @@ pub fn append_jsonl_line(path: &Path, line: &str) -> Result<(), CoreError> {
 /// the new one, never a torn mixture: write a sibling, flush it to disk,
 /// then rename over. The sibling lives in the same directory because a
 /// rename across filesystems is not atomic (and fails with EXDEV).
+///
+/// The file is 0600 on unix: everything written this way (hub state, a
+/// machine credential, transcripts) is the user's alone, and a mode set
+/// after the rename would leave a window where it is not.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
     let tmp = parent.join(format!(".{name}.tmp-{}", std::process::id()));
     let result = (|| {
-        let mut file = fs::File::create(&tmp).map_err(|e| CoreError::io(&tmp, e))?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&tmp).map_err(|e| CoreError::io(&tmp, e))?;
         file.write_all(bytes).map_err(|e| CoreError::io(&tmp, e))?;
         // Without this a crash shortly after the rename can leave the new
         // name pointing at an empty file on some filesystems.

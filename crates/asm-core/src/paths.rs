@@ -14,6 +14,24 @@ pub fn data_dir() -> Option<PathBuf> {
         .map(|b| b.join("asm"))
 }
 
+/// `<data>/tmp`, private whatever the umask: curl's request and reply
+/// files (a join token, a credential), transcript copies on their way to a
+/// hub. Created on first use; tightened on every use, in case an older asm
+/// made it 0755.
+pub fn tmp_dir() -> Result<PathBuf, crate::CoreError> {
+    let dir = data_dir()
+        .ok_or_else(|| crate::CoreError::Invalid { msg: "cannot determine asm data dir".into() })?
+        .join("tmp");
+    std::fs::create_dir_all(&dir).map_err(|e| crate::CoreError::io(&dir, e))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| crate::CoreError::io(&dir, e))?;
+    }
+    Ok(dir)
+}
+
 /// Backups written before every destructive operation:
 /// `<data>/backups/<agent>/<session-id>/<epoch-millis>/`.
 pub fn backup_dir(agent: &str, session_id: &str) -> Option<PathBuf> {

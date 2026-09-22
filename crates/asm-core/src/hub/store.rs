@@ -430,15 +430,18 @@ impl Hub {
     }
 
     /// Accept a new revision of a session. Refused unless it names the
-    /// current head as its parent (or `force`), and unless every file it
-    /// lists has already been uploaded. Returns the new revision id.
+    /// current head as its parent, and unless every file it lists has
+    /// already been uploaded. Returns the new revision id.
+    ///
+    /// There is no way around the parent check: a client that means to
+    /// replace another machine's copy names that copy as the parent, so a
+    /// third push landing in between is still refused.
     pub fn put_revision(
         &self,
         agent: &str,
         id: &str,
         body: &[u8],
         by: &Machine,
-        force: bool,
     ) -> Result<String, HubError> {
         let agent = AgentKind::parse(agent)
             .ok_or_else(|| HubError::BadRequest(format!("unknown agent {agent:?}")))?;
@@ -451,7 +454,7 @@ impl Hub {
 
         let _guard = self.lock.lock().unwrap();
         let head = self.head_of(agent, id)?;
-        if !force && manifest.parent_rev != head {
+        if manifest.parent_rev != head {
             return Err(HubError::Conflict { head });
         }
         let missing: Vec<String> =
@@ -461,9 +464,7 @@ impl Hub {
         }
 
         // What the hub records is who pushed it and when by its own clock,
-        // whatever the client claimed; and a forced push still records the
-        // head it replaced, so history stays a chain.
-        manifest.parent_rev = head;
+        // whatever the client claimed.
         manifest.machine = Some(by.as_ref());
         manifest.pushed_at = Some(Timestamp::now());
         let bytes = serde_json::to_vec(&manifest).unwrap();
@@ -657,21 +658,21 @@ mod tests {
         let me = hub.join(&hub.join_token().unwrap(), "a").unwrap().machine;
         let sha = fsutil::sha256_hex(b"one");
 
-        match hub.put_revision("claude-code", ID, &manifest(None, &[&sha]), &me, false) {
+        match hub.put_revision("claude-code", ID, &manifest(None, &[&sha]), &me) {
             Err(HubError::MissingBlobs(m)) => assert_eq!(m, vec![sha.clone()]),
             other => panic!("expected missing blobs, got {other:?}"),
         }
         hub.put_blob(&sha, &b"one"[..], 1024).unwrap();
-        let rev1 = hub.put_revision("claude-code", ID, &manifest(None, &[&sha]), &me, false).unwrap();
+        let rev1 = hub.put_revision("claude-code", ID, &manifest(None, &[&sha]), &me).unwrap();
 
         // Based on nothing, but the session has a head now: someone else's
         // push must not be silently replaced.
-        match hub.put_revision("claude-code", ID, &manifest(None, &[&sha]), &me, false) {
+        match hub.put_revision("claude-code", ID, &manifest(None, &[&sha]), &me) {
             Err(HubError::Conflict { head }) => assert_eq!(head.as_deref(), Some(rev1.as_str())),
             other => panic!("expected conflict, got {other:?}"),
         }
         let rev2 =
-            hub.put_revision("claude-code", ID, &manifest(Some(rev1.clone()), &[&sha]), &me, false)
+            hub.put_revision("claude-code", ID, &manifest(Some(rev1.clone()), &[&sha]), &me)
                 .unwrap();
 
         let history = hub.history("claude-code", ID).unwrap();
@@ -682,24 +683,12 @@ mod tests {
     }
 
     #[test]
-    fn a_forced_push_still_records_what_it_replaced() {
-        let (_d, hub) = hub();
-        let me = hub.join(&hub.join_token().unwrap(), "a").unwrap().machine;
-        let sha = fsutil::sha256_hex(b"one");
-        hub.put_blob(&sha, &b"one"[..], 1024).unwrap();
-        let rev1 = hub.put_revision("claude-code", ID, &manifest(None, &[&sha]), &me, false).unwrap();
-        hub.put_revision("claude-code", ID, &manifest(None, &[&sha]), &me, true).unwrap();
-        let history = hub.history("claude-code", ID).unwrap();
-        assert_eq!(history.manifest.parent_rev, Some(rev1));
-    }
-
-    #[test]
     fn the_url_and_the_manifest_must_agree() {
         let (_d, hub) = hub();
         let me = hub.join(&hub.join_token().unwrap(), "a").unwrap().machine;
         for (agent, id) in [("codex", ID), ("claude-code", "other"), ("claude-code", "../x")] {
             assert!(matches!(
-                hub.put_revision(agent, id, &manifest(None, &[]), &me, false),
+                hub.put_revision(agent, id, &manifest(None, &[]), &me),
                 Err(HubError::BadRequest(_))
             ));
         }
@@ -711,7 +700,7 @@ mod tests {
         let me = hub.join(&hub.join_token().unwrap(), "a").unwrap().machine;
         let sha = fsutil::sha256_hex(b"one");
         hub.put_blob(&sha, &b"one"[..], 1024).unwrap();
-        hub.put_revision("claude-code", ID, &manifest(None, &[&sha]), &me, false).unwrap();
+        hub.put_revision("claude-code", ID, &manifest(None, &[&sha]), &me).unwrap();
         let heads = hub.heads().unwrap();
         assert_eq!(heads.len(), 1);
         assert_eq!(heads[0].file_count, 1);

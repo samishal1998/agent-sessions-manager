@@ -125,7 +125,7 @@ asm worktrees                # git worktrees of a repo, with the sessions in eac
 asm sync init && asm sync status
 
 asm hub serve                # on one machine: a hub, prints the join command
-asm join https://hub.example.ts.net --token asmj_…   # on each of the others
+ASM_JOIN_TOKEN=asmj_… asm join https://hub.example.ts.net   # on each of the others
 asm push --all               # upload what changed since the last push
 asm remote list              # this machine and the hub, grouped by project
 asm pull 7f3a1c88            # install a session from another machine here
@@ -304,10 +304,10 @@ to reach a laptop directly.
 ```sh
 # on the hub
 asm hub serve --port 7434
-#   join with  asm join http://hub-host:7434 --token asmj_…
+#   join with  ASM_JOIN_TOKEN=asmj_… asm join http://hub-host:7434
 
 # on each machine
-asm join https://hub.example.ts.net --token asmj_…
+ASM_JOIN_TOKEN=asmj_… asm join https://hub.example.ts.net
 asm push --all
 asm remote list
 asm pull 7f3a1c88 [--project-dir ~/src/elsewhere]
@@ -341,9 +341,11 @@ Security, deliberately plain:
 - The join token buys a machine its **own** credential. The hub keeps only its
   hash; `asm hub revoke <machine>` shuts one laptop out without touching the
   rest, and `asm hub token --rotate` retires the join token.
-- Credentials never appear in a process list — asm hands them to `curl` on
-  stdin — and `curl` is run with `-q` and `--noproxy '*'`, so neither a
-  `~/.curlrc` nor an `http_proxy` sees them.
+- Secrets stay out of the process list: the join token comes from
+  `$ASM_JOIN_TOKEN` (or `--token -`, on stdin), and asm hands every
+  credential to `curl` on stdin. `curl` is run with `-q` and `--noproxy '*'`,
+  so neither a `~/.curlrc` nor an `http_proxy` sees them. Its request and
+  reply files live in a 0700 directory.
 - Every joined machine can read every session on the hub. It is one person's
   hub, not a shared one.
 

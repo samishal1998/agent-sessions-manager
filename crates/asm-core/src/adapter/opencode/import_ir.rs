@@ -103,10 +103,7 @@ pub(super) fn import_ir(
     }
 
     // Hand the document to `opencode import` from the target project dir.
-    let tmp_dir = crate::paths::data_dir()
-        .ok_or_else(|| CoreError::Invalid { msg: "cannot determine asm data dir".into() })?
-        .join("tmp");
-    fs::create_dir_all(&tmp_dir).map_err(|e| CoreError::io(&tmp_dir, e))?;
+    let tmp_dir = crate::paths::tmp_dir()?;
     let doc_path = tmp_dir.join(format!("{session_id}.import.json"));
     fs::write(&doc_path, &pretty).map_err(|e| CoreError::io(&doc_path, e))?;
 
