@@ -233,9 +233,20 @@ kept verbatim so the history still reads), and nested subagent transcripts.
 | Restore from a hub | yes | yes | yes | same path | not yet |
 | Verified against a real install | 2.1.234 | 1.17.18 | 0.78.0 | 0.151.0 | 1.1.16 |
 
-Restore through a hub was verified separately, against Claude Code 2.1.278: a
-session pushed from one machine and pulled onto another at a different path
-resumed there in `claude --resume`, with its conversation intact.
+Restore through a hub was verified separately, each time between two
+separate homes (every store, config and asm's own state apart) on one host:
+
+- **Claude Code 2.1.278**: pulled onto another machine at a different path,
+  `claude --resume` continued it there with its conversation intact.
+- **OpenCode 1.18.31**: pulled onto a machine that had never run OpenCode, at
+  a different path; `opencode session list` showed it there and
+  `opencode run -s` recalled the conversation.
+- **jcode 0.83.0** (a session jcode wrote) and **Codex 0.151.0** (a generated
+  rollout in Codex's format): the agent's own resume by id loaded the pulled
+  file and appended the next turn to it, with no second copy. Neither got as
+  far as a model reply, because neither was logged in where it was tested, so
+  that last step is unverified.
+- **Antigravity**: not attempted. `agy` had no store on the test machine.
 
 ## Replying to a session
 
