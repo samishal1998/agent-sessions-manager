@@ -147,6 +147,23 @@ sequence `asm move` implements, matching what `/cd` does internally:
 10. Leave the trust latch in `~/.claude.json` alone — trusting a new directory
     is the user's security decision, so Claude Code should prompt.
 
+#### Records from another machine's path, after the marker
+
+Verified against Claude Code 2.1.278 with two `CLAUDE_CONFIG_DIR`s standing in
+for two machines: a transcript installed at a different path with one appended
+`relocated` record, then **fast-forwarded with records carrying the other
+machine's `cwd`** after that marker, resumes normally. The whole conversation
+carries over, tools run in the local directory, and Claude appends to the same
+file under the same id — it creates no second copy.
+
+Claude Code also writes this record itself: resumed from a directory that
+differs from the last record's `cwd`, it appends
+`{"type":"relocated","relocatedCwd":…,"sessionId":…}` — the same three fields
+asm writes, and likewise **no timestamp**. With two markers the last one wins.
+So `relocated` records are local bookkeeping that can appear anywhere in the
+file, not only at the end: anything comparing transcripts across machines has
+to leave them out.
+
 ---
 
 ## OpenCode
@@ -189,6 +206,13 @@ uses for imports: it schema-validates the document, **preserves the ids you
 supply** (which is what makes imports idempotent), computes the project binding
 from its own working directory, and goes through the migration-aware code path.
 Run it with the target project directory as cwd.
+
+**`export` is not a read.** Measured against 1.18.31 by diffing the whole store
+around two exports: run from a directory that is not a git repository, each
+call bumps the `global` project row's `time_updated`, and *any* OpenCode
+invocation from inside a git repository registers that repository as a
+project. The export itself is byte-stable across runs. Anything that exports
+repeatedly — a sync daemon — should read the rows itself instead.
 
 #### The tool-state union is not one shape
 
