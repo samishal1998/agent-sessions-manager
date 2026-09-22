@@ -265,6 +265,7 @@ footer { border-top: 1px solid var(--border); padding: 44px 0; color: var(--fg-f
     </a>
     <nav class="nav-links">
       <a class="nav-hide" href="#reply">Reply</a>
+      <a class="nav-hide" href="#machines">Machines</a>
       <a class="nav-hide" href="#features">Features</a>
       <a class="nav-hide" href="#import">Import</a>
       <a href="#install">Install</a>
@@ -417,6 +418,45 @@ footer { border-top: 1px solid var(--border); padding: 44px 0; color: var(--fg-f
   </div>
 </section>
 
+<section id="machines">
+  <div class="wrap">
+    <div class="split">
+      <div>
+        <h2>Across machines,<br />under the same id</h2>
+        <p style="color:var(--fg-muted);margin:0">
+          One machine runs a hub and prints a join command; the others join with the token and
+          push to it. Pull a session on another machine and it is <b style="color:var(--fg)">the same
+          session</b> — its own files under its own id, resumed by the agent's own CLI.
+        </p>
+        <ul>
+          <li><b>Nothing is merged or guessed.</b> Every push names the revision it started from; two machines that both continued a session are told, never silently reconciled.</li>
+          <li><b>A daemon that only pushes.</b> <code>asm daemon</code> sends what changed once it has held still, so closing the lid loses at most one interval — and never writes into a session you are using.</li>
+          <li><b>Move, not copy.</b> <code>asm push --move</code> archives it here once the hub has it; <code>asm pull</code> picks it up there.</li>
+          <li><b>Your TLS, one token per machine.</b> The hub speaks HTTP on a network you trust; each machine gets its own revocable credential, and none appears in a process list.</li>
+        </ul>
+      </div>
+      <div class="term">
+        <div class="term-bar">
+          <i style="background:#f0716f"></i><i style="background:#e8c37a"></i><i style="background:#5bd18c"></i>
+          <span>two machines</span>
+        </div>
+<pre><span class="m"># on the hub</span>
+<span class="p">$</span> asm hub serve --host 100.64.0.7
+  join with  <span class="a">ASM_JOIN_TOKEN=asmj_… asm join http://100.64.0.7:7434</span>
+
+<span class="m"># on the laptop</span>
+<span class="p">$</span> asm push --all
+Push: 11 of 11 succeeded
+
+<span class="m"># on the desktop</span>
+<span class="p">$</span> asm pull 7f3a1c88
+Installed claude-code 7f3a1c88 from laptop in /home/you/src/mercury.
+Resume with: <span class="a">cd /home/you/src/mercury &amp;&amp; claude --resume 7f3a1c88-…</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section id="features">
   <div class="wrap">
     <div class="sec-head center">
@@ -537,8 +577,9 @@ Resume with:
       <h2>Agent support</h2>
       <p>
         Verified means a real session was changed, then the agent's own CLI still listed and
-        resumed it. Codex and Antigravity are read-only on purpose: neither ships a command
-        to write through, and the alternative is a raw write to a schema that keeps moving.
+        resumed it. Codex and Antigravity have no rename, archive or delete on purpose: neither
+        ships a command to write through. A Codex pull only places the append-only rollout
+        codex itself resumes, and only in the directory it was started in.
       </p>
     </div>
     <div class="support">
@@ -554,6 +595,8 @@ Resume with:
           <tr><td>Delete, with backup</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td></tr>
           <tr><td>Move to another project</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
           <tr><td>Import into</td><td class="yes">✓</td><td class="yes">✓</td><td class="no">—</td><td class="no">—</td><td class="no">—</td></tr>
+          <tr><td>Back up to a hub</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>Restore from a hub</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">same path</td><td class="no">—</td></tr>
           <tr><td class="mono" style="font-size:13px">tested against</td><td class="mono" style="font-size:13px">2.1.234</td><td class="mono" style="font-size:13px">1.17.18</td><td class="mono" style="font-size:13px">0.78.0</td><td class="mono" style="font-size:13px">0.148.0</td><td class="mono" style="font-size:13px">1.1.16</td></tr>
         </tbody>
       </table>
