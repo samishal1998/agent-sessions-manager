@@ -49,6 +49,11 @@ impl AntigravityAdapter {
         AntigravityAdapter { root: root.into() }
     }
 
+    /// The default store, whether or not agy has created it yet.
+    pub fn default_store() -> Option<Self> {
+        default_root().map(|root| AntigravityAdapter { root })
+    }
+
     pub fn detect_default() -> Option<Self> {
         let root = default_root()?;
         root.join("conversations").is_dir().then_some(AntigravityAdapter { root })

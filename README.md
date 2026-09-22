@@ -230,7 +230,7 @@ kept verbatim so the history still reads), and nested subagent transcripts.
 | Import **into** (target) | yes | yes | no | no | no |
 | Send a message into a session | yes | yes | no | yes | yes |
 | Back up to a hub | yes | yes | yes | yes | yes |
-| Restore from a hub | yes | yes | yes | same path | not yet |
+| Restore from a hub | yes | yes | yes | same path | yes |
 | Verified against a real install | 2.1.234 | 1.17.18 | 0.78.0 | 0.151.0 | 1.1.16 |
 
 Restore through a hub was verified separately, each time between two
@@ -241,12 +241,16 @@ separate homes (every store, config and asm's own state apart) on one host:
 - **OpenCode 1.18.31**: pulled onto a machine that had never run OpenCode, at
   a different path; `opencode session list` showed it there and
   `opencode run -s` recalled the conversation.
-- **jcode 0.83.0** (a session jcode wrote) and **Codex 0.151.0** (a generated
-  rollout in Codex's format): the agent's own resume by id loaded the pulled
-  file and appended the next turn to it, with no second copy. Neither got as
-  far as a model reply, because neither was logged in where it was tested, so
-  that last step is unverified.
-- **Antigravity**: not attempted. `agy` had no store on the test machine.
+- **Codex 0.151.0**: a session codex made, pulled into the same directory on
+  the other home; `codex exec resume` recalled the conversation, and its
+  continuation came back as a fast-forward that codex on the first home saw.
+- **Antigravity 1.1.22**: a conversation agy made, pulled onto the other home;
+  `agy --conversation` recalled it from a directory the first home never used,
+  and its continuation came back as a replaced copy with a backup.
+- **jcode 0.83.0**: jcode's resume by id loaded the pulled session and
+  appended the next turn to it, with no second copy. A model reply was not
+  reached — jcode would not use a login copied into a test home — so that last
+  step is unverified.
 
 ## Replying to a session
 
@@ -407,8 +411,8 @@ stays on the hub as a revision. Timestamps are shown in `remote list` but never
 decide anything — clocks differ between machines, and a rename does not move a
 session's timestamp.
 
-Every agent's sessions are **backed up**; restore works for **Claude Code**,
-**OpenCode**, **jcode** and **Codex**. A Claude transcript is append-only, so a
+Every agent's sessions are **backed up**; restore works for all five: **Claude Code**,
+**OpenCode**, **jcode**, **Codex** and **Antigravity**. A Claude transcript is append-only, so a
 newer copy is appended to an older one without rewriting a byte. An OpenCode session is rows, with
 its subagent sessions, todos and queued inputs: an older copy here is replaced
 by the hub's only when every row here is also in the hub's copy, and it is
@@ -418,9 +422,10 @@ when its messages are a prefix of the hub's, again after a backup; it is filed
 under this machine's directory and resumed by id. A Codex rollout is
 append-only like a Claude transcript, but Codex writes the absolute working
 directory into the conversation itself, so it is restored only where that
-directory exists — the same path on both machines. Antigravity sessions are
-safe on the hub, and become restorable once `agy` has been seen resuming a
-restored copy.
+directory exists — the same path on both machines. An Antigravity
+conversation is a database agy rewrites whole, so an older copy is replaced
+when its transcript is a prefix of the hub's, after a backup; nothing in it
+names a directory, so it resumes wherever `agy --conversation <id>` is run.
 
 Security, deliberately plain:
 

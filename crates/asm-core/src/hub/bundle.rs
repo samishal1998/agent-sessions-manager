@@ -160,6 +160,32 @@ pub fn fingerprint(session: &Session) -> String {
     fingerprint
 }
 
+/// Create `dir` one level at a time from `base`'s parent, refusing to pass
+/// through anything that is not a real directory. A symlink planted by an
+/// earlier pull, or by a hostile manifest, must never become a way to write
+/// outside the session's own directories.
+pub(crate) fn real_dirs(base: &Path, dir: &Path) -> Result<(), CoreError> {
+    let trusted = base.parent().unwrap_or(base);
+    fs::create_dir_all(trusted).map_err(|e| CoreError::io(trusted, e))?;
+    let mut at = trusted.to_path_buf();
+    for part in dir.strip_prefix(trusted).unwrap_or(Path::new("")).components() {
+        at.push(part);
+        match fs::symlink_metadata(&at) {
+            Ok(meta) if meta.is_dir() => {}
+            Ok(_) => {
+                return Err(CoreError::Invalid {
+                    msg: format!("{} is not a directory; refusing to write through it", at.display()),
+                });
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&at).map_err(|e| CoreError::io(&at, e))?;
+            }
+            Err(e) => return Err(CoreError::io(&at, e)),
+        }
+    }
+    Ok(())
+}
+
 /// What this machine last agreed with the hub about a session: the
 /// conversation's identity then, and that revision's files by path.
 #[derive(Debug, Default)]
@@ -233,7 +259,12 @@ pub(crate) fn target_dir(manifest: &super::manifest::Manifest, project_dir: Opti
 /// Agents whose pull asm can perform today. The rest are backed up only;
 /// each is added once its own CLI has been seen to resume a restored copy.
 pub fn restorable(agent: AgentKind) -> bool {
-    matches!(agent, AgentKind::ClaudeCode | AgentKind::OpenCode | AgentKind::JCode | AgentKind::Codex)
+    // Every agent, now. Kept as a function: an agent added later starts out
+    // backed up only, until its own CLI has resumed a restored copy.
+    matches!(
+        agent,
+        AgentKind::ClaudeCode | AgentKind::OpenCode | AgentKind::JCode | AgentKind::Codex | AgentKind::Antigravity
+    )
 }
 
 #[cfg(test)]

@@ -53,27 +53,9 @@ pub(crate) fn collect(adapter: &CodexAdapter, session: &Session) -> Result<Bundl
 /// writes the thread (measured on 0.151). Taking it proves the session idle
 /// and keeps codex from starting to write while asm does; dropping the file
 /// releases it.
-struct WriterLock(#[allow(dead_code)] std::fs::File);
-
-fn take_writer_lock(adapter: &CodexAdapter, id: &str) -> Result<WriterLock, CoreError> {
-    let dir = adapter.root().join("thread-writer-locks");
-    std::fs::create_dir_all(&dir).map_err(|e| CoreError::io(&dir, e))?;
-    let path = dir.join(format!("{id}.lock"));
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(&path)
-        .map_err(|e| CoreError::io(&path, e))?;
-    #[cfg(unix)]
-    {
-        use std::os::fd::AsRawFd;
-        // Safety: flock on a descriptor this function owns.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(CoreError::SessionLive { id: id.to_string(), pid: None });
-        }
-    }
-    Ok(WriterLock(file))
+fn take_writer_lock(adapter: &CodexAdapter, id: &str) -> Result<std::fs::File, CoreError> {
+    let path = adapter.root().join("thread-writer-locks").join(format!("{id}.lock"));
+    fsutil::lock_exclusive(&path)?.ok_or_else(|| CoreError::SessionLive { id: id.to_string(), pid: None })
 }
 
 /// Every rollout of this id here, live or archived.

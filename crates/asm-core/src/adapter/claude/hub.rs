@@ -138,32 +138,6 @@ fn sidecar_dest(root: &Path, project_dir: &Path, id: &str, path: &str) -> Option
     dest.starts_with(&base).then_some((base, dest))
 }
 
-/// Create `dir` one level at a time from `base`'s parent, refusing to pass
-/// through anything that is not a real directory. A symlink planted by an
-/// earlier pull, or by a hostile manifest, must never become a way to write
-/// outside the session's own directories.
-fn real_dirs(base: &Path, dir: &Path) -> Result<(), CoreError> {
-    let trusted = base.parent().unwrap_or(base);
-    fs::create_dir_all(trusted).map_err(|e| CoreError::io(trusted, e))?;
-    let mut at = trusted.to_path_buf();
-    for part in dir.strip_prefix(trusted).unwrap_or(Path::new("")).components() {
-        at.push(part);
-        match fs::symlink_metadata(&at) {
-            Ok(meta) if meta.is_dir() => {}
-            Ok(_) => {
-                return Err(CoreError::Invalid {
-                    msg: format!("{} is not a directory; refusing to write through it", at.display()),
-                });
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                fs::create_dir(&at).map_err(|e| CoreError::io(&at, e))?;
-            }
-            Err(e) => return Err(CoreError::io(&at, e)),
-        }
-    }
-    Ok(())
-}
-
 /// A link is installed only if it stays inside this session's own
 /// directories: a relative target that only descends, or an absolute one
 /// into the session's sidecar (repointed from the pushing machine's).
@@ -221,7 +195,7 @@ fn write_sidecars(
         let Some((base, dest)) = sidecar_dest(root, project_dir, &manifest.id, &file.path) else {
             return Err(CoreError::Invalid { msg: format!("unexpected entry {:?}", file.path) });
         };
-        real_dirs(&base, dest.parent().unwrap_or(&base))?;
+        bundle::real_dirs(&base, dest.parent().unwrap_or(&base))?;
         let existing = fs::symlink_metadata(&dest).ok();
         match file {
             FileEntry { symlink: Some(target), .. } => {
@@ -276,23 +250,9 @@ impl InstallLock {
         let projects = root.join("projects");
         private_dir(&projects)?;
         let path = projects.join(format!(".asm-install-{id}.lock"));
-        let file = fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
-            .open(&path)
-            .map_err(|e| CoreError::io(&path, e))?;
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            // Safety: flock on a descriptor this function owns.
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-                return Err(CoreError::Invalid {
-                    msg: format!("another asm pull of session {id} is running"),
-                });
-            }
-        }
-        Ok(InstallLock(file))
+        fsutil::lock_exclusive(&path)?.map(InstallLock).ok_or_else(|| CoreError::Invalid {
+            msg: format!("another asm pull of session {id} is running"),
+        })
     }
 }
 

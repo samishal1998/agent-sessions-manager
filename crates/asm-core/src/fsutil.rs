@@ -89,6 +89,31 @@ fn unique() -> String {
     format!("{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
+/// An exclusive flock on `path` (created if missing, never truncated or
+/// removed), or `None` while another process holds it. Released when the
+/// file is dropped, or however the process ends. Codex and Antigravity mark
+/// a session in use this way; asm takes the same lock to write one.
+pub fn lock_exclusive(path: &Path) -> Result<Option<fs::File>, CoreError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
+    }
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .map_err(|e| CoreError::io(path, e))?;
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        // Safety: flock on a descriptor this function owns.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Ok(None);
+        }
+    }
+    Ok(Some(file))
+}
+
 /// Replace `path` with `bytes` so that a reader sees either the old file or
 /// the new one, never a torn mixture: write a sibling, flush it to disk,
 /// then rename over. The sibling lives in the same directory because a

@@ -416,6 +416,11 @@ pub fn pull(remote: &Remote, query: &str, project_dir: Option<&Path>) -> Result<
                 .ok_or_else(|| invalid("cannot locate the Claude Code store"))?;
             crate::adapter::claude::hub::install(&adapter, manifest, &blob, project_dir, base)?
         }
+        AgentKind::Antigravity => {
+            let adapter = crate::adapter::antigravity::AntigravityAdapter::default_store()
+                .ok_or_else(|| invalid("cannot locate the Antigravity store"))?;
+            crate::adapter::antigravity::hub::install(&adapter, manifest, &blob, project_dir, base)?
+        }
         AgentKind::Codex => {
             let adapter = crate::adapter::codex::CodexAdapter::default_store()
                 .ok_or_else(|| invalid("cannot locate the Codex store"))?;
@@ -431,7 +436,6 @@ pub fn pull(remote: &Remote, query: &str, project_dir: Option<&Path>) -> Result<
                 .ok_or_else(|| invalid("cannot locate the OpenCode store"))?;
             crate::adapter::opencode::hub::install(&adapter, manifest, &blob, project_dir, base)?
         }
-        _ => unreachable!("restorable() admitted {agent}"),
     };
 
     if installed.outcome != InstallOutcome::Diverged {
