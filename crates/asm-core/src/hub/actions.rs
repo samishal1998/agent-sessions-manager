@@ -90,8 +90,10 @@ fn human(bytes: u64) -> String {
 /// it, and every push names the revision it is based on, so the hub refuses
 /// one that would silently replace another machine's newer copy. `force`
 /// names the hub's current head as the parent instead, making this copy the
-/// head; the replaced one stays on the hub as a revision.
-pub fn push(remote: &Remote, sessions: &[Session], force: bool) -> Result<BulkReport, CoreError> {
+/// head; the replaced one stays on the hub as a revision. `exact` (for a
+/// move) reads every session and settles for nothing less than the hub
+/// holding exactly this copy, sidecars included.
+pub fn push(remote: &Remote, sessions: &[Session], force: bool, exact: bool) -> Result<BulkReport, CoreError> {
     let heads: HashMap<String, Head> = remote
         .heads()?
         .into_iter()
@@ -99,9 +101,15 @@ pub fn push(remote: &Remote, sessions: &[Session], force: bool) -> Result<BulkRe
         .collect();
     // The same file named twice is one session. The same id filed in two
     // places is two copies, and pushing both would swap the hub's head
-    // between them on every run.
+    // between them on every run — so is pushing either, which would back
+    // up whichever a caller happened to list. Counted over everything here,
+    // not only the batch: a daemon or a single row offers one copy.
+    let everything = crate::ops::list_sessions(&crate::adapter::SessionFilter {
+        include_children: true,
+        ..Default::default()
+    })?;
     let mut places: HashMap<String, Vec<&crate::model::SessionLocation>> = HashMap::new();
-    for s in sessions {
+    for s in sessions.iter().chain(&everything) {
         let here = places.entry(key(s.handle.agent, &s.handle.native_id)).or_default();
         if !here.contains(&&s.handle.location) {
             here.push(&s.handle.location);
@@ -118,6 +126,16 @@ pub fn push(remote: &Remote, sessions: &[Session], force: bool) -> Result<BulkRe
             continue;
         }
         let copies = places[&k].len();
+        // An OpenCode subagent travels in its parent's bundle.
+        if agent == AgentKind::OpenCode && session.parent.is_some() {
+            report.items.push(BulkItem {
+                agent,
+                native_id: id.clone(),
+                label: format!("{agent} {}", session.short_id()),
+                outcome: ItemOutcome::Skipped { reason: "it travels with its parent session".into() },
+            });
+            continue;
+        }
         let outcome = if copies > 1 {
             ItemOutcome::Failed {
                 error: format!(
@@ -126,7 +144,7 @@ pub fn push(remote: &Remote, sessions: &[Session], force: bool) -> Result<BulkRe
                 ),
             }
         } else {
-            push_one(remote, &mut state, &heads, &mut origins, session, force)
+            push_one(remote, &mut state, &heads, &mut origins, session, force, exact)
                 .unwrap_or_else(|e| ItemOutcome::Failed { error: e.to_string() })
         };
         report.items.push(BulkItem {
@@ -150,6 +168,7 @@ fn push_one(
     origins: &mut HashMap<PathBuf, Option<String>>,
     session: &Session,
     force: bool,
+    exact: bool,
 ) -> Result<ItemOutcome, CoreError> {
     let (agent, id) = (session.handle.agent, &session.handle.native_id);
     if !valid_id(id) {
@@ -167,6 +186,7 @@ fn push_one(
     // result and the record that names it); fold sidecar mtimes in if a case
     // turns up where it does not.
     if let (Some(t), Some(h)) = (&tracked, head)
+        && !exact
         && t.fingerprint == fingerprint
         && t.hub_rev == h.rev
     {
@@ -190,6 +210,19 @@ fn push_one(
     // was never recorded here (a lost reply, a killed process). This copy
     // continues it, so it is a fast-forward, not a divergence with itself.
     let ours = |h: &Head| h.manifest.machine.as_ref().is_some_and(|m| m.id == remote.machine.id);
+    // Whether the hub's head is this very copy. The listing leaves files
+    // out, so unless `exact` the conversation alone decides; with it, the
+    // head's own file list is fetched and must match too.
+    let same_as = |h: &Head, bundle: &Bundle| -> Result<bool, CoreError> {
+        if h.manifest.canonical != canonical {
+            return Ok(false);
+        }
+        if !exact {
+            return Ok(true);
+        }
+        let files = remote.history(agent.as_str(), id)?.map(|x| files_hash(&x.manifest.files));
+        Ok(files.as_deref() == Some(files_now(bundle).as_str()))
+    };
 
     let parent = match (&tracked, head) {
         (Some(t), Some(h)) if h.rev == t.hub_rev => {
@@ -200,11 +233,16 @@ fn push_one(
             Some(h.rev.clone())
         }
         (Some(t), Some(h)) => {
-            if h.manifest.canonical == canonical {
+            if same_as(h, &bundle)? {
                 record(state, &h.rev, files_now(&bundle))?;
                 return Ok(in_sync());
             }
-            if !force && !ours(h) {
+            // The hub moved only files since this machine synced (another
+            // machine opened the session, or pushed a sidecar): the
+            // conversation there is the one this copy continues.
+            if h.manifest.canonical == t.canonical {
+                Some(h.rev.clone())
+            } else if !force && !ours(h) {
                 if canonical == t.canonical {
                     return Ok(ItemOutcome::Skipped {
                         reason: format!("{} has a newer copy; `asm pull` it", who(h)),
@@ -218,14 +256,15 @@ fn push_one(
                         who(h)
                     ),
                 });
+            } else {
+                Some(h.rev.clone())
             }
-            Some(h.rev.clone())
         }
         // Tracked here, gone from the hub (a new hub, or one reset): push
         // it as new.
         (Some(_), None) | (None, None) => None,
         (None, Some(h)) => {
-            if h.manifest.canonical == canonical {
+            if same_as(h, &bundle)? {
                 record(state, &h.rev, files_now(&bundle))?;
                 return Ok(in_sync());
             }
@@ -358,26 +397,39 @@ pub fn pull(remote: &Remote, query: &str, project_dir: Option<&Path>) -> Result<
         }
         Ok(path)
     };
+    // What this machine last synced of it, so each side's changes since
+    // can be told apart. Losing the record only loses that refinement.
+    let base = match SyncState::load(remote)?.get(&key(agent, &id)) {
+        Some(t) => Some(bundle::Base {
+            canonical: t.canonical.clone(),
+            files: remote
+                .revision(agent.as_str(), &id, &t.hub_rev)?
+                .map(|m| m.files.into_iter().filter_map(|f| Some((f.path, f.sha256?))).collect())
+                .unwrap_or_default(),
+        }),
+        None => None,
+    };
+    let base = base.as_ref();
     let installed = match agent {
         AgentKind::ClaudeCode => {
             let adapter = crate::adapter::claude::ClaudeAdapter::default_store()
                 .ok_or_else(|| invalid("cannot locate the Claude Code store"))?;
-            crate::adapter::claude::hub::install(&adapter, manifest, &blob, project_dir)?
+            crate::adapter::claude::hub::install(&adapter, manifest, &blob, project_dir, base)?
         }
         AgentKind::Codex => {
             let adapter = crate::adapter::codex::CodexAdapter::default_store()
                 .ok_or_else(|| invalid("cannot locate the Codex store"))?;
-            crate::adapter::codex::hub::install(&adapter, manifest, &blob, project_dir)?
+            crate::adapter::codex::hub::install(&adapter, manifest, &blob, project_dir, base)?
         }
         AgentKind::JCode => {
             let adapter = crate::adapter::jcode::JCodeAdapter::default_store()
                 .ok_or_else(|| invalid("cannot locate the jcode store"))?;
-            crate::adapter::jcode::hub::install(&adapter, manifest, &blob, project_dir)?
+            crate::adapter::jcode::hub::install(&adapter, manifest, &blob, project_dir, base)?
         }
         AgentKind::OpenCode => {
             let adapter = crate::adapter::opencode::OpenCodeAdapter::default_store()
                 .ok_or_else(|| invalid("cannot locate the OpenCode store"))?;
-            crate::adapter::opencode::hub::install(&adapter, manifest, &blob, project_dir)?
+            crate::adapter::opencode::hub::install(&adapter, manifest, &blob, project_dir, base)?
         }
         _ => unreachable!("restorable() admitted {agent}"),
     };

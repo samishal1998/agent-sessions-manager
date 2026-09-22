@@ -130,7 +130,7 @@ asm push --all               # upload what changed since the last push
 asm remote list              # this machine and the hub, grouped by project
 asm pull 7f3a1c88            # install a session from another machine here
 asm push 7f3a1c88 --move     # hand a session to another machine: push, then archive here
-asm daemon                   # keep pushing whatever changes, so a closed laptop loses nothing
+asm daemon                   # keep pushing whatever changes to the hub
 
 asm serve                    # web UI on http://127.0.0.1:7433
 asm serve --port 8080
@@ -377,7 +377,9 @@ On macOS, as `~/Library/LaunchAgents/dev.asm.daemon.plist`, then
 </dict></plist>
 ```
 
-Closing the lid loses at most one interval. To lose nothing on Linux, push
+A session that never holds still — a long agent run — goes up anyway every
+ten intervals. So closing the lid loses up to two intervals of a session at
+rest and up to ten of one still being written. To lose nothing on Linux, push
 once more on the way to sleep (a system unit, since `sleep.target` is one):
 
 ```ini

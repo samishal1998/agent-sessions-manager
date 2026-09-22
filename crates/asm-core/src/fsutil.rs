@@ -81,6 +81,14 @@ pub fn append_jsonl_line(path: &Path, line: &str) -> Result<(), CoreError> {
     file.write_all(payload.as_bytes()).map_err(|e| CoreError::io(path, e))
 }
 
+/// A temp-file suffix no other writer uses: the pid alone is shared by every
+/// thread of the web server, and two of them writing one file would rename
+/// each other's half-written temp into place.
+fn unique() -> String {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!("{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
 /// Replace `path` with `bytes` so that a reader sees either the old file or
 /// the new one, never a torn mixture: write a sibling, flush it to disk,
 /// then rename over. The sibling lives in the same directory because a
@@ -92,7 +100,7 @@ pub fn append_jsonl_line(path: &Path, line: &str) -> Result<(), CoreError> {
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-    let tmp = parent.join(format!(".{name}.tmp-{}", std::process::id()));
+    let tmp = parent.join(format!(".{name}.tmp-{}", unique()));
     let result = (|| {
         let mut options = fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
@@ -116,7 +124,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
 pub fn copy_atomic(from: &Path, to: &Path) -> Result<(), CoreError> {
     let parent = to.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let name = to.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-    let tmp = parent.join(format!(".{name}.tmp-{}", std::process::id()));
+    let tmp = parent.join(format!(".{name}.tmp-{}", unique()));
     let result = (|| {
         fs::copy(from, &tmp).map_err(|e| CoreError::io(&tmp, e))?;
         fs::File::open(&tmp).and_then(|f| f.sync_all()).map_err(|e| CoreError::io(&tmp, e))?;

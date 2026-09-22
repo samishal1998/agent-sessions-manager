@@ -18,7 +18,7 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Value, json};
 
 use super::CodexAdapter;
-use crate::hub::bundle::{self, Bundle, InstallOutcome, Installed, Staged};
+use crate::hub::bundle::{self, Base, Bundle, InstallOutcome, Installed, Staged};
 use crate::hub::manifest::Manifest;
 use crate::model::{Session, SessionLocation};
 use crate::{CoreError, fsutil};
@@ -95,21 +95,33 @@ fn find_local(adapter: &CodexAdapter, id: &str) -> Vec<PathBuf> {
     found
 }
 
-/// Where the pushing machine kept the rollout inside its CODEX_HOME, if it
-/// is a plain path under `sessions/` naming this id.
+/// Where the rollout goes inside this CODEX_HOME: where the pushing machine
+/// kept it, if that is a plain path under `sessions/` naming this id. One
+/// codex had archived (flat, in `archived_sessions/`) goes back under
+/// `sessions/<date>/`, from the date in its name.
 fn rollout_rel(manifest: &Manifest) -> Option<PathBuf> {
     let rel = PathBuf::from(manifest.extra.get("rollout_rel")?.as_str()?);
     let name = rel.file_name()?.to_str()?;
     let plain = rel.components().all(|c| matches!(c, Component::Normal(_)));
-    (plain && rel.starts_with("sessions") && name.starts_with("rollout-") && name.ends_with(&format!("-{}.jsonl", manifest.id)))
-        .then_some(rel)
+    if !plain || !name.starts_with("rollout-") || !name.ends_with(&format!("-{}.jsonl", manifest.id)) {
+        return None;
+    }
+    if rel.starts_with("sessions") {
+        return Some(rel);
+    }
+    // rollout-YYYY-MM-DDTHH-MM-SS-<id>.jsonl
+    let date = name.get(8..18)?;
+    let (y, m, d) = (date.get(0..4)?, date.get(5..7)?, date.get(8..10)?);
+    let digits = |s: &str| s.bytes().all(|b| b.is_ascii_digit());
+    (rel.parent() == Some(Path::new("archived_sessions")) && digits(y) && digits(m) && digits(d))
+        .then(|| Path::new("sessions").join(y).join(m).join(d).join(name))
 }
 
 /// Write the `threads` row codex would write on the first resume, so its
 /// picker lists the session before then. Into a database codex already
 /// made, never a new one; a row codex will rewrite anyway, so failure is
 /// ignored.
-fn remember_in_picker(adapter: &CodexAdapter, row: &Value, rollout: &Path) {
+fn remember_in_picker(adapter: &CodexAdapter, id: &str, row: &Value, rollout: &Path) {
     let db = adapter.state_db();
     let Some(row) = row.as_object() else { return };
     if !db.is_file() {
@@ -118,7 +130,15 @@ fn remember_in_picker(adapter: &CodexAdapter, row: &Value, rollout: &Path) {
     let Ok(conn) = rusqlite::Connection::open(&db) else { return };
     let _ = conn.busy_timeout(std::time::Duration::from_secs(2));
     let mut row = row.clone();
+    // Its own id, where it now lives, and not archived: the rollout was
+    // just filed under sessions/.
+    row.insert("id".into(), json!(id));
     row.insert("rollout_path".into(), json!(rollout.display().to_string()));
+    for (key, value) in [("archived", json!(0)), ("archived_at", Value::Null)] {
+        if row.contains_key(key) {
+            row.insert(key.into(), value);
+        }
+    }
     let columns: Vec<&String> = row.keys().collect();
     let names: Vec<String> = columns.iter().map(|c| format!("\"{}\"", c.replace('"', ""))).collect();
     let values: Vec<rusqlite::types::Value> = columns
@@ -144,6 +164,7 @@ pub(crate) fn install(
     manifest: &Manifest,
     blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
     project_dir: Option<&Path>,
+    _base: Option<&Base>,
 ) -> Result<Installed, CoreError> {
     manifest.validate().map_err(|msg| CoreError::Invalid { msg })?;
     let id = &manifest.id;
@@ -182,7 +203,7 @@ pub(crate) fn install(
                 && let Ok(bytes) = std::fs::read(blob(sha)?)
                 && let Ok(row) = serde_json::from_slice::<Value>(&bytes)
             {
-                remember_in_picker(adapter, &row, &dest);
+                remember_in_picker(adapter, id, &row, &dest);
             }
             (InstallOutcome::New, dest)
         }
@@ -244,7 +265,7 @@ mod tests {
             std::fs::write(&path, &pushed.1[sha]).unwrap();
             Ok(path)
         };
-        install(adapter, &pushed.0, &blob, None)
+        install(adapter, &pushed.0, &blob, None, None)
     }
 
     #[test]
@@ -267,6 +288,18 @@ mod tests {
 
         let err = pull(&adapter, &bundle_of(Path::new("/nonexistent/mercury"), &["x"]), dir.path()).unwrap_err();
         assert!(err.to_string().contains("continues it only there"), "{err}");
+    }
+
+    #[test]
+    fn a_rollout_codex_archived_goes_back_under_its_date() {
+        let (mut manifest, _) = bundle_of(Path::new("/x"), &["session_meta"]);
+        let name = format!("rollout-2026-08-17T14-00-00-{ID}.jsonl");
+        manifest.extra = json!({ "rollout_rel": format!("archived_sessions/{name}") });
+        assert_eq!(rollout_rel(&manifest).unwrap(), Path::new("sessions/2026/08/17").join(&name));
+        for bad in [format!("archived_sessions/x/{name}"), format!("../{name}"), format!("sessions/../../{name}")] {
+            manifest.extra = json!({ "rollout_rel": bad });
+            assert!(rollout_rel(&manifest).is_none());
+        }
     }
 
     #[cfg(unix)]

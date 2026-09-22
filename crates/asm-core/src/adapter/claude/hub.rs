@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use super::{ClaudeAdapter, store, write};
-use crate::hub::bundle::{self, Bundle, InstallOutcome, Installed, Staged};
+use crate::hub::bundle::{self, Base, Bundle, InstallOutcome, Installed, Staged};
 use crate::hub::manifest::{FileEntry, Manifest};
 use crate::model::{Session, SessionLocation};
 use crate::{CoreError, fsutil};
@@ -169,7 +169,7 @@ fn real_dirs(base: &Path, dir: &Path) -> Result<(), CoreError> {
 /// into the session's sidecar (repointed from the pushing machine's).
 /// Anything else named a place on the other machine's disk, which means
 /// nothing here — and would be a way out of the store if it were followed.
-fn contained_target(target: &str, source: Option<&Path>, local: &Path) -> Option<PathBuf> {
+fn contained_target(target: &str, source: Option<&Path>, local: &Path, dest: &Path) -> Option<PathBuf> {
     use std::path::Component;
     let target = Path::new(target);
     if target.components().all(|c| matches!(c, Component::Normal(_))) {
@@ -180,7 +180,10 @@ fn contained_target(target: &str, source: Option<&Path>, local: &Path) -> Option
         None => target.to_path_buf(),
     };
     let plain = target.components().all(|c| matches!(c, Component::Normal(_) | Component::RootDir));
-    (plain && target.is_absolute() && target.starts_with(local)).then_some(target)
+    // Nor a directory the link itself sits in: that is a loop to anything
+    // that walks the sidecar.
+    let above = dest.starts_with(&target);
+    (plain && !above && target.is_absolute() && target.starts_with(local)).then_some(target)
 }
 
 /// True when `have` is an earlier state of `want`: its bytes a proper
@@ -196,14 +199,17 @@ fn behind(have: &Path, want: &Path) -> bool {
 
 /// Write the hub's sidecar files. `newer` is true only when the hub's
 /// transcript extends this machine's; even then a local sidecar is replaced
-/// only when it is an earlier state of the hub's, so nothing written here
-/// and not yet pushed is lost.
+/// only when this machine has not changed it since it last synced (it is
+/// what that revision had), or it is an earlier state of the hub's — so
+/// nothing written here and not yet pushed is lost, and a file the other
+/// machine rewrote whole (tasks) still arrives.
 fn write_sidecars(
     root: &Path,
     project_dir: &Path,
     manifest: &Manifest,
     blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
     newer: bool,
+    synced: Option<&Base>,
 ) -> Result<(), CoreError> {
     let local_sidecar = project_dir.join(&manifest.id);
     let source_sidecar =
@@ -220,7 +226,7 @@ fn write_sidecars(
         match file {
             FileEntry { symlink: Some(target), .. } => {
                 let Some(target) =
-                    contained_target(target, source_sidecar.as_deref(), &local_sidecar)
+                    contained_target(target, source_sidecar.as_deref(), &local_sidecar, &dest)
                 else {
                     continue;
                 };
@@ -240,9 +246,13 @@ fn write_sidecars(
                 // An existing file is replaced only on a fast-forward and only
                 // by a later state of itself. A link there is never followed,
                 // not even to read it.
+                let unchanged_here = || {
+                    synced.and_then(|b| b.files.get(&file.path))
+                        .is_some_and(|synced| fsutil::sha256_file(&dest).is_ok_and(|have| have == *synced))
+                };
                 let replace = match existing {
                     None => true,
-                    Some(meta) => newer && meta.is_file() && behind(&dest, &src),
+                    Some(meta) => newer && meta.is_file() && (unchanged_here() || behind(&dest, &src)),
                 };
                 if replace {
                     fsutil::copy_atomic(&src, &dest)?;
@@ -255,40 +265,34 @@ fn write_sidecars(
 }
 
 /// Held while one pull installs one id, so two pulls at once cannot both see
-/// no copy and each file one — two copies of an id break `claude --resume`.
-struct InstallLock(PathBuf);
+/// no copy and each file one, or both append the same delta. An flock, so
+/// the kernel releases it however the process ends; the file is left in
+/// place, since unlinking a lock someone else holds open lets a third
+/// process lock a new file beside it.
+struct InstallLock(#[allow(dead_code)] fs::File);
 
 impl InstallLock {
     fn take(root: &Path, id: &str) -> Result<InstallLock, CoreError> {
         let projects = root.join("projects");
         private_dir(&projects)?;
         let path = projects.join(format!(".asm-install-{id}.lock"));
-        for _ in 0..2 {
-            match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(mut f) => {
-                    let _ = write!(f, "{}", std::process::id());
-                    return Ok(InstallLock(path));
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    let holder = fs::read_to_string(&path).ok().and_then(|s| s.trim().parse().ok());
-                    if holder.is_some_and(crate::process::alive) {
-                        return Err(CoreError::Invalid {
-                            msg: format!("another asm pull of session {id} is running"),
-                        });
-                    }
-                    // Left by a pull that was killed.
-                    let _ = fs::remove_file(&path);
-                }
-                Err(e) => return Err(CoreError::io(&path, e)),
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&path)
+            .map_err(|e| CoreError::io(&path, e))?;
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            // Safety: flock on a descriptor this function owns.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                return Err(CoreError::Invalid {
+                    msg: format!("another asm pull of session {id} is running"),
+                });
             }
         }
-        Err(CoreError::Invalid { msg: format!("could not take {}", path.display()) })
-    }
-}
-
-impl Drop for InstallLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        Ok(InstallLock(file))
     }
 }
 
@@ -305,6 +309,7 @@ pub(crate) fn install(
     manifest: &Manifest,
     blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
     project_dir: Option<&Path>,
+    base: Option<&Base>,
 ) -> Result<Installed, CoreError> {
     manifest.validate().map_err(|msg| CoreError::Invalid { msg })?;
     let id = &manifest.id;
@@ -331,7 +336,7 @@ pub(crate) fn install(
     let existing = find_transcripts(root, id);
     match existing.as_slice() {
         [] => install_new(adapter, manifest, &incoming, blob, project_dir),
-        [path] => update(adapter, manifest, path, &incoming, blob, project_dir),
+        [path] => update(adapter, manifest, path, &incoming, blob, project_dir, base),
         many => Err(CoreError::Invalid {
             msg: format!(
                 "session {id} already exists in {} project directories here, which breaks \
@@ -362,7 +367,7 @@ fn install_new(
     // Sidecars first and the transcript last: until the transcript exists
     // the session does not, so an interrupted install leaves nothing that
     // looks like a session.
-    write_sidecars(root, &dest_dir, manifest, blob, true)?;
+    write_sidecars(root, &dest_dir, manifest, blob, true, None)?;
     fsutil::write_atomic(&dest, incoming)?;
     ensure_cwd(&dest, id, target_str)?;
     finish(InstallOutcome::New, dest, id)
@@ -375,6 +380,7 @@ fn update(
     incoming: &[u8],
     blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
     project_dir: Option<&Path>,
+    base: Option<&Base>,
 ) -> Result<Installed, CoreError> {
     let id = &manifest.id;
     let project = path.parent().unwrap_or(Path::new("/"));
@@ -445,7 +451,7 @@ fn update(
     // foreign records must not already be moving the session elsewhere.
     ensure_cwd(path, id, utf8(&here)?)?;
     let newer = matches!(outcome, InstallOutcome::FastForward { .. });
-    write_sidecars(adapter.root(), project, manifest, blob, newer)?;
+    write_sidecars(adapter.root(), project, manifest, blob, newer, base)?;
     finish(outcome, path.to_path_buf(), id)
 }
 
@@ -590,7 +596,7 @@ mod tests {
             fs::write(&path, &pushed.1[sha]).unwrap();
             Ok(path)
         };
-        install(&into.adapter, &pushed.0, &blob, dir)
+        install(&into.adapter, &pushed.0, &blob, dir, None)
     }
 
     fn transcript_of_b(b: &Machine) -> Vec<u8> {
@@ -808,6 +814,8 @@ mod tests {
             ("tasks/rel", "../../x".to_string()),
             ("session-dir/ok", format!("{sidecar}/subagents")),
             ("session-dir/rel", "subagents/agent-1.jsonl".to_string()),
+            // Its own directory: a loop for anything walking the sidecar.
+            ("session-dir/subagents/loop", format!("{sidecar}/subagents")),
         ] {
             pushed.0.files.push(FileEntry {
                 path: path.into(),
@@ -818,7 +826,12 @@ mod tests {
         }
         pull(&b, &pushed, Some(&b.project)).unwrap();
         let b_sidecar = b.project_dir().join(ID);
-        for gone in [b_sidecar.join("ssh"), b_sidecar.join("up"), b.adapter.root().join("tasks").join(ID).join("rel")] {
+        for gone in [
+            b_sidecar.join("ssh"),
+            b_sidecar.join("up"),
+            b_sidecar.join("subagents/loop"),
+            b.adapter.root().join("tasks").join(ID).join("rel"),
+        ] {
             assert!(fs::symlink_metadata(&gone).is_err(), "{}", gone.display());
         }
         assert_eq!(fs::read_link(b_sidecar.join("ok")).unwrap(), b_sidecar.join("subagents"));
@@ -849,6 +862,40 @@ mod tests {
         assert_eq!(fs::read(sub).unwrap(), b"{}\n{}\n", "an appended sidecar follows");
     }
 
+    /// A sidecar the other machine rewrote whole (a task file) arrives on a
+    /// fast-forward when this machine left it as last synced; one changed
+    /// here too is kept.
+    #[test]
+    fn a_fast_forward_brings_rewritten_sidecars_this_machine_did_not_touch() {
+        let (a, b) = (Machine::new("proj-a"), Machine::new("proj-b"));
+        a.start(&["one"]);
+        let mut first = push(&a);
+        add_file(&mut first, "tasks/1.json", b"{\"status\":\"pending\"}");
+        add_file(&mut first, "tasks/2.json", b"{\"status\":\"pending\"}");
+        pull(&b, &first, Some(&b.project)).unwrap();
+        let synced = Base {
+            canonical: first.0.canonical.clone(),
+            files: first.0.files.iter().filter_map(|f| Some((f.path.clone(), f.sha256.clone()?))).collect(),
+        };
+        let tasks = b.adapter.root().join("tasks").join(ID);
+        fs::write(tasks.join("2.json"), b"{\"status\":\"edited here\"}").unwrap();
+
+        a.append("two");
+        let mut second = push(&a);
+        add_file(&mut second, "tasks/1.json", b"{\"status\":\"completed\"}");
+        add_file(&mut second, "tasks/2.json", b"{\"status\":\"completed\"}");
+        let scratch = tempfile::tempdir().unwrap();
+        let blob = |sha: &str| -> Result<PathBuf, CoreError> {
+            let path = scratch.path().join(sha);
+            fs::write(&path, &second.1[sha]).unwrap();
+            Ok(path)
+        };
+        let installed = install(&b.adapter, &second.0, &blob, None, Some(&synced)).unwrap();
+        assert!(matches!(installed.outcome, InstallOutcome::FastForward { .. }));
+        assert_eq!(fs::read(tasks.join("1.json")).unwrap(), b"{\"status\":\"completed\"}");
+        assert_eq!(fs::read(tasks.join("2.json")).unwrap(), b"{\"status\":\"edited here\"}");
+    }
+
     /// A copy here with no record of where it ran is filed only where it
     /// already sits, and never gets a marker with an empty path.
     #[test]
@@ -869,20 +916,23 @@ mod tests {
         assert!(!String::from_utf8(transcript_of_b(&b)).unwrap().contains("\"relocatedCwd\":\"\""));
     }
 
+    #[cfg(unix)]
     #[test]
     fn one_pull_of_an_id_at_a_time() {
+        use std::os::fd::AsRawFd;
         let (a, b) = (Machine::new("proj-a"), Machine::new("proj-b"));
         a.start(&["one"]);
         let pushed = push(&a);
         let lock = b.adapter.root().join("projects").join(format!(".asm-install-{ID}.lock"));
-        fs::write(&lock, std::process::id().to_string()).unwrap();
+        let held = fs::File::create(&lock).unwrap();
+        assert_eq!(unsafe { libc::flock(held.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
         assert!(pull(&b, &pushed, Some(&b.project)).unwrap_err().to_string().contains("running"));
         assert!(find_transcripts(b.adapter.root(), ID).is_empty());
 
-        // Left by a pull that was killed: taken over, and gone afterwards.
-        fs::write(&lock, "999999999").unwrap();
+        // Released however the holder ended; a lock file left behind is no
+        // obstacle.
+        drop(held);
         pull(&b, &pushed, Some(&b.project)).unwrap();
-        assert!(!lock.exists());
     }
 
     /// Another machine running an older asm could upload markers; they must

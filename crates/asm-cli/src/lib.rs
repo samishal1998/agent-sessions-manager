@@ -1027,8 +1027,21 @@ fn push(
             s.short_id()
         );
     }
+    if move_away
+        && let Some(s) = sessions.iter().find(|s| {
+            s.handle.agent == asm_core::model::AgentKind::JCode
+                && matches!(&s.handle.location, asm_core::model::SessionLocation::JsonlFile { path }
+                    if std::fs::metadata(path.with_extension("journal.jsonl")).is_ok_and(|m| m.len() > 0))
+        })
+    {
+        bail!(
+            "jcode has turns of {} it has not written into the session yet; resume it once so it \
+             does, then move it",
+            s.short_id()
+        );
+    }
     let remote = asm_core::hub::client::load()?;
-    let mut report = asm_core::hub::actions::push(&remote, &sessions, force)?;
+    let mut report = asm_core::hub::actions::push(&remote, &sessions, force, move_away)?;
     // Archived only once the hub holds exactly this copy, which an Ok means.
     if move_away {
         for item in &mut report.items {

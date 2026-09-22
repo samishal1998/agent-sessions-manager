@@ -359,6 +359,15 @@ impl Remote {
         Ok(Some(parse(&r, "reading a session")?))
     }
 
+    pub fn revision(&self, agent: &str, id: &str, rev: &str) -> Result<Option<Manifest>, CoreError> {
+        let r = self.call("GET", &format!("/hub/v1/sessions/{agent}/{id}/revisions/{rev}"), Body::None, Profile::Control)?;
+        if r.status == 404 {
+            return Ok(None);
+        }
+        let r = expect(r, &[200], "reading a revision")?;
+        Ok(Some(parse(&r, "reading a revision")?))
+    }
+
     pub fn missing(&self, shas: &[String]) -> Result<Vec<String>, CoreError> {
         if shas.is_empty() {
             return Ok(Vec::new());

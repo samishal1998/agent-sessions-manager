@@ -155,7 +155,7 @@ pub fn run(sessions: &[Session], action: &BulkAction) -> BulkReport {
     // heads once, and already attempts every item.
     if let BulkAction::Push = action {
         let pushed = crate::hub::client::load()
-            .and_then(|remote| crate::hub::actions::push(&remote, sessions, false));
+            .and_then(|remote| crate::hub::actions::push(&remote, sessions, false, false));
         return pushed.unwrap_or_else(|e| BulkReport {
             items: sessions
                 .iter()

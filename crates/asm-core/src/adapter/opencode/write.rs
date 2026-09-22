@@ -21,6 +21,10 @@ use super::OpenCodeAdapter;
 
 const AGENT: &str = "opencode";
 
+/// Every table that holds rows of a session besides `session` itself: what
+/// a backup copies, a delete removes, and a hub bundle carries.
+pub(super) const SESSION_TABLES: [&str; 5] = ["message", "part", "todo", "session_share", "session_input"];
+
 pub(super) fn guard_not_busy(adapter: &OpenCodeAdapter) -> Result<(), CoreError> {
     let held: Vec<String> = adapter
         .locks()
@@ -68,7 +72,7 @@ pub(super) fn backup_session_rows(
     for target in ids {
         let mut dump = serde_json::Map::new();
         dump.insert("session".into(), Value::Array(super::super::dump_rows(conn, "session", "id", target)));
-        for table in ["message", "part", "todo", "session_share"] {
+        for table in SESSION_TABLES {
             if table_exists(conn, table) {
                 dump.insert(
                     table.into(),
@@ -216,7 +220,7 @@ pub(super) fn delete(
     for target in targets.iter().rev() {
         // Child rows go explicitly rather than by FK cascade: SQLite only
         // enforces those when the connection opts in.
-        for table in ["part", "message", "todo", "session_share", "session_input"] {
+        for table in SESSION_TABLES {
             if table_exists(&conn, table) {
                 conn.execute(
                     &format!("DELETE FROM {table} WHERE session_id = ?1"),

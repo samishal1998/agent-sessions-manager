@@ -309,7 +309,10 @@ fn collect_agent_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
     for entry in entries.filter_map(Result::ok) {
         let path = entry.path();
-        if path.is_dir() {
+        // Not through a link: two links into each other's directories would
+        // otherwise make this walk branch until ELOOP. A link to an agent
+        // file is still found by its name below.
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
             collect_agent_files(&path, out);
         } else if let Some(name) = path.file_name().and_then(|n| n.to_str())
             && name.starts_with("agent-")

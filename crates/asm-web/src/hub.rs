@@ -101,6 +101,7 @@ pub fn router(state: Shared) -> axum::Router {
         .route("/hub/v1/machines", get(machines))
         .route("/hub/v1/sessions", get(sessions))
         .route("/hub/v1/sessions/{agent}/{id}", get(history).put(put_revision))
+        .route("/hub/v1/sessions/{agent}/{id}/revisions/{rev}", get(revision))
         .route("/hub/v1/missing", post(missing))
         .route("/hub/v1/blobs/{sha}", get(get_blob).put(put_blob))
         .fallback(|| async { error(StatusCode::NOT_FOUND, "not found") })
@@ -142,6 +143,16 @@ async fn sessions(State(state): State<Shared>) -> Response {
 async fn history(State(state): State<Shared>, Path((agent, id)): Path<(String, String)>) -> Response {
     match blocking(move || state.hub.history(&agent, &id)).await {
         Ok(h) => Json(h).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn revision(
+    State(state): State<Shared>,
+    Path((agent, id, rev)): Path<(String, String, String)>,
+) -> Response {
+    match blocking(move || state.hub.revision(&agent, &id, &rev)).await {
+        Ok(m) => Json(m).into_response(),
         Err(e) => hub_error(e),
     }
 }
@@ -489,6 +500,14 @@ mod tests {
         let (status, v) = send(&app, "GET", &uri, Some(&cred), Body::empty()).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(v["manifest"]["machine"]["name"], "laptop");
+
+        // One revision, files and all, for a pull to compare against.
+        let (status, v) = send(&app, "GET", &format!("{uri}/revisions/{rev}"), Some(&cred), Body::empty()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(v["files"].as_array().is_some_and(|f| !f.is_empty()));
+        let unknown = format!("{uri}/revisions/{}", "0".repeat(64));
+        assert_eq!(send(&app, "GET", &unknown, Some(&cred), Body::empty()).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(send(&app, "GET", &format!("{uri}/revisions/{rev}"), None, Body::empty()).await.0, StatusCode::UNAUTHORIZED);
 
         for bad in ["/hub/v1/sessions/claude-code/..", "/hub/v1/sessions/nope/x"] {
             let (status, _) = send(&app, "GET", bad, Some(&cred), Body::empty()).await;

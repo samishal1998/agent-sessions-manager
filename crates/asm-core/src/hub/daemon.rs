@@ -1,10 +1,12 @@
-//! `asm daemon`: keep the hub up to date with this machine, so closing the
-//! laptop loses at most one interval of work.
+//! `asm daemon`: keep the hub up to date with this machine.
 //!
 //! Push-only. It never writes into an agent's store — every install is an
 //! explicit `asm pull` — so it cannot touch a session someone is using. A
 //! session goes up once its fingerprint has held still for a whole
-//! interval: a streaming turn is pushed when it ends, not on every write.
+//! interval, so a streaming turn is pushed when it ends rather than on every
+//! write; one that never holds still (a long agent run) goes up anyway every
+//! `MAX_WAIT` passes. Closing the lid therefore loses up to two intervals of
+//! a session at rest, and up to `MAX_WAIT` of one still being written.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -17,16 +19,20 @@ use crate::adapter::SessionFilter;
 use crate::bulk::{BulkReport, ItemOutcome};
 use crate::{CoreError, ops};
 
+/// Passes a changed session may keep changing before it is pushed anyway.
+const MAX_WAIT: u32 = 10;
+
 /// One pass. `seen` carries each session's fingerprint from the previous
-/// pass; a session is pushed when it differs from what was last synced and
-/// has not moved since then.
+/// pass and how many passes it has been waiting; a session is pushed when
+/// it differs from what was last synced and has not moved since, or has
+/// waited `MAX_WAIT` passes.
 // ponytail: a session the hub refuses (diverged) is re-read and re-refused
 // every pass until someone resolves it; remember the refused fingerprint if
 // that cost ever shows.
 pub fn cycle(
     remote: &Remote,
     filter: &SessionFilter,
-    seen: &mut HashMap<String, String>,
+    seen: &mut HashMap<String, (String, u32)>,
 ) -> Result<BulkReport, CoreError> {
     let state = SyncState::load(remote)?;
     let mut ready = Vec::new();
@@ -35,16 +41,18 @@ pub fn cycle(
         let k = key(session.handle.agent, &session.handle.native_id);
         let fingerprint = bundle::fingerprint(&session);
         let synced = state.get(&k).is_some_and(|t| t.fingerprint == fingerprint);
-        if !synced && seen.get(&k) == Some(&fingerprint) {
+        let (before, waited) = seen.get(&k).cloned().unwrap_or_default();
+        let waited = if synced { 0 } else { waited + 1 };
+        if !synced && (before == fingerprint || waited > MAX_WAIT) {
             ready.push(session);
         }
-        now.insert(k, fingerprint);
+        now.insert(k, (fingerprint, if waited > MAX_WAIT { 0 } else { waited }));
     }
     *seen = now;
     if ready.is_empty() {
         return Ok(BulkReport::default());
     }
-    actions::push(remote, &ready, false)
+    actions::push(remote, &ready, false, false)
 }
 
 /// Run passes forever. `say` gets one line per event; a session (or the

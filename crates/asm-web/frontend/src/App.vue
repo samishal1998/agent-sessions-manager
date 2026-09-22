@@ -447,7 +447,11 @@ function doArchive(s) {
 function doPush(s) {
   act('Push', async () => {
     const report = await api.push([s])
-    if (report.failed) throw new Error(report.problems.join('; '))
+    // A skip is not a push either: say why, rather than "complete".
+    if (report.failed || report.skipped || report.unresolved?.length)
+      throw new Error(
+        [...report.problems, ...(report.unresolved || []).map((u) => `${u}: no longer present`)].join('; '),
+      )
     await loadHub()
   })
 }

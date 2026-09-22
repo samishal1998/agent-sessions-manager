@@ -148,7 +148,41 @@ pub fn fingerprint(session: &Session) -> String {
     {
         return fp;
     }
-    crate::index::fingerprint(session)
+    let fingerprint = crate::index::fingerprint(session);
+    // jcode keeps a running session's turns in a journal beside the
+    // snapshot until it checkpoints; a push must see those turns arrive.
+    if session.handle.agent == AgentKind::JCode
+        && let crate::model::SessionLocation::JsonlFile { path } = &session.handle.location
+    {
+        let journal = std::fs::metadata(crate::adapter::jcode::hub::journal_of(path)).map(|m| m.len()).unwrap_or(0);
+        return format!("{fingerprint}:journal:{journal}");
+    }
+    fingerprint
+}
+
+/// What this machine last agreed with the hub about a session: the
+/// conversation's identity then, and that revision's files by path.
+#[derive(Debug, Default)]
+pub struct Base {
+    pub canonical: String,
+    pub files: std::collections::HashMap<String, String>,
+}
+
+/// Refine a comparison of the two copies' contents with what this machine
+/// last synced. A copy unchanged here since then takes the hub's, whatever
+/// the hub did (rows deleted, a title changed); a copy changed here is never
+/// silently replaced. With no record, the content comparison stands.
+pub(crate) fn with_base(content: InstallOutcome, local: &str, hub: &str, base: Option<&Base>) -> InstallOutcome {
+    if local == hub {
+        return InstallOutcome::InSync;
+    }
+    let Some(base) = base else { return content };
+    match (local == base.canonical, hub == base.canonical) {
+        (true, _) => InstallOutcome::Replaced,
+        (false, true) => InstallOutcome::Ahead,
+        (false, false) if content == InstallOutcome::Replaced => InstallOutcome::Diverged,
+        (false, false) => content,
+    }
 }
 
 /// How a pull changed this machine.
@@ -205,6 +239,23 @@ pub fn restorable(agent: AgentKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_was_last_synced_decides_between_the_copies() {
+        use InstallOutcome::*;
+        let base = Base { canonical: "synced".into(), ..Default::default() };
+        let b = Some(&base);
+        // Unchanged here: take the hub's, even if its rows only shrank.
+        assert_eq!(with_base(Diverged, "synced", "hub", b), Replaced);
+        // Unchanged there: this copy is ahead, whatever the rows say.
+        assert_eq!(with_base(Replaced, "here", "synced", b), Ahead);
+        // Both moved: never replaced silently.
+        assert_eq!(with_base(Replaced, "here", "hub", b), Diverged);
+        assert_eq!(with_base(Ahead, "here", "hub", b), Ahead);
+        // No record: the contents decide.
+        assert_eq!(with_base(Replaced, "here", "hub", None), Replaced);
+        assert_eq!(with_base(Diverged, "same", "same", None), InSync);
+    }
 
     #[test]
     fn a_torn_final_line_is_left_out() {

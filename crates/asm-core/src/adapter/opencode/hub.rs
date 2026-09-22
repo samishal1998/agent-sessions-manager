@@ -22,12 +22,12 @@ use rusqlite::Connection;
 use serde_json::{Map, Value, json};
 
 use super::{OpenCodeAdapter, write};
-use crate::hub::bundle::{self, Bundle, InstallOutcome, Installed, Staged};
+use crate::hub::bundle::{self, Base, Bundle, InstallOutcome, Installed, Staged};
 use crate::hub::manifest::Manifest;
 use crate::model::Session;
 use crate::{CoreError, fsutil};
 
-const TABLES: [&str; 5] = ["message", "part", "todo", "session_share", "session_input"];
+const TABLES: [&str; 5] = write::SESSION_TABLES;
 
 /// Each table with the column that moves when one of its rows changes.
 const WATCHED: [(&str, &str); 5] = [
@@ -37,6 +37,9 @@ const WATCHED: [(&str, &str); 5] = [
     ("session_share", "time_updated"),
     ("session_input", "time_created"),
 ];
+
+/// Session columns that say where a machine files it, rewritten on install.
+const PER_MACHINE: [&str; 4] = ["project_id", "directory", "path", "workspace_id"];
 
 /// What moves when anything the bundle holds does: every descendant's
 /// session row, and each table's row count and newest time for it. A
@@ -49,7 +52,16 @@ fn watermark(conn: &Connection, root: &str) -> String {
         let ask = |sql: &str| {
             conn.query_row(sql, [&id], |r| r.get::<_, String>(0)).unwrap_or_else(|_| "?".into())
         };
-        parts.push(format!("{id}:{}", ask("SELECT COALESCE(time_updated, 0) || '' FROM session WHERE id = ?1")));
+        // The whole session row but where it is filed, which differs by
+        // machine: a rename or an archive moves no timestamp, in asm or in
+        // OpenCode itself.
+        let mut row = super::super::dump_rows(conn, "session", "id", &id);
+        for object in row.iter_mut().filter_map(Value::as_object_mut) {
+            for local in PER_MACHINE {
+                object.remove(local);
+            }
+        }
+        parts.push(format!("{id}:{}", Value::Array(row)));
         for (table, col) in WATCHED {
             parts.push(ask(&format!(
                 "SELECT COUNT(*) || ':' || COALESCE(MAX({col}), 0) FROM {table} WHERE session_id = ?1"
@@ -279,6 +291,60 @@ fn write_tree(
     tx.commit()
 }
 
+/// The bundle is one tree rooted at `id`, each dump holding only its own
+/// session's rows: nothing in it can name, and so write into or delete, a
+/// session outside that tree.
+fn check_tree(hub: &Map<String, Value>, id: &str) -> Result<(), CoreError> {
+    let bad = |msg: String| Err(CoreError::Invalid { msg: format!("rows.json {msg}; nothing was changed") });
+    for (sid, dump) in hub {
+        if !crate::hub::manifest::valid_id(sid) {
+            return bad(format!("names a bad session id {sid:?}"));
+        }
+        let sessions = dump.get("session").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        if !matches!(sessions, [row] if row.get("id").and_then(Value::as_str) == Some(sid)) {
+            return bad(format!("does not hold exactly session {sid}'s own row under it"));
+        }
+        // Up the parents, inside the bundle, to the root.
+        let mut at = sid.as_str();
+        for _ in 0..=hub.len() {
+            if at == id {
+                break;
+            }
+            at = match hub.get(at).and_then(|d| d["session"][0]["parent_id"].as_str()) {
+                Some(parent) => parent,
+                None => return bad(format!("holds {sid}, which is not part of {id}")),
+            };
+        }
+        if at != id {
+            return bad(format!("holds {sid}, which is not part of {id}"));
+        }
+        let messages: Vec<&str> = dump
+            .get("message")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m.get("id").and_then(Value::as_str))
+            .collect();
+        for table in TABLES {
+            for row in dump.get(table).and_then(Value::as_array).into_iter().flatten() {
+                if row.get("session_id").and_then(Value::as_str) != Some(sid) {
+                    return bad(format!("files a {table} row of another session under {sid}"));
+                }
+                if table == "part" && !row.get("message_id").and_then(Value::as_str).is_some_and(|m| messages.contains(&m)) {
+                    return bad(format!("has a part of {sid} whose message is not there"));
+                }
+                for value in row.as_object().into_iter().flat_map(|r| r.values()) {
+                    to_sql(value)?;
+                }
+            }
+        }
+        for value in sessions[0].as_object().into_iter().flat_map(|r| r.values()) {
+            to_sql(value)?;
+        }
+    }
+    Ok(())
+}
+
 /// Install a pulled OpenCode session here, under its original id, with
 /// every descendant, todo, share and input it had.
 pub(crate) fn install(
@@ -286,6 +352,7 @@ pub(crate) fn install(
     manifest: &Manifest,
     blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
     project_dir: Option<&Path>,
+    base: Option<&Base>,
 ) -> Result<Installed, CoreError> {
     manifest.validate().map_err(|msg| CoreError::Invalid { msg })?;
     let id = &manifest.id;
@@ -309,28 +376,37 @@ pub(crate) fn install(
         .and_then(|rows| rows.first())
         .cloned()
         .ok_or_else(|| CoreError::Invalid { msg: format!("rows.json has no session {id}") })?;
-    for (sid, dump) in &hub {
-        if !crate::hub::manifest::valid_id(sid) {
-            return Err(CoreError::Invalid { msg: format!("rows.json names a bad session id {sid:?}") });
-        }
-        for rows in dump.as_object().into_iter().flat_map(|d| d.values()) {
-            for row in rows.as_array().into_iter().flatten() {
-                for value in row.as_object().into_iter().flat_map(|r| r.values()) {
-                    to_sql(value)?;
-                }
-            }
-        }
-    }
+    check_tree(&hub, id)?;
     write::guard_not_busy(adapter)?;
 
-    let (here, local_ids, local) = if adapter.db().is_file() {
+    let (here, mut local_ids, local, local_canonical) = if adapter.db().is_file() {
         let conn = super::super::open_ro(adapter.db())?;
         let here = place_of(&conn, id);
-        let ids = if here.is_some() { write::with_descendants(&conn, id) } else { Vec::new() };
-        (here, ids, dump_tree(&conn, id))
+        let mut ids = if here.is_some() { write::with_descendants(&conn, id) } else { Vec::new() };
+        // A session of the hub's tree already here outside this one: the
+        // same subagent pulled on its own earlier joins the set replaced
+        // (and backed up). Anything else by that id is not ours to touch.
+        let others: Vec<(&String, &Value)> = hub.iter().filter(|(sid, _)| *sid != id && !ids.contains(sid)).collect();
+        for (sid, dump) in others {
+            let Ok(parent) = conn.query_row("SELECT parent_id FROM session WHERE id = ?1", [sid], |r| {
+                r.get::<_, Option<String>>(0)
+            }) else {
+                continue;
+            };
+            if parent.as_deref() != dump["session"][0]["parent_id"].as_str() {
+                return Err(CoreError::Invalid {
+                    msg: format!("session {sid} is here already, and not as part of {id}; nothing was changed"),
+                });
+            }
+            ids.extend(write::with_descendants(&conn, sid));
+        }
+        let canonical = watermark(&conn, id);
+        (here, ids, dump_tree(&conn, id), canonical)
     } else {
-        (None, Vec::new(), Map::new())
+        (None, Vec::new(), Map::new(), String::new())
     };
+    local_ids.sort();
+    local_ids.dedup();
 
     let (outcome, place) = match here {
         Some(place) => {
@@ -346,13 +422,15 @@ pub(crate) fn install(
                     });
                 }
             }
-            (compare(&local, &hub), place)
+            let content = compare(&local, &hub);
+            (bundle::with_base(content, &local_canonical, &manifest.canonical, base), place)
         }
         None => {
             let target = bundle::target_dir(manifest, project_dir)?;
             register(adapter, &root_row, &target)?;
             let conn = super::super::open_ro(adapter.db())?;
-            let place = place_of(&conn, id).expect("register checked it");
+            let place = place_of(&conn, id)
+                .ok_or_else(|| CoreError::Invalid { msg: format!("opencode import did not file {id}") })?;
             (InstallOutcome::New, place)
         }
     };
@@ -363,7 +441,7 @@ pub(crate) fn install(
     }
 
     let mut conn = write::open_rw(adapter)?;
-    if outcome == InstallOutcome::Replaced {
+    if !local_ids.is_empty() {
         write::backup_session_rows(adapter, &conn, id, &local_ids)?;
     }
     if let Err(e) = write_tree(&mut conn, &local_ids, &hub, &place) {
@@ -497,6 +575,45 @@ mod tests {
         // And A moved on too: neither contains the other.
         message(&a, ROOT, "msg_4", 70);
         assert_eq!(compare(&dump_tree(&b, ROOT), &dump_tree(&a, ROOT)), InstallOutcome::Diverged);
+    }
+
+    /// A bundle can only ever write inside its own tree.
+    #[test]
+    fn a_bundle_naming_anything_outside_its_tree_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = machine_a(dir.path());
+        let good = dump_tree(&a, ROOT);
+        check_tree(&good, ROOT).unwrap();
+
+        let mut extra = good.clone();
+        extra.insert("ses_victim00000000000000000".into(), json!({ "session": [] }));
+        let mut foreign = good.clone();
+        foreign[ROOT]["message"][0]["session_id"] = json!("ses_victim00000000000000000");
+        let mut stray = good.clone();
+        stray[ROOT]["part"][0]["message_id"] = json!("msg_elsewhere");
+        let mut orphan = good.clone();
+        orphan[CHILD]["session"][0]["parent_id"] = json!("ses_victim00000000000000000");
+        let mut renamed = good.clone();
+        renamed[ROOT]["session"][0]["id"] = json!("ses_victim00000000000000000");
+        for (what, bundle) in [("extra", extra), ("foreign", foreign), ("stray", stray), ("orphan", orphan), ("renamed", renamed)] {
+            assert!(check_tree(&bundle, ROOT).is_err(), "{what} was accepted");
+        }
+    }
+
+    #[test]
+    fn a_rename_or_an_archive_moves_the_watermark() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = machine_a(dir.path());
+        let before = watermark(&a, ROOT);
+        a.execute("UPDATE session SET title = 'Renamed' WHERE id = ?1", [ROOT]).unwrap();
+        let renamed = watermark(&a, ROOT);
+        a.execute("UPDATE session SET time_archived = 99 WHERE id = ?1", [ROOT]).unwrap();
+        assert!(before != renamed && renamed != watermark(&a, ROOT));
+        // Where it is filed is not part of it.
+        a.execute("UPDATE session SET directory = '/elsewhere', path = 'sub' WHERE id = ?1", [ROOT]).unwrap();
+        let archived = watermark(&a, ROOT);
+        a.execute("UPDATE session SET directory = '/home/b/billing' WHERE id = ?1", [ROOT]).unwrap();
+        assert_eq!(archived, watermark(&a, ROOT));
     }
 
     #[test]

@@ -500,6 +500,19 @@ impl Hub {
         Ok(heads)
     }
 
+    /// One revision's manifest, files and all: what a machine last synced,
+    /// so a pull can tell what changed on each side since.
+    pub fn revision(&self, agent: &str, id: &str, rev: &str) -> Result<Manifest, HubError> {
+        let agent = AgentKind::parse(agent).ok_or(HubError::NotFound)?;
+        if !valid_id(id) || !super::manifest::valid_sha(rev) {
+            return Err(HubError::NotFound);
+        }
+        if !self.session_dir(agent, id).join("revisions").join(format!("{rev}.json")).is_file() {
+            return Err(HubError::NotFound);
+        }
+        Ok(self.read_revision(agent, id, rev)?)
+    }
+
     pub fn history(&self, agent: &str, id: &str) -> Result<History, HubError> {
         let agent = AgentKind::parse(agent).ok_or(HubError::NotFound)?;
         if !valid_id(id) {

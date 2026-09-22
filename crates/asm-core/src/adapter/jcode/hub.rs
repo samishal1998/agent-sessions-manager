@@ -14,13 +14,24 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use super::{JCodeAdapter, store, write};
-use crate::hub::bundle::{self, Bundle, InstallOutcome, Installed, Staged};
+use crate::hub::bundle::{self, Base, Bundle, InstallOutcome, Installed, Staged};
 use crate::hub::manifest::Manifest;
 use crate::model::Session;
 use crate::{CoreError, fsutil, paths};
 
 /// The fields that make up the conversation.
-const CONVERSATION: [&str; 6] = ["id", "created_at", "parent_id", "short_name", "title", "messages"];
+const CONVERSATION: [&str; 7] =
+    ["id", "created_at", "parent_id", "short_name", "title", "custom_title", "messages"];
+
+/// Turns jcode has taken but not yet folded into the snapshot (it does so
+/// when the session next loads, then deletes the file).
+pub(crate) fn journal_of(snapshot: &Path) -> PathBuf {
+    snapshot.with_extension("journal.jsonl")
+}
+
+fn has_journal(snapshot: &Path) -> bool {
+    std::fs::metadata(journal_of(snapshot)).is_ok_and(|m| m.len() > 0)
+}
 
 fn canonical_of(snapshot: &Value) -> String {
     let conversation: serde_json::Map<String, Value> = CONVERSATION
@@ -107,14 +118,20 @@ fn remember_in_picker(adapter: &JCodeAdapter, snapshot: &Value, dir: &Path) {
     let ms = |k: &str| {
         snapshot.get(k).and_then(Value::as_str).and_then(|t| t.parse::<jiff::Timestamp>().ok()).map(|t| t.as_millisecond())
     };
+    // jcode's own upsert, less todo_title, which the snapshot does not hold.
     let _ = conn.execute(
-        "INSERT OR REPLACE INTO recent_sessions \
-         (session_id, working_dir, generated_title, updated_at_ms, last_active_at_ms, saved) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO recent_sessions \
+         (session_id, working_dir, generated_title, custom_title, updated_at_ms, last_active_at_ms, saved) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+         ON CONFLICT(session_id) DO UPDATE SET working_dir = excluded.working_dir, \
+         generated_title = excluded.generated_title, custom_title = excluded.custom_title, \
+         updated_at_ms = excluded.updated_at_ms, last_active_at_ms = excluded.last_active_at_ms, \
+         saved = excluded.saved",
         rusqlite::params![
             snapshot.get("id").and_then(Value::as_str),
             dir.display().to_string(),
             snapshot.get("title").and_then(Value::as_str),
+            snapshot.get("custom_title").and_then(Value::as_str),
             ms("updated_at").unwrap_or(0),
             ms("last_active_at"),
             snapshot.get("saved").and_then(Value::as_bool).unwrap_or(false) as i64,
@@ -128,6 +145,7 @@ pub(crate) fn install(
     manifest: &Manifest,
     blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
     project_dir: Option<&Path>,
+    base: Option<&Base>,
 ) -> Result<Installed, CoreError> {
     manifest.validate().map_err(|msg| CoreError::Invalid { msg })?;
     let id = &manifest.id;
@@ -144,8 +162,28 @@ pub(crate) fn install(
     if let Some(pid) = store::live_pid(adapter.root(), id) {
         return Err(CoreError::SessionLive { id: id.clone(), pid: Some(pid) });
     }
+    // The journal is only ever half the state; installing it, or leaving
+    // one here for jcode to replay onto the hub's snapshot, would make a
+    // conversation neither machine had.
+    if file("journal.jsonl").is_some() {
+        return Err(CoreError::Invalid {
+            msg: format!(
+                "the pushing machine had turns of {id} jcode had not written into the session yet; \
+                 resume it there once and push again"
+            ),
+        });
+    }
 
     let dest = adapter.sessions_dir().join(format!("{id}.json"));
+    if has_journal(&dest) {
+        return Err(CoreError::Invalid {
+            msg: format!(
+                "{} holds turns jcode has not written into the session yet; resume it once so \
+                 jcode does, then pull again",
+                journal_of(&dest).display()
+            ),
+        });
+    }
     let (outcome, target) = if dest.is_file() {
         let local = read_json(&dest)?;
         let here = PathBuf::from(local.get("working_dir").and_then(Value::as_str).unwrap_or_default());
@@ -160,7 +198,8 @@ pub(crate) fn install(
                 ),
             });
         }
-        (compare(&local, &hub), here)
+        let outcome = bundle::with_base(compare(&local, &hub), &canonical_of(&local), &canonical_of(&hub), base);
+        (outcome, here)
     } else {
         // A short name taken here by another session is no reason to
         // refuse: jcode itself gives two sessions one name (measured on
@@ -243,7 +282,7 @@ mod tests {
         }))
         .unwrap();
 
-        let installed = install(&adapter, &manifest, &|_| Ok(blob_path.clone()), Some(&project)).unwrap();
+        let installed = install(&adapter, &manifest, &|_| Ok(blob_path.clone()), Some(&project), None).unwrap();
         assert_eq!(installed.outcome, InstallOutcome::New);
         let written = read_json(&installed.path).unwrap();
         assert_eq!(written["working_dir"], json!(project.canonicalize().unwrap().display().to_string()));
