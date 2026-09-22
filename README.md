@@ -44,6 +44,7 @@ conversation in a different agent. `asm` is that layer.
 | M3 | Terminal UI | done |
 | M4 | Local web UI | done |
 | M5 | Full-text search, sync groundwork, docs | done |
+| M6 | Multiple machines: a hub, `push`/`pull` under the same id for all five agents, `daemon`, `--move` | done |
 
 Verified against **Claude Code 2.1.234** and **OpenCode 1.17.18** on Linux —
 "verified" meaning a real session was imported and then resumed in the target
