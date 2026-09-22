@@ -180,7 +180,8 @@ pub(crate) fn install(
                 }
             }
         }
-        std::fs::create_dir_all(adapter.sessions_dir()).map_err(|e| CoreError::io(&adapter.sessions_dir(), e))?;
+        let sessions = adapter.sessions_dir();
+        std::fs::create_dir_all(&sessions).map_err(|e| CoreError::io(&sessions, e))?;
         // jcode's own fallback copy first, so the snapshot is never newer
         // than a backup that disagrees with it about where it lives.
         if let Some(sha) = file("snapshot.bak")
