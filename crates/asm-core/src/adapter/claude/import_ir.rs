@@ -88,10 +88,7 @@ pub(super) fn import_ir(
         use std::os::unix::fs::PermissionsExt;
         let _ = fs::set_permissions(store_dir, fs::Permissions::from_mode(0o700));
     }
-    // Atomic materialization: write sibling temp, then rename.
-    let tmp = store_dir.join(format!(".{session_id}.jsonl.tmp"));
-    fs::write(&tmp, &transcript).map_err(|e| CoreError::io(&tmp, e))?;
-    fs::rename(&tmp, &transcript_path).map_err(|e| CoreError::io(&transcript_path, e))?;
+    crate::fsutil::write_atomic(&transcript_path, transcript.as_bytes())?;
 
     Ok(ImportOutcome {
         mode: opts.mode,

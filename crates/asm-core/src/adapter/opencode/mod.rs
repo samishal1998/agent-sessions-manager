@@ -128,7 +128,7 @@ fn inspect_lock(path: &Path) -> LockHolder {
 
     match (pid, same_host) {
         (Some(pid), true) => {
-            let held = std::path::Path::new(&format!("/proc/{pid}")).exists();
+            let held = crate::process::alive(pid);
             let reason = if held {
                 format!("held by pid {pid}")
             } else {

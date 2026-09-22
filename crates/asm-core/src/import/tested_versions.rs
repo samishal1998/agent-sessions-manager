@@ -17,7 +17,11 @@ pub const TESTED: &[(AgentKind, &str)] = &[
     (AgentKind::ClaudeCode, "2.1.234"),
     (AgentKind::OpenCode, "1.17.18"),
     (AgentKind::JCode, "0.78.0"),
-    (AgentKind::Codex, "0.148.0"),
+    // Read-only, so "verified" means listed and exported: a 0.151.0 rollout
+    // and threads row read correctly. 0.151 also records `cwd` in
+    // turn_context, world_state and the environment message, not only on the
+    // first line — relevant to anything that would ever write one.
+    (AgentKind::Codex, "0.151.0"),
     // `agy version` reports nothing parseable yet; pinned by observation.
     (AgentKind::Antigravity, "1.1.16"),
 ];

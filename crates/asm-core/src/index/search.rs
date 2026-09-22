@@ -89,7 +89,9 @@ fn status_name(status: &crate::model::SessionStatus) -> &'static str {
 
 /// An opaque string that changes whenever a session's content changes.
 /// Compared verbatim; nothing outside this function interprets its shape.
-fn fingerprint(session: &Session) -> String {
+/// Also the hub daemon's "did anything happen" pre-filter, which is why it
+/// is public: two definitions of "changed" would drift.
+pub fn fingerprint(session: &Session) -> String {
     let updated_ms = session.updated.map(|t| t.as_millisecond()).unwrap_or(0);
     match &session.handle.location {
         SessionLocation::JsonlFile { path } => {

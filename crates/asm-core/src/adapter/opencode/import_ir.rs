@@ -86,6 +86,11 @@ pub(super) fn import_ir(
         });
     }
 
+    // `opencode import` writes into the same store a running OpenCode
+    // holds, so it takes the same guard as every other write. It used to
+    // skip it: the one path into this store that did.
+    super::write::guard_not_busy(adapter)?;
+
     let project_dir = ir.project_path.resolve();
     if !project_dir.is_dir() {
         return Err(CoreError::Invalid {

@@ -21,7 +21,7 @@ use super::OpenCodeAdapter;
 
 const AGENT: &str = "opencode";
 
-fn guard_not_busy(adapter: &OpenCodeAdapter) -> Result<(), CoreError> {
+pub(super) fn guard_not_busy(adapter: &OpenCodeAdapter) -> Result<(), CoreError> {
     let held: Vec<String> = adapter
         .locks()
         .into_iter()

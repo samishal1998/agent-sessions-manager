@@ -169,18 +169,23 @@ conn.commit(); conn.close()
 
 # ---------------------------------------------------------------------- jcode
 def jcode_session(slug, cwd, title, day, model, messages):
-    snap = {"id": f"session_{slug}", "title": title, "created_at": iso(ts(day)),
+    # jcode 0.83 ids are `session_<name>_<epoch_ms>_<16 hex>` with a
+    # one-word memorable name; the name alone collides across machines, the
+    # id does not. The hex is derived from the name so the store is
+    # reproducible. 0.83 writes no journal.
+    import hashlib
+    sid = f"session_{slug}_{epoch_ms(ts(day))}_{hashlib.sha256(slug.encode()).hexdigest()[:16]}"
+    snap = {"id": sid, "parent_id": None, "title": title, "created_at": iso(ts(day)),
             "updated_at": iso(ts(day, 16)), "messages": messages, "model": model,
-            "working_dir": str(cwd), "short_name": slug, "is_debug": False}
-    (JCODE / "sessions" / f"session_{slug}.json").write_text(json.dumps(snap, indent=1))
-    (JCODE / "sessions" / f"session_{slug}.journal.jsonl").write_text(
-        "\n".join(json.dumps({"op": "append", "seq": i}) for i in range(len(messages))) + "\n")
+            "working_dir": str(cwd), "short_name": slug, "status": "Closed",
+            "last_pid": 4242, "is_debug": False, "saved": False}
+    (JCODE / "sessions" / f"{sid}.json").write_text(json.dumps(snap, indent=1))
 
-jcode_session("bright-canyon", notes, "Draft the incident postmortem for the 04 Aug outage",
+jcode_session("canyon", notes, "Draft the incident postmortem for the 04 Aug outage",
               13, "claude-opus-4-6",
               [{"role": "user", "content": "Draft a postmortem for the Aug 4 outage. Blameless, and lead with the timeline."},
                {"role": "assistant", "content": "Leading with the timeline means the reader sees the sequence before any interpretation of it, which is what keeps a postmortem blameless in practice rather than just in tone."}])
-jcode_session("calm-meridian", mercury, "Benchmark the new pool against the old one",
+jcode_session("meridian", mercury, "Benchmark the new pool against the old one",
               16, "claude-opus-4-6",
               [{"role": "user", "content": "Benchmark the Drop-based pool against the old explicit-release one under 5k concurrent connections."},
                {"role": "assistant", "content": "Running both for ten minutes at 5k concurrent so the leak has time to show up in the old one."}])

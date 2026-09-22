@@ -19,7 +19,6 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow, bail};
-use sha2::{Digest, Sha256};
 
 const REPO: &str = "samishal1998/agent-sessions-manager";
 
@@ -135,10 +134,7 @@ fn asset_url(version: &str, name: &str) -> String {
 }
 
 fn sha256_file(path: &Path) -> Result<String> {
-    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(asm_core::fsutil::sha256_file(path)?)
 }
 
 /// Compare `1.2.3`-shaped versions numerically, so 0.10.0 is newer than

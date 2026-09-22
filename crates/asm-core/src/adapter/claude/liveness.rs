@@ -32,21 +32,9 @@ pub(super) fn live_sessions(root: &Path) -> HashMap<String, u32> {
             continue;
         };
         let pid = pid as u32;
-        if process_alive(pid) {
+        if crate::process::alive(pid) {
             live.insert(session_id.to_string(), pid);
         }
     }
     live
-}
-
-#[cfg(target_os = "linux")]
-fn process_alive(pid: u32) -> bool {
-    Path::new(&format!("/proc/{pid}")).exists()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn process_alive(_pid: u32) -> bool {
-    // Conservative on non-Linux until a proper check lands: a stale PID
-    // record then shows as Live, which only makes us refuse mutations.
-    true
 }

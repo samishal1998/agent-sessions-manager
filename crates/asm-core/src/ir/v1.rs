@@ -21,23 +21,37 @@ pub struct PortablePath(pub String);
 
 impl PortablePath {
     pub fn from_path(path: &Path) -> Self {
-        let s = path.display().to_string();
-        if let Ok(home) = etcetera::home_dir() {
-            let home = home.display().to_string();
-            if let Some(rest) = s.strip_prefix(&home) {
-                return PortablePath(format!("${{HOME}}{rest}"));
-            }
+        match etcetera::home_dir() {
+            Ok(home) => Self::from_path_under(path, &home),
+            Err(_) => PortablePath(path.display().to_string()),
         }
-        PortablePath(s)
+    }
+
+    /// `Path::strip_prefix` matches whole components. The string version
+    /// this replaces did not, so with home `/home/sami` the path
+    /// `/home/sami-old/x` became `${HOME}-old/x` — and resolved back as
+    /// `/home/sami/-old/x`, a directory that never existed.
+    pub fn from_path_under(path: &Path, home: &Path) -> Self {
+        match path.strip_prefix(home) {
+            Ok(rest) if rest.as_os_str().is_empty() => PortablePath("${HOME}".to_string()),
+            Ok(rest) => PortablePath(format!("${{HOME}}/{}", rest.display())),
+            Err(_) => PortablePath(path.display().to_string()),
+        }
     }
 
     pub fn resolve(&self) -> PathBuf {
-        if let Some(rest) = self.0.strip_prefix("${HOME}")
-            && let Ok(home) = etcetera::home_dir()
-        {
-            return home.join(rest.trim_start_matches('/'));
+        match etcetera::home_dir() {
+            Ok(home) => self.resolve_under(&home),
+            Err(_) => PathBuf::from(&self.0),
         }
-        PathBuf::from(&self.0)
+    }
+
+    pub fn resolve_under(&self, home: &Path) -> PathBuf {
+        match self.0.strip_prefix("${HOME}") {
+            Some("") => home.to_path_buf(),
+            Some(rest) if rest.starts_with('/') => home.join(rest.trim_start_matches('/')),
+            _ => PathBuf::from(&self.0),
+        }
     }
 }
 
@@ -143,6 +157,31 @@ mod tests {
         let foreign = PortablePath::from_path(Path::new("/opt/other"));
         assert_eq!(foreign.0, "/opt/other");
         assert_eq!(foreign.resolve(), PathBuf::from("/opt/other"));
+    }
+
+    /// A sibling of home that merely shares its prefix is not under it.
+    #[test]
+    fn a_sibling_of_home_is_not_tokenized() {
+        let home = Path::new("/home/sami");
+        let sibling = PortablePath::from_path_under(Path::new("/home/sami-old/x"), home);
+        assert_eq!(sibling.0, "/home/sami-old/x");
+        assert_eq!(sibling.resolve_under(home), PathBuf::from("/home/sami-old/x"));
+    }
+
+    /// The point of tokenizing: the same project on a machine whose home is
+    /// somewhere else entirely.
+    #[test]
+    fn a_path_under_one_home_resolves_under_another() {
+        let portable =
+            PortablePath::from_path_under(Path::new("/home/sami/code/x"), Path::new("/home/sami"));
+        assert_eq!(portable.0, "${HOME}/code/x");
+        assert_eq!(portable.resolve_under(Path::new("/Users/sami")), PathBuf::from("/Users/sami/code/x"));
+        let home = PortablePath::from_path_under(Path::new("/home/sami"), Path::new("/home/sami"));
+        assert_eq!(home.0, "${HOME}");
+        assert_eq!(home.resolve_under(Path::new("/Users/sami")), PathBuf::from("/Users/sami"));
+        // Not our token, just a directory that happens to start with it.
+        let odd = PortablePath("${HOME}ish/x".to_string());
+        assert_eq!(odd.resolve_under(Path::new("/Users/sami")), PathBuf::from("${HOME}ish/x"));
     }
 
     #[test]

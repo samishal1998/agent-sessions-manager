@@ -29,6 +29,55 @@ pub struct Repo {
     pub main_worktree: PathBuf,
 }
 
+/// The repository's `origin` remote as a cross-machine project key:
+/// `github.com/owner/repo`, whatever form the clone used.
+///
+/// Absolute paths differ between machines, so this is how the same project
+/// is recognised on two of them. One machine may clone over SSH and another
+/// over HTTPS, so both forms reduce to host and path. Userinfo is always
+/// dropped — `https://<token>@host/...` remotes exist, and this value is
+/// uploaded to the hub with every session.
+pub fn origin(dir: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["config", "--get", "remote.origin.url"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    normalize_remote(String::from_utf8_lossy(&output.stdout).trim())
+}
+
+fn normalize_remote(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let (host, path) = match url.split_once("://") {
+        // scheme://[user[:pass]@]host[:port]/path
+        Some((_, rest)) => {
+            let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+            let host = authority.rsplit('@').next().unwrap_or(authority);
+            (host.split(':').next().unwrap_or(host), path)
+        }
+        // scp-like: [user@]host:path — but a bare local path has no host.
+        None => {
+            let (authority, path) = url.split_once(':')?;
+            if authority.contains('/') {
+                return None;
+            }
+            (authority.rsplit('@').next().unwrap_or(authority), path)
+        }
+    };
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    if host.is_empty() || path.is_empty() {
+        return None;
+    }
+    Some(format!("{}/{path}", host.to_ascii_lowercase()))
+}
+
 /// Identify the repository containing `dir`, if any.
 ///
 /// This is what makes a project more than a directory: linked worktrees and
@@ -124,5 +173,34 @@ mod tests {
         assert!(wts[2].detached);
         assert!(wts[2].prunable);
         assert!(!wts[2].is_main);
+    }
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::normalize_remote;
+
+    #[test]
+    fn ssh_and_https_clones_of_one_repository_agree() {
+        let want = Some("github.com/owner/repo".to_string());
+        assert_eq!(normalize_remote("git@github.com:owner/repo.git"), want);
+        assert_eq!(normalize_remote("https://github.com/owner/repo"), want);
+        assert_eq!(normalize_remote("https://github.com/owner/repo.git/"), want);
+        assert_eq!(normalize_remote("ssh://git@GitHub.com:22/owner/repo.git"), want);
+    }
+
+    /// The key is uploaded with every session, so a credential embedded in
+    /// the remote must never survive into it.
+    #[test]
+    fn credentials_never_survive() {
+        let key = normalize_remote("https://x-access-token:ghp_secret@github.com/owner/repo.git");
+        assert_eq!(key.as_deref(), Some("github.com/owner/repo"));
+    }
+
+    #[test]
+    fn local_and_empty_remotes_are_not_a_project_key() {
+        assert_eq!(normalize_remote(""), None);
+        assert_eq!(normalize_remote("/srv/git/repo.git"), None);
+        assert_eq!(normalize_remote("../sibling"), None);
     }
 }

@@ -15,6 +15,7 @@ pub mod live;
 pub mod model;
 pub mod ops;
 pub mod paths;
+pub mod process;
 pub mod sync;
 
 pub use error::CoreError;

@@ -21,7 +21,7 @@ mod schema;
 mod search;
 
 pub use search::{
-    IndexStats, MATCH_END, MATCH_START, RefreshReport, SearchHit, SearchQuery,
+    IndexStats, MATCH_END, MATCH_START, RefreshReport, SearchHit, SearchQuery, fingerprint,
 };
 
 use std::path::{Path, PathBuf};

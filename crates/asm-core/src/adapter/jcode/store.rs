@@ -163,7 +163,7 @@ fn live_pids(root: &Path) -> HashMap<String, u32> {
             .ok()
             .and_then(|text| text.trim().parse().ok());
         match pid {
-            Some(pid) if Path::new(&format!("/proc/{pid}")).exists() => {
+            Some(pid) if crate::process::alive(pid) => {
                 live.insert(id, pid);
             }
             _ => {}
