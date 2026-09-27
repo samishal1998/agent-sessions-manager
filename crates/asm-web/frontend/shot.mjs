@@ -33,15 +33,15 @@ async function page(width, height) {
   const p = await page(1440, 900)
   await p.screenshot({ path: `${OUT}/01-desktop-list.png` })
 
-  await p.click('.chip')
+  const chips = await p.$$('.chip')
+  await chips[0].click()
   await p.waitForTimeout(250)
   await p.screenshot({ path: `${OUT}/02-desktop-multiselect.png` })
-  // A second agent chip: the filter takes both.
-  const options = await p.$$('.chip')
-  for (const o of options) {
-    await o.click()
-    await p.waitForTimeout(120)
-  }
+  // A second agent, without turning the first one off.
+  await chips[1].click()
+  await p.waitForTimeout(250)
+  const on = await p.$$eval('.chip[aria-pressed="true"]', (els) => els.length)
+  if (on !== 2) problems.push(`[filter] expected two agents chosen, got ${on}`)
   await p.screenshot({ path: `${OUT}/03-desktop-multiselect-both.png` })
   await p.keyboard.press('Escape')
   await p.waitForTimeout(200)
@@ -88,10 +88,18 @@ async function page(width, height) {
 // Keyboard path through the filters: tab to an agent chip, toggle it.
 {
   const p = await page(1440, 900)
-  await p.focus('.chip')
+  // Tab to the chips rather than focusing them by hand: their place in the
+  // tab order is part of what is being checked.
+  for (let i = 0; i < 40; i++) {
+    await p.keyboard.press('Tab')
+    if (await p.evaluate(() => document.activeElement?.classList.contains('chip'))) break
+  }
+  if (!(await p.evaluate(() => document.activeElement?.classList.contains('chip')))) {
+    problems.push('[keyboard] no agent chip is reachable with Tab')
+  }
   await p.keyboard.press('Enter')
   await p.waitForTimeout(200)
-  const pressed = await p.getAttribute('.chip', 'aria-pressed')
+  const pressed = await p.evaluate(() => document.activeElement?.getAttribute('aria-pressed'))
   if (pressed !== 'true') problems.push(`[keyboard] agent chip did not toggle (aria-pressed=${pressed})`)
   await p.screenshot({ path: `${OUT}/11-keyboard-filter.png` })
   await p.close()

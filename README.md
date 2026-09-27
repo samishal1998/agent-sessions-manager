@@ -172,7 +172,7 @@ view of the CLI:
 | `␣` `*` | tick this session · tick everything the filter shows |
 | `p` `c` | push to the hub · reply to the session |
 | `D` `R` `q` | store health (the same report as `asm doctor`) · rescan · quit |
-| `esc` | back out one layer: the overlay, the selection, then the filters |
+| `esc` | back out one layer: the overlay, the selection, the transcript, then the filters — and with nothing left, quit |
 
 The transcript pane is closed until you ask for it, so the list keeps the whole
 width; a transcript search opens it and follows the match you are on. What is

@@ -20,7 +20,7 @@ pub enum LoopOutcome {
     RunCommand(std::process::Command),
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum Mode {
     Normal,
     Filter,
@@ -62,7 +62,6 @@ pub struct Picker {
 /// whether it is part of the filter now.
 pub struct PickerRow {
     pub label: String,
-    pub detail: String,
     pub count: usize,
     pub on: bool,
     pub agent: Option<AgentKind>,
@@ -126,6 +125,11 @@ pub struct App {
     /// The project the list is narrowed to, with its descendants.
     pub project: Option<PathBuf>,
     pub picker: Option<Picker>,
+    /// The filter as it was when `/` was pressed, so esc can restore it.
+    filter_before: String,
+    /// Projects as the CLI and the web UI mean them: a repository and its
+    /// worktrees, not one directory per session.
+    projects: Vec<asm_core::model::Project>,
 }
 
 impl App {
@@ -170,6 +174,8 @@ impl App {
             agents: HashSet::new(),
             project: None,
             picker: None,
+            filter_before: String::new(),
+            projects: Vec::new(),
         }
     }
 
@@ -184,6 +190,7 @@ impl App {
         // duplicate ids and stale locks are exactly what a browser should
         // surface.
         let _ = self.worker.tx.send(Request::Doctor);
+        let _ = self.worker.tx.send(Request::Projects);
     }
 
     pub fn selected_session(&self) -> Option<&Session> {
@@ -287,13 +294,28 @@ impl App {
         self.pending_action.as_ref().map(|a| (a, self.pending_batch.len()))
     }
 
+    /// Everything but the agents: what a count in the agent picker means.
+    fn matches_but_agents(&self, session: &Session) -> bool {
+        self.matches_with(session, false, true)
+    }
+
+    /// Everything but the project, for the project picker's counts.
+    fn matches_but_project(&self, session: &Session) -> bool {
+        self.matches_with(session, true, false)
+    }
+
     /// Every filter at once: the agents, the project and the typed text.
     fn matches(&self, session: &Session) -> bool {
-        if !self.agents.is_empty() && !self.agents.contains(&session.handle.agent) {
+        self.matches_with(session, true, true)
+    }
+
+    fn matches_with(&self, session: &Session, agents: bool, project: bool) -> bool {
+        if agents && !self.agents.is_empty() && !self.agents.contains(&session.handle.agent) {
             return false;
         }
-        if let Some(project) = &self.project
-            && !(session.project_root == *project || session.project_root.starts_with(project))
+        if project
+            && let Some(project) = &self.project
+            && !self.in_project(session, project)
         {
             return false;
         }
@@ -303,6 +325,22 @@ impl App {
             || session.handle.native_id.to_lowercase().contains(&needle)
             || session.project_root.display().to_string().to_lowercase().contains(&needle)
             || session.handle.agent.to_string().contains(&needle)
+    }
+
+    /// Whether a session belongs to the project rooted here: its own
+    /// directory, a subdirectory of it, or any other worktree of the same
+    /// repository — the same rule `asm projects` groups by.
+    fn in_project(&self, session: &Session, project: &PathBuf) -> bool {
+        let under = |root: &PathBuf| {
+            !root.as_os_str().is_empty()
+                && (session.project_root == *root || session.project_root.starts_with(root))
+        };
+        under(project)
+            || self
+                .projects
+                .iter()
+                .find(|p| p.root == *project)
+                .is_some_and(|p| p.worktrees.iter().any(|w| under(&w.path)))
     }
 
     /// What the filters are, in words, for the bar above the status line.
@@ -341,6 +379,14 @@ impl App {
         let Some(picker) = &self.picker else { return Vec::new() };
         match picker.kind {
             PickerKind::Agent => {
+                // What picking this agent would leave, with the project and
+                // the text still applied.
+                let left = |agent: AgentKind| {
+                    self.sessions
+                        .iter()
+                        .filter(|s| s.handle.agent == agent && self.matches_but_agents(s))
+                        .count()
+                };
                 let mut agents: Vec<AgentKind> =
                     self.sessions.iter().map(|s| s.handle.agent).collect::<HashSet<_>>().into_iter().collect();
                 agents.sort_by_key(|a| a.to_string());
@@ -348,8 +394,7 @@ impl App {
                     .into_iter()
                     .map(|agent| PickerRow {
                         label: agent.to_string(),
-                        detail: String::new(),
-                        count: self.sessions.iter().filter(|s| s.handle.agent == agent).count(),
+                        count: left(agent),
                         on: self.agents.contains(&agent),
                         agent: Some(agent),
                     })
@@ -357,18 +402,31 @@ impl App {
             }
             PickerKind::Project => {
                 let needle = picker.query.to_lowercase();
-                let mut counts: HashMap<PathBuf, usize> = HashMap::new();
-                for session in &self.sessions {
-                    *counts.entry(session.project_root.clone()).or_default() += 1;
-                }
-                let mut rows: Vec<PickerRow> = counts
-                    .into_iter()
-                    .filter(|(root, _)| root.display().to_string().to_lowercase().contains(&needle))
-                    .map(|(root, count)| PickerRow {
-                        label: crate::ui::home_relative(&root),
-                        detail: String::new(),
-                        count,
+                let left = |root: &PathBuf| {
+                    self.sessions
+                        .iter()
+                        .filter(|s| self.in_project(s, root) && self.matches_but_project(s))
+                        .count()
+                };
+                let mut rows: Vec<PickerRow> = self
+                    .projects
+                    .iter()
+                    .map(|p| p.root.clone())
+                    .filter(|root| !root.as_os_str().is_empty())
+                    .map(|root| {
+                        let label = crate::ui::home_relative(&root);
+                        (label, root)
+                    })
+                    // Both what is on screen and the full path: the row
+                    // reads `~/code/x`, and `/home` should still find it.
+                    .filter(|(label, root)| {
+                        label.to_lowercase().contains(&needle)
+                            || root.display().to_string().to_lowercase().contains(&needle)
+                    })
+                    .map(|(label, root)| PickerRow {
+                        count: left(&root),
                         on: self.project.as_ref() == Some(&root),
+                        label,
                         agent: None,
                     })
                     .collect();
@@ -377,8 +435,7 @@ impl App {
                     0,
                     PickerRow {
                         label: "all projects".into(),
-                        detail: String::new(),
-                        count: self.sessions.len(),
+                        count: self.sessions.iter().filter(|s| self.matches_but_project(s)).count(),
                         on: self.project.is_none(),
                         agent: None,
                     },
@@ -386,6 +443,11 @@ impl App {
                 rows
             }
         }
+    }
+
+    #[cfg(test)]
+    pub fn set_projects_for_test(&mut self, projects: Vec<asm_core::model::Project>) {
+        self.projects = projects;
     }
 
     #[cfg(test)]
@@ -414,9 +476,9 @@ impl App {
             }
             PickerKind::Project => {
                 self.project = self
-                    .sessions
+                    .projects
                     .iter()
-                    .map(|s| s.project_root.clone())
+                    .map(|p| p.root.clone())
                     .find(|root| crate::ui::home_relative(root) == row.label);
                 self.picker = None;
                 self.mode = Mode::Normal;
@@ -432,28 +494,32 @@ impl App {
     fn on_picker_key(&mut self, key: KeyEvent) {
         let len = self.picker_rows().len();
         let Some(picker) = &mut self.picker else { return };
+        // A rescan can shorten the rows under an open picker.
+        picker.cursor = picker.cursor.min(len.saturating_sub(1));
+        let agents = picker.kind == PickerKind::Agent;
+        let close = |app: &mut Self| {
+            app.picker = None;
+            app.mode = Mode::Normal;
+        };
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') if picker.query.is_empty() => {
-                self.picker = None;
-                self.mode = Mode::Normal;
-            }
+            // Every printable key belongs to the project picker's query, so
+            // only the agent picker answers to letters.
+            KeyCode::Esc if picker.query.is_empty() => close(self),
             KeyCode::Esc => picker.query.clear(),
-            KeyCode::Enter => {
-                self.pick();
-                if self.picker.is_some() && self.mode == Mode::Picker {
-                    // Agents: done choosing.
-                    self.picker = None;
-                    self.mode = Mode::Normal;
-                }
-            }
-            KeyCode::Char(' ') => self.pick(),
+            KeyCode::Char('q') if agents => close(self),
+            // Each choice applies as it is made; Enter is just "done".
+            KeyCode::Enter if agents => close(self),
+            KeyCode::Enter => self.pick(),
+            KeyCode::Char(' ') if agents => self.pick(),
             KeyCode::Down | KeyCode::Tab => picker.cursor = (picker.cursor + 1).min(len.saturating_sub(1)),
             KeyCode::Up | KeyCode::BackTab => picker.cursor = picker.cursor.saturating_sub(1),
+            KeyCode::Char('j') if agents => picker.cursor = (picker.cursor + 1).min(len.saturating_sub(1)),
+            KeyCode::Char('k') if agents => picker.cursor = picker.cursor.saturating_sub(1),
             KeyCode::Backspace => {
                 picker.query.pop();
                 picker.cursor = 0;
             }
-            KeyCode::Char(c) if picker.kind == PickerKind::Project => {
+            KeyCode::Char(c) if !agents => {
                 picker.query.push(c);
                 picker.cursor = 0;
             }
@@ -667,6 +733,13 @@ impl App {
                         self.preview = lines;
                     }
                 }
+                Response::Projects(projects) => {
+                    self.projects = projects;
+                    if let Some(picker) = &mut self.picker {
+                        // The rows under the cursor just changed.
+                        picker.cursor = 0;
+                    }
+                }
                 Response::Doctor(lines, warnings) => {
                     self.doctor = lines;
                     self.doctor_warnings = warnings;
@@ -678,8 +751,10 @@ impl App {
                     self.hits = Some(hits);
                     // Searching inside transcripts is the one time the
                     // transcript is what you are looking at, so it opens
-                    // itself and follows the highlighted match.
-                    self.preview_open = true;
+                    // itself and follows the highlighted match. Nothing to
+                    // show means nothing to open, and a pane the user had
+                    // open stays open.
+                    self.preview_open |= self.hits.as_ref().is_some_and(|h| !h.is_empty());
                     self.preview_hit();
                 }
                 Response::Done(message) => {
@@ -819,6 +894,35 @@ impl App {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.hits = None;
                     self.status = "back to sessions".to_string();
+                    // The pane was following the matches; put it back on
+                    // the row the cursor is on.
+                    self.preview_for = None;
+                    self.sync_preview();
+                    return None;
+                }
+                // The transcript keys keep working while results are up:
+                // the pane it opened is the point of the search.
+                KeyCode::Right | KeyCode::Char('l') => {
+                    self.preview_open = true;
+                    self.preview_for = None;
+                    self.preview_hit();
+                    return None;
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    self.preview_open = false;
+                    self.preview_focus = false;
+                    return None;
+                }
+                KeyCode::Tab => {
+                    self.preview_focus = !self.preview_focus && self.preview_open;
+                    return None;
+                }
+                KeyCode::PageDown => {
+                    self.preview_scroll = self.preview_scroll.saturating_add(20);
+                    return None;
+                }
+                KeyCode::PageUp => {
+                    self.preview_scroll = self.preview_scroll.saturating_sub(20);
                     return None;
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
@@ -911,8 +1015,12 @@ impl App {
                     self.sync_preview();
                 }
             }
-            KeyCode::PageDown => self.preview_scroll = self.preview_scroll.saturating_add(20),
-            KeyCode::PageUp => self.preview_scroll = self.preview_scroll.saturating_sub(20),
+            KeyCode::PageDown if self.preview_open => {
+                self.preview_scroll = self.preview_scroll.saturating_add(20)
+            }
+            KeyCode::PageUp if self.preview_open => {
+                self.preview_scroll = self.preview_scroll.saturating_sub(20)
+            }
             KeyCode::Char('G') | KeyCode::End => {
                 if !self.preview_focus && !self.filtered.is_empty() {
                     self.selected = self.filtered.len() - 1;
@@ -928,6 +1036,7 @@ impl App {
             KeyCode::Char('/') => {
                 self.mode = Mode::Filter;
                 self.input = self.filter.clone();
+                self.filter_before = self.filter.clone();
             }
             KeyCode::Char('R') => self.request_scan(),
             KeyCode::Enter => {
@@ -1197,8 +1306,12 @@ impl App {
 
     fn on_filter_key(&mut self, key: KeyEvent) {
         match key.code {
+            // It filters as it is typed, so cancelling has to put back what
+            // was there when it opened.
             KeyCode::Esc => {
+                self.filter = std::mem::take(&mut self.filter_before);
                 self.mode = Mode::Normal;
+                self.apply_filter();
             }
             KeyCode::Enter => {
                 self.filter = self.input.clone();
@@ -1287,5 +1400,200 @@ fn first_line(text: &str) -> String {
         format!("{}…", line.chars().take(200).collect::<String>())
     } else {
         line.to_string()
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_app(sessions: Vec<Session>) -> App {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let (_tx, rx) = std::sync::mpsc::channel();
+    let worker = crate::worker::Worker {
+        tx,
+        rx,
+        cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+    let mut app = App::new(worker);
+    app.sessions = sessions;
+    app.filtered = (0..app.sessions.len()).collect();
+    app
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use asm_core::model::{SessionLocation, SessionRef, Usage};
+
+    fn session(agent: AgentKind, id: &str, project: &str) -> Session {
+        Session {
+            handle: SessionRef {
+                agent,
+                native_id: id.into(),
+                location: SessionLocation::JsonlFile { path: format!("/tmp/{id}.jsonl").into() },
+            },
+            title: Some(format!("about {id}")),
+            slug: None,
+            project_root: project.into(),
+            git_branch: None,
+            created: None,
+            updated: None,
+            model: None,
+            usage: Usage::default(),
+            status: SessionStatus::Idle,
+            parent: None,
+            agent_version: None,
+            size_bytes: Some(10),
+        }
+    }
+
+    fn project(root: &str) -> asm_core::model::Project {
+        asm_core::model::Project {
+            root: root.into(),
+            repo: None,
+            agents: Vec::new(),
+            worktrees: vec![asm_core::model::ProjectWorktree {
+                path: root.into(),
+                branch: None,
+                is_main: true,
+                session_count: 1,
+            }],
+            session_count: 1,
+            size_bytes: 0,
+            last_updated: None,
+        }
+    }
+
+    fn app() -> App {
+        let mut app = test_app(vec![
+            session(AgentKind::ClaudeCode, "aaa", "/w/mercury"),
+            session(AgentKind::ClaudeCode, "bbb", "/w/atlas"),
+            session(AgentKind::OpenCode, "ccc", "/w/mercury"),
+            // A session whose agent never recorded a directory.
+            session(AgentKind::Antigravity, "ddd", ""),
+        ]);
+        app.projects = vec![project("/w/mercury"), project("/w/atlas")];
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode) {
+        match app.mode {
+            Mode::Picker => app.on_picker_key(KeyEvent::from(code)),
+            Mode::Filter => app.on_filter_key(KeyEvent::from(code)),
+            _ => {
+                app.on_normal_key(KeyEvent::from(code));
+            }
+        }
+    }
+
+    /// Each toggle applies as it is made, so the key that closes the picker
+    /// must not also toggle the row under the cursor.
+    #[test]
+    fn closing_the_agent_picker_keeps_what_was_chosen() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('A'));
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.agents.len(), 1, "space chose one");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.agents.len(), 1, "enter closed it, and changed nothing");
+
+        // And a bare enter chooses nothing at all.
+        let mut app = super::tests::app();
+        press(&mut app, KeyCode::Char('A'));
+        press(&mut app, KeyCode::Enter);
+        assert!(app.agents.is_empty(), "no filter the user did not ask for");
+    }
+
+    /// The project picker is typed into, so letters belong to the query.
+    #[test]
+    fn every_letter_reaches_the_project_query() {
+        let mut app = app();
+        press(&mut app, KeyCode::Char('P'));
+        for c in ['q', ' ', 'k'] {
+            press(&mut app, KeyCode::Char(c));
+        }
+        assert_eq!(app.mode, Mode::Picker, "none of those closed it");
+        assert_eq!(app.picker.as_ref().unwrap().query, "q k");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.picker.as_ref().unwrap().query, "", "first esc clears the query");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal, "the second closes");
+    }
+
+    /// A count says what picking that row would leave, so it respects the
+    /// filters already on.
+    #[test]
+    fn picker_counts_respect_the_other_filters() {
+        let mut app = app();
+        app.project = Some("/w/mercury".into());
+        app.apply_filter();
+        app.open_picker(PickerKind::Agent);
+        let rows = app.picker_rows();
+        let claude = rows.iter().find(|r| r.label == "claude-code").unwrap();
+        assert_eq!(claude.count, 1, "one claude session in mercury, not two");
+
+        // And a project row counts what the agent filter would leave.
+        let mut app = super::tests::app();
+        app.agents.insert(AgentKind::OpenCode);
+        app.apply_filter();
+        app.open_picker(PickerKind::Project);
+        let rows = app.picker_rows();
+        let mercury = rows.iter().find(|r| r.label.ends_with("mercury")).unwrap();
+        assert_eq!(mercury.count, 1);
+        assert_eq!(rows[0].label, "all projects");
+        assert_eq!(rows[0].count, 1, "one opencode session in all");
+    }
+
+    /// A session with no directory is no project; offering it as one gave a
+    /// nameless row whose filter hid nothing.
+    #[test]
+    fn a_session_without_a_directory_is_not_a_project() {
+        let mut app = app();
+        app.open_picker(PickerKind::Project);
+        let rows = app.picker_rows();
+        assert!(rows.iter().all(|r| !r.label.is_empty()), "no nameless rows");
+        assert_eq!(rows.len(), 3, "all projects, mercury, atlas");
+    }
+
+    #[test]
+    fn a_search_with_no_matches_does_not_open_an_empty_transcript() {
+        let mut app = app();
+        app.hits = Some(Vec::new());
+        app.preview_open |= app.hits.as_ref().is_some_and(|h| !h.is_empty());
+        assert!(!app.preview_open);
+    }
+
+    /// It filters as it is typed, so cancelling has to put back what was
+    /// there before.
+    #[test]
+    fn esc_in_the_filter_restores_what_it_replaced() {
+        let mut app = app();
+        app.filter = "mercury".into();
+        app.apply_filter();
+        let before = app.filtered.len();
+        press(&mut app, KeyCode::Char('/'));
+        for c in ['a', 't'] {
+            press(&mut app, KeyCode::Char(c));
+        }
+        assert_ne!(app.filtered.len(), before, "typing filters as it goes");
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.filter, "mercury");
+        assert_eq!(app.filtered.len(), before);
+    }
+
+    /// Esc peels back one layer at a time, and only leaves when there is
+    /// nothing left to back out of.
+    #[test]
+    fn esc_backs_out_before_it_quits() {
+        let mut app = app();
+        app.agents.insert(AgentKind::ClaudeCode);
+        app.preview_open = true;
+        app.selection.insert((AgentKind::ClaudeCode, "aaa".into()));
+        assert!(app.on_normal_key(KeyEvent::from(KeyCode::Esc)).is_none());
+        assert!(app.selection.is_empty());
+        assert!(app.on_normal_key(KeyEvent::from(KeyCode::Esc)).is_none());
+        assert!(!app.preview_open, "then the transcript");
+        assert!(app.on_normal_key(KeyEvent::from(KeyCode::Esc)).is_none());
+        assert!(app.agents.is_empty(), "then the filters");
+        assert!(matches!(app.on_normal_key(KeyEvent::from(KeyCode::Esc)), Some(LoopOutcome::Quit)));
     }
 }

@@ -62,11 +62,13 @@ const AGENT_FILTER_OPTIONS = computed(() =>
   ]),
 )
 
-// How many sessions each agent has, so a filter says what it would leave
-// rather than only what it is called.
+// What choosing an agent would leave, with the project, the text and the
+// archived switch still applied — not how many exist in total.
 const agentCounts = computed(() => {
   const counts = {}
-  for (const s of sessions.value) counts[s.ref.agent] = (counts[s.ref.agent] || 0) + 1
+  for (const s of sessions.value) {
+    if (matches(s, { ignoreAgents: true })) counts[s.ref.agent] = (counts[s.ref.agent] || 0) + 1
+  }
   return counts
 })
 const toggleAgent = (agent) => {
@@ -75,7 +77,12 @@ const toggleAgent = (agent) => {
     : [...selectedAgents.value, agent]
 }
 const anyFilter = computed(
-  () => filter.value !== '' || selectedAgents.value.length > 0 || projectFilter.value !== '' || !showArchived.value,
+  () =>
+    filter.value !== '' ||
+    selectedAgents.value.length > 0 ||
+    projectFilter.value !== '' ||
+    !showArchived.value ||
+    hits.value !== null,
 )
 function clearFilters() {
   filter.value = ''
@@ -83,6 +90,7 @@ function clearFilters() {
   projectFilter.value = ''
   projectSearch.value = ''
   showArchived.value = true
+  clearSearch()
 }
 
 /* Data ---------------------------------------------------------------- */
@@ -159,12 +167,19 @@ const projects = ref([])
 const selectedProject = computed(() =>
   projects.value.find((p) => p.root === projectFilter.value),
 )
-// The sidebar list, narrowed by what was typed into it.
+const projectSearchShown = computed(() => projects.value.length > 6)
+// The sidebar list, narrowed by what was typed into it: matched against
+// what each row shows as well as the path, and never hiding the project
+// the list is filtered by — that would leave no way back.
 const shownProjects = computed(() => {
-  const needle = projectSearch.value.trim().toLowerCase()
+  const needle = projectSearchShown.value ? projectSearch.value.trim().toLowerCase() : ''
   if (!needle) return projects.value
   return projects.value.filter(
-    (p) => p.root.toLowerCase().includes(needle) || projectLabel(p.root).toLowerCase().includes(needle),
+    (p) =>
+      p.root === projectFilter.value ||
+      p.root.toLowerCase().includes(needle) ||
+      projectLabel(p.root).toLowerCase().includes(needle) ||
+      (projectSubtitle(p.root) || '').toLowerCase().includes(needle),
   )
 })
 
@@ -174,20 +189,21 @@ function inProject(session, project) {
   )
 }
 
-const visible = computed(() => {
+function matches(s, { ignoreAgents = false } = {}) {
   const needle = filter.value.trim().toLowerCase()
-  return sessions.value.filter((s) => {
-    if (selectedAgents.value.length && !selectedAgents.value.includes(s.ref.agent)) return false
-    if (selectedProject.value && !inProject(s, selectedProject.value)) return false
-    if (!showArchived.value && statusOf(s) === 'archived') return false
-    if (!needle) return true
-    return (
-      (s.title || '').toLowerCase().includes(needle) ||
-      s.ref.native_id.toLowerCase().includes(needle) ||
-      s.project_root.toLowerCase().includes(needle)
-    )
-  })
-})
+  if (!ignoreAgents && selectedAgents.value.length && !selectedAgents.value.includes(s.ref.agent))
+    return false
+  if (selectedProject.value && !inProject(s, selectedProject.value)) return false
+  if (!showArchived.value && statusOf(s) === 'archived') return false
+  if (!needle) return true
+  return (
+    (s.title || '').toLowerCase().includes(needle) ||
+    s.ref.native_id.toLowerCase().includes(needle) ||
+    s.project_root.toLowerCase().includes(needle)
+  )
+}
+
+const visible = computed(() => sessions.value.filter((s) => matches(s)))
 
 // Agents differ in what they support — jcode has no "move", for instance —
 // so the row offers only the verbs its agent can actually perform.
@@ -613,7 +629,7 @@ function pickProject(root) {
 
       <div>
         <div class="side-heading">Projects</div>
-        <label v-if="projects.length > 6" class="side-search">
+        <label v-if="projectSearchShown" class="side-search">
           <Search :size="13" />
           <input v-model="projectSearch" placeholder="Find a project…" aria-label="Find a project" />
         </label>
@@ -750,6 +766,21 @@ function pickProject(root) {
           />
         </label>
 
+        <label class="checkbox">
+          <input v-model="showArchived" type="checkbox" />
+          <span>Archived</span>
+        </label>
+
+        <button v-if="anyFilter" class="btn ghost" title="Show every session again" @click="clearFilters">
+          <FilterX :size="15" />
+          <span>Clear filters</span>
+        </button>
+
+        <button class="btn" @click="refresh">
+          <RefreshCw :size="15" />
+          <span>Refresh</span>
+        </button>
+
         <!-- Five agents at most: one click each beats opening a menu. -->
         <div class="chips" role="group" aria-label="Filter by agent">
           <button
@@ -758,7 +789,7 @@ function pickProject(root) {
             class="chip"
             :class="{ on: selectedAgents.includes(a.value) }"
             :aria-pressed="selectedAgents.includes(a.value)"
-            :title="`Show only ${a.label}`"
+            :title="selectedAgents.includes(a.value) ? `Stop filtering by ${a.label}` : `Show ${a.label}`"
             @click="toggleAgent(a.value)"
           >
             <component :is="a.icon" :size="14" />
@@ -767,20 +798,6 @@ function pickProject(root) {
           </button>
         </div>
 
-        <label class="checkbox">
-          <input v-model="showArchived" type="checkbox" />
-          <span>Archived</span>
-        </label>
-
-        <button v-if="anyFilter" class="btn ghost" title="Show every session again" @click="clearFilters">
-          <FilterX :size="15" />
-          <span>Clear</span>
-        </button>
-
-        <button class="btn" @click="refresh">
-          <RefreshCw :size="15" />
-          <span>Refresh</span>
-        </button>
       </div>
 
       <div class="content">

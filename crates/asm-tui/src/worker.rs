@@ -20,6 +20,9 @@ pub enum Request {
     Move(Box<Session>, std::path::PathBuf),
     Import(Box<Session>, asm_core::model::AgentKind),
     Search(String),
+    /// The projects the list can be narrowed to — repositories with their
+    /// worktrees, the same grouping the CLI and the web UI show.
+    Projects,
     Doctor,
     /// One verb over a selected set. Sessions are resolved by the caller at
     /// the moment the action is confirmed, never by index.
@@ -36,6 +39,7 @@ pub enum Response {
     Preview(String, Vec<PreviewLine>),
     /// (query, hits)
     Hits(String, Vec<asm_core::index::SearchHit>),
+    Projects(Vec<asm_core::model::Project>),
     /// (report lines, number of warnings among them)
     Doctor(Vec<String>, usize),
     Done(String),
@@ -149,6 +153,10 @@ fn handle(request: Request) -> Response {
             let verb = action.verb().to_string();
             Response::Bulk(verb, asm_core::bulk::run(&sessions, &action))
         }
+        Request::Projects => match ops::list_projects() {
+            Ok(projects) => Response::Projects(projects),
+            Err(e) => Response::Error(e.to_string()),
+        },
         Request::Doctor => match ops::doctor() {
             Ok(report) => {
                 let mut lines = Vec::new();

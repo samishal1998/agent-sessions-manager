@@ -21,9 +21,12 @@ use crate::worker::PreviewKind;
 
 pub fn draw(frame: &mut Frame, app: &App) {
     let filters = app.active_filters();
-    let footer_height = if filters.is_empty() { 2 } else { 3 };
+    // On a very short terminal the keys are worth more than another row of
+    // sessions, so the footer keeps at least its hint line.
+    let wanted = if filters.is_empty() { 2 } else { 3 };
+    let footer_height = wanted.min(frame.area().height.saturating_sub(1)).max(1);
     let [main, footer] =
-        Layout::vertical([Constraint::Min(3), Constraint::Length(footer_height)]).areas(frame.area());
+        Layout::vertical([Constraint::Min(0), Constraint::Length(footer_height)]).areas(frame.area());
 
     // The transcript is opt-in, and while it is closed the list has the
     // whole width for the columns that were being squeezed.
@@ -160,7 +163,7 @@ const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("A", "pick agents (space toggles, ⏎ closes)"),
             ("P", "pick a project (type to narrow)"),
             ("s", "search inside every transcript"),
-            ("esc", "clear the selection, then the filters"),
+            ("esc", "back out: the selection, the transcript, the filters"),
         ],
     ),
     (
@@ -184,7 +187,7 @@ const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("R", "rescan the stores"),
             ("D", "store health"),
             ("?", "this help"),
-            ("q", "quit"),
+            ("q", "quit — as does esc with nothing left to back out of"),
         ],
     ),
 ];
@@ -211,7 +214,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     let scroll = app.help_scroll.min(max_scroll);
     let more = if max_scroll > 0 { " j/k scrolls · " } else { " " };
     frame.render_widget(
-        Paragraph::new(lines).scroll((scroll, 0)).block(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).scroll((scroll, 0)).block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
@@ -236,7 +239,8 @@ fn draw_picker(frame: &mut Frame, app: &App, area: Rect) {
     let hint = if project {
         " type to narrow · ⏎ pick · esc close "
     } else {
-        " ␣ toggles · ⏎ closes · esc cancels "
+        // Each toggle applies at once, so esc is "close", not "cancel".
+        " ␣ toggles · ⏎ done · esc close "
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -284,17 +288,13 @@ fn draw_picker(frame: &mut Frame, app: &App, area: Rect) {
             };
             let width = rows_area.width as usize;
             let count = format!("{}", row.count);
-            let detail = if row.detail.is_empty() {
-                String::new()
-            } else {
-                format!("  {}", row.detail)
-            };
-            let used = mark.chars().count() + row.label.chars().count() + detail.chars().count();
-            let pad = width.saturating_sub(used + count.chars().count() + 1);
+            // The count is the point of the row, so the label gives way.
+            let room = width.saturating_sub(mark.chars().count() + count.chars().count() + 2);
+            let label = shorten(&row.label, room);
+            let pad = room.saturating_sub(label.chars().count()) + 1;
             Line::from(vec![
                 Span::styled(mark, if row.on { theme::key() } else { theme::dim() }),
-                Span::styled(row.label.clone(), if here { name.add_modifier(Modifier::BOLD) } else { name }),
-                Span::styled(detail, theme::dim()),
+                Span::styled(label, if here { name.add_modifier(Modifier::BOLD) } else { name }),
                 Span::raw(" ".repeat(pad)),
                 Span::styled(count, theme::dim()),
             ])
@@ -380,10 +380,15 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     }
     let block = panel(title, !app.preview_focus);
 
-    // A narrow list keeps the title and loses the columns that would
-    // squeeze it to nothing; the transcript pane is what makes it narrow.
-    let narrow = area.width < 80;
-    let project_width = if narrow { 0 } else { 40 };
+    // Columns give way to the title, widest and least useful first: a row
+    // with no title says nothing about the session it stands for.
+    let inner = area.width.saturating_sub(2);
+    let project_width = inner.saturating_sub(75).clamp(0, 40);
+    let show_project = project_width >= 12;
+    let show_id = inner >= 62;
+    let show_size = inner >= 50;
+    let show_updated = inner >= 42;
+
     let rows: Vec<Row> = app
         .filtered
         .iter()
@@ -396,24 +401,27 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
                 SessionStatus::Idle => Span::styled("idle", theme::dim()),
                 SessionStatus::Archived => Span::styled("arch", Style::default().fg(Color::Magenta)),
             };
-            let ticked = app.is_ticked(s);
             let mut cells = vec![
-                Cell::from(Span::styled(if ticked { "◉" } else { " " }, theme::key())),
+                Cell::from(Span::styled(if app.is_ticked(s) { "◉" } else { " " }, theme::key())),
                 Cell::from(Span::styled(
                     s.handle.agent.to_string(),
                     Style::default().fg(theme::agent(s.handle.agent)),
                 )),
-                Cell::from(s.title.clone().unwrap_or_else(|| "(untitled)".into())),
             ];
-            if !narrow {
-                cells.insert(2, Cell::from(Span::styled(s.short_id().to_string(), theme::dim())));
+            if show_id {
+                cells.push(Cell::from(Span::styled(s.short_id().to_string(), theme::dim())));
+            }
+            cells.push(Cell::from(s.title.clone().unwrap_or_else(|| "(untitled)".into())));
+            if show_project {
                 cells.push(Cell::from(Span::styled(
                     shorten(&home_relative(&s.project_root), project_width as usize),
                     theme::label(),
                 )));
             }
-            cells.push(Cell::from(Span::styled(s.updated.map(ago).unwrap_or_default(), theme::dim())));
-            if !narrow {
+            if show_updated {
+                cells.push(Cell::from(Span::styled(s.updated.map(ago).unwrap_or_default(), theme::dim())));
+            }
+            if show_size {
                 cells.push(Cell::from(Span::styled(
                     s.size_bytes.map(asm_core::fmt::human_bytes).unwrap_or_default(),
                     theme::dim(),
@@ -424,37 +432,47 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let widths = if narrow {
-        vec![Constraint::Length(1), Constraint::Length(11), Constraint::Fill(2), Constraint::Length(7), Constraint::Length(6)]
-    } else {
-        vec![
-            Constraint::Length(1),
-            Constraint::Length(11),
-            Constraint::Length(8),
-            Constraint::Fill(2),
-            Constraint::Length(project_width),
-            Constraint::Length(7),
-            Constraint::Length(8),
-            Constraint::Length(6),
-        ]
-    };
-    let header = if narrow {
-        vec!["", "agent", "title", "updated", "state"]
-    } else {
-        vec!["", "agent", "id", "title", "project", "updated", "size", "state"]
-    };
+    let mut widths = vec![Constraint::Length(1), Constraint::Length(11)];
+    let mut header = vec!["", "agent"];
+    if show_id {
+        widths.push(Constraint::Length(8));
+        header.push("id");
+    }
+    widths.push(Constraint::Fill(2));
+    header.push("title");
+    if show_project {
+        widths.push(Constraint::Length(project_width));
+        header.push("project");
+    }
+    if show_updated {
+        widths.push(Constraint::Length(10));
+        header.push("updated");
+    }
+    if show_size {
+        widths.push(Constraint::Length(8));
+        header.push("size");
+    }
+    widths.push(Constraint::Length(6));
+    header.push("state");
+
     let table = Table::new(rows, widths)
-    .header(Row::new(header).style(theme::label().add_modifier(Modifier::BOLD)))
-    .row_highlight_style(theme::selected_row())
-    .block(block);
+        .header(Row::new(header).style(theme::label().add_modifier(Modifier::BOLD)))
+        .row_highlight_style(theme::selected_row())
+        .block(block);
 
     let mut state = TableState::default().with_selected(Some(app.selected));
     frame.render_stateful_widget(table, area, &mut state);
 }
 
 fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {
-    let title = app
-        .selected_session()
+    // Titled by the transcript in it, which during a search is the match's
+    // session rather than the row the cursor is on.
+    let showing = app
+        .preview_for
+        .as_deref()
+        .and_then(|id| app.sessions.iter().find(|s| s.handle.native_id == id))
+        .or_else(|| app.selected_session());
+    let title = showing
         .map(|s| {
             let size = s
                 .size_bytes
@@ -511,22 +529,43 @@ fn hints(pairs: &[(&str, &str)], width: u16) -> Line<'static> {
 }
 
 fn draw_footer(frame: &mut Frame, app: &App, area: Rect, filters: &[String]) {
-    let [filter_line, status_line, hint_line] = Layout::vertical([
-        Constraint::Length(if filters.is_empty() { 0 } else { 1 }),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .areas(area);
+    // Bottom up: the hints are the last thing to go.
+    let [filter_line, status_line, hint_line] = match area.height {
+        0 => return,
+        1 => [Rect { height: 0, ..area }, Rect { height: 0, ..area }, area],
+        2 => {
+            let [status, hint] = Layout::vertical([Constraint::Length(1); 2]).areas(area);
+            [Rect { height: 0, ..area }, status, hint]
+        }
+        _ => Layout::vertical([
+            Constraint::Length(if filters.is_empty() { 0 } else { 1 }),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(area),
+    };
 
     if !filters.is_empty() {
+        // "(esc clears)" is how to get out of it, so it is kept and the
+        // filters themselves give way.
+        let tail = "  (esc clears)";
+        let room = (filter_line.width as usize).saturating_sub(tail.chars().count() + 9);
         let mut spans = vec![Span::styled(" showing ", theme::dim())];
+        let mut used = 0usize;
         for (i, filter) in filters.iter().enumerate() {
+            let text = shorten(filter, room.saturating_sub(used).min(40));
+            if text.chars().count() + used > room {
+                spans.push(Span::styled(" …", theme::dim()));
+                break;
+            }
             if i > 0 {
                 spans.push(Span::styled(" · ", theme::dim()));
+                used += 3;
             }
-            spans.push(Span::styled(filter.clone(), Style::default().fg(theme::ACCENT)));
+            used += text.chars().count();
+            spans.push(Span::styled(text, Style::default().fg(theme::ACCENT)));
         }
-        spans.push(Span::styled("  (esc clears)", theme::dim()));
+        spans.push(Span::styled(tail, theme::dim()));
         frame.render_widget(Paragraph::new(Line::from(spans)), filter_line);
     }
 
@@ -605,7 +644,10 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, filters: &[String]) {
         }
         Mode::Picker => (
             status_line_of(app),
-            vec![("␣", "toggle"), ("⏎", "apply"), ("esc", "close")],
+            match app.picker.as_ref().map(|p| p.kind) {
+                Some(PickerKind::Agent) => vec![("␣", "toggle"), ("⏎", "done"), ("esc", "close")],
+                _ => vec![("type", "to narrow"), ("⏎", "pick"), ("esc", "close")],
+            },
         ),
         Mode::Normal if app.hits.is_some() => (
             status_line_of(app),
@@ -750,6 +792,25 @@ mod tests {
             session(AgentKind::JCode, "session_meridian_1788_abc", "Benchmark the pool", "/home/u/code/mercury"),
         ];
         app.filtered = (0..app.sessions.len()).collect();
+        app.set_projects_for_test(
+            ["/home/u/code/mercury", "/home/u/code/atlas-web"]
+                .into_iter()
+                .map(|root| asm_core::model::Project {
+                    root: root.into(),
+                    repo: None,
+                    agents: Vec::new(),
+                    worktrees: vec![asm_core::model::ProjectWorktree {
+                        path: root.into(),
+                        branch: None,
+                        is_main: true,
+                        session_count: 1,
+                    }],
+                    session_count: 1,
+                    size_bytes: 0,
+                    last_updated: None,
+                })
+                .collect(),
+        );
         app.set_status("3 sessions".into());
         app
     }
@@ -787,6 +848,32 @@ mod tests {
         app.picker = None;
         app.help_open = true;
         println!("— help —\n{}", render(&app, 110, 30));
+    }
+
+    /// Every width keeps a title: the columns give way, not the thing
+    /// that says what the session is.
+    #[test]
+    fn the_title_survives_every_width() {
+        for width in [40u16, 60, 74, 80, 90, 100, 120, 200] {
+            let screen = render(&app(), width, 10);
+            assert!(
+                screen.contains("Trace the pool") || screen.contains("Trace the"),
+                "width {width} lost the titles:\n{screen}"
+            );
+            for line in screen.lines() {
+                assert!(line.chars().count() <= width as usize, "width {width} overflowed: {line}");
+            }
+        }
+    }
+
+    /// Even a terminal too short for a list keeps the keys on screen.
+    #[test]
+    fn a_tiny_terminal_still_shows_the_keys() {
+        for height in [3u16, 4, 5, 8] {
+            let screen = render(&app(), 80, height);
+            assert_eq!(screen.lines().count(), height as usize);
+            assert!(screen.lines().last().unwrap().contains("resume"), "height {height}:\n{screen}");
+        }
     }
 
     /// The keys are laid out before the panels, so they are never what gets
