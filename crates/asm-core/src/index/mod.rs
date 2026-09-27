@@ -84,6 +84,13 @@ impl Index {
             )
             .map_err(self.sql_err())?;
 
+        // An earlier build wrote `automerge=16` into the FTS table, where
+        // it persists; back to the default, so merging keeps up with
+        // writing instead of leaving segments for a search to walk.
+        let _ = self
+            .conn
+            .execute_batch("INSERT INTO message_fts(message_fts, rank) VALUES('automerge', 4);");
+
         let existing: Option<u32> = self
             .conn
             .query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |row| {

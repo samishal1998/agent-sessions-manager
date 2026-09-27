@@ -36,7 +36,7 @@ pub(super) fn sessions(
 fn scan(
     adapter: &ClaudeAdapter,
     filter: &SessionFilter,
-    mut emit: Option<&mut dyn FnMut(Vec<Session>)>,
+    mut emit: Option<&mut dyn FnMut(Vec<Session>) -> bool>,
 ) -> Result<Vec<Session>, CoreError> {
     if let Some(agent) = filter.agent
         && agent != AgentKind::ClaudeCode
@@ -57,11 +57,22 @@ fn scan(
         .unwrap_or_default();
 
     let mut sessions = Vec::new();
+    // A directory that cannot be read is reported, but only after the rest
+    // have been: one unreadable project should not cost a machine every
+    // session that sorts after it.
+    let mut unreadable: Option<CoreError> = None;
     for project_dir in read_dir_sorted(&projects_dir)? {
         if !project_dir.is_dir() {
             continue;
         }
-        for path in read_dir_sorted(&project_dir)? {
+        let entries = match read_dir_sorted(&project_dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                unreadable = unreadable.or(Some(e));
+                continue;
+            }
+        };
+        for path in entries {
             let Some(session_id) = transcript_session_id(&path) else {
                 continue; // memory/, <uuid>/ sidecar dirs, non-UUID files
             };
@@ -81,10 +92,15 @@ fn scan(
         if let Some(emit) = emit.as_deref_mut() {
             // A project's worth at a time: the first directory is on
             // screen while the rest are still being read.
-            emit(std::mem::take(&mut sessions));
+            if !emit(std::mem::take(&mut sessions)) {
+                return Ok(Vec::new());
+            }
         }
     }
 
+    if let Some(e) = unreadable {
+        return Err(e);
+    }
     sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
     Ok(sessions)
 }
@@ -93,7 +109,7 @@ fn scan(
 pub(super) fn sessions_streamed(
     adapter: &ClaudeAdapter,
     filter: &SessionFilter,
-    emit: &mut dyn FnMut(Vec<Session>),
+    emit: &mut dyn FnMut(Vec<Session>) -> bool,
 ) -> Result<(), CoreError> {
     scan(adapter, filter, Some(emit)).map(|_| ())
 }

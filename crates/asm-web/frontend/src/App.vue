@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   Archive,
   ArchiveRestore,
@@ -99,26 +99,37 @@ function clearFilters() {
 // read; the poll after that replaces the list in one go, which keeps it
 // from shifting under the pointer.
 async function refresh({ streamed = false } = {}) {
+  // One scan at a time: the 5s poll must not race the streamed first load
+  // and replace a growing list with a shorter one.
+  if (scanning.value) return
   try {
-    if (streamed) {
-      scanning.value = true
-      const arriving = []
-      const problems = await api.sessionsStreamed(false, (batch) => {
-        arriving.push(...batch)
-        arriving.sort((a, b) => (b.updated || '').localeCompare(a.updated || ''))
-        sessions.value = [...arriving]
-      })
-      scanning.value = false
-      if (problems.length) status.value = `Could not read: ${problems.join('; ')}`
-      projects.value = await api.projects()
-      return
-    }
-    const [loaded, grouped] = await Promise.all([api.sessions(false), api.projects()])
-    sessions.value = loaded
-    projects.value = grouped
+    scanning.value = true
+    const arriving = []
+    let painted = 0
+    const problems = await api.sessionsStreamed(false, async (batch) => {
+      arriving.push(...batch)
+      // The first load fills the list as it goes; a later poll replaces it
+      // once, so rows do not shift under the pointer.
+      if (!streamed) return
+      // Drawing thousands of rows costs more than reading them, so paint a
+      // few times a second and give the browser the thread in between —
+      // otherwise the list arrives in one go at the end, which is what
+      // streaming was meant to avoid.
+      const now = performance.now()
+      if (now - painted < 150) return
+      painted = now
+      arriving.sort((a, b) => (b.updated || '').localeCompare(a.updated || ''))
+      sessions.value = [...arriving]
+      await new Promise((paint) => setTimeout(paint, 0))
+    })
+    arriving.sort((a, b) => (b.updated || '').localeCompare(a.updated || ''))
+    sessions.value = arriving
+    if (problems.length) status.value = `Could not read: ${problems.join('; ')}`
+    projects.value = await api.projects()
   } catch (e) {
-    scanning.value = false
     status.value = `Could not load sessions: ${e.message}`
+  } finally {
+    scanning.value = false
   }
 }
 
@@ -130,7 +141,10 @@ let indexTimer = null
 async function pollIndex() {
   try {
     const stats = await api.indexStats()
-    indexing.value = stats.indexing || null
+    // `running` covers the stretch before the first session is read, when
+    // there is no progress to report but there is work going on.
+    indexing.value = stats.indexing || (stats.running ? { done: 0, total: 0 } : null)
+    if (stats.index_error) status.value = `Indexing stopped: ${stats.index_error}`
   } catch {
     indexing.value = null
   }
@@ -178,6 +192,7 @@ async function loadDoctor() {
 
 onMounted(() => {
   refresh({ streamed: true })
+  nextTick(measureRows)
   loadDoctor()
   loadHub()
   pollIndex()
@@ -240,6 +255,53 @@ function matches(s, { ignoreAgents = false } = {}) {
 }
 
 const visible = computed(() => sessions.value.filter((s) => matches(s)))
+
+// Only the rows near the viewport are built. A machine with thousands of
+// sessions would otherwise spend seconds constructing rows nobody has
+// scrolled to, which is the same wait streaming was meant to remove.
+// Below this many, the whole list is rendered and nothing changes.
+const WINDOW_FROM = 150
+const ROW_GUESS = 67
+const contentBox = ref(null)
+const scrolled = ref(0)
+const boxHeight = ref(900)
+const rowHeight = ref(ROW_GUESS)
+const windowed = computed(() => visible.value.length > WINDOW_FROM)
+const firstRow = computed(() => {
+  if (!windowed.value) return 0
+  const overscan = 8
+  return Math.max(0, Math.floor(scrolled.value / rowHeight.value) - overscan)
+})
+const shownRows = computed(() => {
+  if (!windowed.value) return visible.value
+  const fits = Math.ceil(boxHeight.value / rowHeight.value) + 16
+  return visible.value.slice(firstRow.value, firstRow.value + fits)
+})
+const padTop = computed(() => firstRow.value * rowHeight.value)
+const padBottom = computed(() =>
+  Math.max(0, (visible.value.length - firstRow.value - shownRows.value.length) * rowHeight.value),
+)
+// The first real row measures the rest: rows are a fixed height at any one
+// width, but that height differs between a phone, a desktop, and a desktop
+// with the transcript open beside the list.
+function measureRows() {
+  const box = contentBox.value
+  if (!box) return
+  boxHeight.value = box.clientHeight
+  const row = box.querySelector('.row')
+  if (!row) return
+  const measured = row.getBoundingClientRect().height + 8
+  if (Math.abs(measured - rowHeight.value) > 2) rowHeight.value = measured
+}
+
+function onContentScroll(e) {
+  scrolled.value = e.target.scrollTop
+  measureRows()
+}
+
+// Opening the transcript, resizing, or filtering changes how tall a row is
+// without anyone scrolling.
+watch([() => visible.value.length, selected, isNarrow], () => nextTick(measureRows))
 
 // Agents differ in what they support — jcode has no "move", for instance —
 // so the row offers only the verbs its agent can actually perform.
@@ -627,7 +689,9 @@ async function reindex() {
     // It runs on the server's own thread; this follows it.
     await api.indexRefresh()
     await pollIndex()
-    status.value = indexing.value ? 'Indexing…' : 'The index is up to date.'
+    if (!status.value.startsWith('Indexing stopped')) {
+      status.value = indexing.value ? 'Indexing…' : 'The index is up to date.'
+    }
   } catch (e) {
     status.value = `Reindex failed: ${e.message}`
   }
@@ -805,13 +869,19 @@ function pickProject(root) {
           <span>Archived</span>
         </label>
 
+        <span v-if="scanning" class="chip working" title="Reading the agents' stores">
+          <span class="spin">⟳</span>
+          Reading… {{ sessions.length }}
+        </span>
+
         <span
           v-if="indexing"
           class="chip working"
           :title="`Search reads an index of every transcript; it is being built now${indexing.note ? ' — ' + indexing.note : ''}`"
         >
           <span class="spin">⟳</span>
-          Indexing {{ indexing.done }}/{{ indexing.total }}
+          <template v-if="indexing.total">Indexing {{ indexing.done }}/{{ indexing.total }}</template>
+          <template v-else>Indexing…</template>
         </span>
 
         <button v-if="anyFilter" class="btn ghost" title="Show every session again" @click="clearFilters">
@@ -843,7 +913,7 @@ function pickProject(root) {
 
       </div>
 
-      <div class="content">
+      <div ref="contentBox" class="content" @scroll.passive="onContentScroll">
         <!-- Full-text results -->
         <template v-if="hits !== null">
           <div class="results-head">
@@ -938,8 +1008,9 @@ function pickProject(root) {
           </div>
 
           <div class="rows">
+            <div v-if="padTop" :style="{ height: padTop + 'px' }" aria-hidden="true" />
             <div
-              v-for="s in visible"
+              v-for="s in shownRows"
               :key="s.ref.agent + s.ref.native_id"
               class="row"
               :class="{ selected: selected === s }"
@@ -1031,6 +1102,7 @@ function pickProject(root) {
                 />
               </div>
             </div>
+            <div v-if="padBottom" :style="{ height: padBottom + 'px' }" aria-hidden="true" />
           </div>
         </template>
       </div>

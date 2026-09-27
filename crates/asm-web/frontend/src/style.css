@@ -351,6 +351,11 @@ button:hover,
 }
 
 .row {
+  /* A machine with thousands of sessions draws thousands of rows; the
+     browser skips the ones nobody has scrolled to. The size hint keeps the
+     scrollbar honest. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 67px;
   display: grid;
   grid-template-columns: auto auto minmax(0, 1fr) auto auto;
   align-items: center;

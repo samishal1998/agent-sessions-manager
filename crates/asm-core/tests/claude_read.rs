@@ -232,7 +232,8 @@ fn sessions_arrive_in_batches_and_add_up_to_the_whole_store() {
     let mut batches: Vec<Vec<String>> = Vec::new();
     adapter
         .sessions_streamed(&filter, &mut |batch| {
-            batches.push(batch.iter().map(|s| s.handle.native_id.clone()).collect())
+            batches.push(batch.iter().map(|s| s.handle.native_id.clone()).collect());
+            true
         })
         .unwrap();
 
@@ -244,4 +245,69 @@ fn sessions_arrive_in_batches_and_add_up_to_the_whole_store() {
     streamed.sort();
     at_once.sort();
     assert_eq!(streamed, at_once, "streaming finds exactly what reading it all does");
+}
+
+/// One project directory asm cannot read costs that directory, not every
+/// session that sorts after it.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_project_directory_does_not_hide_the_ones_after_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    write_store(dir.path());
+    let shut = dir.path().join("projects/-home-user-projects-mmm");
+    fs::create_dir_all(&shut).unwrap();
+    let later = dir.path().join("projects/-home-user-projects-zzz");
+    fs::create_dir_all(&later).unwrap();
+    let id = "8f3a1c88-2d4e-4b91-9a05-6c7e8f201b77";
+    fs::write(
+        later.join(format!("{id}.jsonl")),
+        format!(
+            "{{{},\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"zzz\"}}}}\n",
+            envelope(id, "u1", "2026-08-12T10:00:00.000Z", "/home/user/projects/zzz")
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&shut, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let adapter = ClaudeAdapter::with_root(dir.path());
+    let filter = SessionFilter::default();
+    let mut found: Vec<String> = Vec::new();
+    let streamed = adapter.sessions_streamed(&filter, &mut |batch| {
+        found.extend(batch.iter().map(|s| s.handle.native_id.clone()));
+        true
+    });
+    fs::set_permissions(&shut, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(found.iter().any(|f| f == id), "the directory after the unreadable one: {found:?}");
+    assert!(streamed.is_err(), "and the unreadable one is still reported");
+}
+
+/// A consumer that has stopped listening stops the walk.
+#[test]
+fn a_consumer_that_hangs_up_stops_the_read() {
+    let dir = tempfile::tempdir().unwrap();
+    write_store(dir.path());
+    for name in ["beta", "gamma", "delta"] {
+        let project = dir.path().join(format!("projects/-home-user-projects-{name}"));
+        fs::create_dir_all(&project).unwrap();
+        let id = format!("7f3a1c88-2d4e-4b91-9a05-6c7e8f20{:04}", name.len());
+        fs::write(
+            project.join(format!("{id}.jsonl")),
+            format!(
+                "{{{},\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{name}\"}}}}\n",
+                envelope(&id, "u1", "2026-08-12T10:00:00.000Z", &format!("/home/user/projects/{name}"))
+            ),
+        )
+        .unwrap();
+    }
+    let adapter = ClaudeAdapter::with_root(dir.path());
+    let mut batches = 0;
+    adapter
+        .sessions_streamed(&SessionFilter::default(), &mut |_| {
+            batches += 1;
+            false
+        })
+        .unwrap();
+    assert_eq!(batches, 1, "it stopped after the batch that was refused");
 }

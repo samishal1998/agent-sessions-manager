@@ -21,21 +21,28 @@ pub fn list_sessions(filter: &SessionFilter) -> Result<Vec<Session>, CoreError> 
 /// Sessions as each agent's store gives them up, for a frontend that shows
 /// them arriving. Returns what could not be read rather than failing: one
 /// broken store should not leave the list empty.
+/// `emit` returns false to stop: the walk ends there, and so does the
+/// reading behind it.
 pub fn stream_sessions(
     filter: &SessionFilter,
-    mut emit: impl FnMut(AgentKind, Vec<Session>),
+    mut emit: impl FnMut(AgentKind, Vec<Session>) -> bool,
 ) -> Vec<String> {
     let mut problems = Vec::new();
     for adapter in Adapter::available() {
         let kind = adapter.kind();
+        let mut listening = true;
         let mut batch = |mut sessions: Vec<Session>| {
             if !sessions.is_empty() {
                 sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
-                emit(kind, sessions);
+                listening = emit(kind, sessions);
             }
+            listening
         };
         if let Err(e) = adapter.sessions_streamed(filter, &mut batch) {
             problems.push(format!("{kind}: {e}"));
+        }
+        if !listening {
+            break;
         }
     }
     problems

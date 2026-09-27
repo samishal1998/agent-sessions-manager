@@ -493,23 +493,29 @@ it.
 ### On a machine with thousands of sessions
 
 Nothing waits for the whole store. Measured on a synthetic store of 2,600
-sessions (1,500 Claude, 400 OpenCode, 400 Codex, 300 jcode; 130 MB):
+sessions (1,500 Claude, 400 OpenCode, 400 Codex, 300 jcode; 130 MB), release
+build, warm cache:
 
 | | |
 |---|---|
-| first sessions on screen | **~1 ms** (the list streams in as each project directory is read) |
-| whole list | 0.23 s |
-| first sessions searchable | **0.22 s** (the index commits early and often at first) |
-| whole index, cold | 9 s, in the background, with progress on screen |
-| refresh when nothing changed | 0.3 s |
+| first sessions in the UI | **~30 ms** to the browser (one project directory), **~270 ms** to the first painted row |
+| whole list | 0.23 s (`asm list`); the web UI has all 2,600 counted at ~0.33 s |
+| first sessions searchable | **0.22 s** — the index commits early, then in bigger batches |
+| whole index, cold | ~10 s, on a thread of its own, with progress on screen |
+| refresh when nothing changed | 0.33 s |
 
-The TUI and the web UI both fill their list as the stores give sessions up,
-say so while they are reading, and index on a thread of their own: searching
-during the first build finds what has been read so far rather than blocking.
-The index is read in one query instead of two per session, transcripts are
-read on several threads, and writes are batched — bounded by bytes, not by
-session count, because one machine's session is a hundred kilobytes and
-another's is a hundred megabytes.
+Both UIs fill their list as the stores give sessions up and say so while they
+are reading; an empty list says which empty it is. Indexing runs on its own
+thread, so a search during the first build finds what has been read so far
+rather than waiting. The web UI builds only the rows near the viewport, which
+is what keeps a list of thousands from taking seconds to draw.
+
+Inside the index: what it already knows is loaded in one query rather than two
+per session, transcripts are read on several threads, and writes are batched —
+bounded by bytes, not by session count, because one machine's session is a
+hundred kilobytes and another's is a hundred megabytes. A session is stamped
+with the fingerprint it had *before* it was read, so a turn written while asm
+reads it is picked up next time instead of being taken for already indexed.
 
 Fingerprints are per-agent because the naive choice is wrong for OpenCode: its
 `session.time_updated` lags behind its own message rows, so keying on it would

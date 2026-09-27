@@ -525,3 +525,39 @@ fn refresh_reports_progress_and_the_second_one_reads_nothing() {
     assert!(exporter.take_calls().is_empty(), "nothing is read twice");
     assert_eq!(seen, vec![(0, 0)], "nothing to do, and it says so at once");
 }
+
+/// A session is stamped with what it was when asm started reading it, not
+/// with what it became. An agent writing a turn while the transcript is
+/// read would otherwise leave the index believing it had that turn.
+#[test]
+fn a_turn_written_while_the_session_is_read_is_not_marked_as_indexed() {
+    let dir = tempfile::tempdir().unwrap();
+    let transcript = dir.path().join("a.jsonl");
+    std::fs::write(&transcript, "first").unwrap();
+
+    let exporter = Exporter::new();
+    exporter.set("a", ir("a", vec![text_message(IrRole::User, "first content")]));
+    let sessions = vec![session("a", &transcript, "/proj/one")];
+    let mut index = open_index(dir.path());
+
+    // The agent appends while asm is reading the file.
+    let growing = |s: &Session| {
+        let out = exporter.export(s);
+        std::fs::write(&transcript, "first and then a new turn").unwrap();
+        out
+    };
+    let report = index.refresh_with(&sessions, growing, |_| {}).unwrap();
+    assert_eq!(report.reindexed, 1);
+
+    exporter.set(
+        "a",
+        ir("a", vec![text_message(IrRole::User, "first content and the new turn")]),
+    );
+    let report = index.refresh_with(&sessions, |s| exporter.export(s), |_| {}).unwrap();
+    assert_eq!(report.reindexed, 1, "the appended turn is read on the next refresh");
+    assert_eq!(report.unchanged, 0);
+    let hits = index
+        .search(&SearchQuery { text: "new turn".into(), limit: 5, ..Default::default() })
+        .unwrap();
+    assert_eq!(hits.len(), 1, "and it is findable");
+}

@@ -174,13 +174,12 @@ async fn stream_sessions(all: bool) -> axum::response::Response {
             // A send error means the browser went away; stop reading stores.
             tx.blocking_send(Ok(Bytes::from(bytes))).is_ok()
         };
-        let mut gone = false;
+        let mut listening = true;
         let problems = ops::stream_sessions(&filter, |_, batch| {
-            if !gone {
-                gone = !line(json!({ "sessions": batch }), &tx);
-            }
+            listening = line(json!({ "sessions": batch }), &tx);
+            listening
         });
-        if !gone {
+        if listening {
             line(json!({ "done": true, "problems": problems }), &tx);
         }
     });
@@ -248,6 +247,9 @@ async fn search(Query(params): Query<SearchParams>) -> ApiResult<Value> {
 static INDEXING: std::sync::Mutex<Option<asm_core::index::RefreshProgress>> =
     std::sync::Mutex::new(None);
 static INDEX_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Why the last refresh stopped, if it did. Without this a failed refresh
+/// is only in the server's log, and the UI says the index is up to date.
+static INDEX_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 /// Bring the index up to date on a thread of its own, reporting progress
 /// as it goes. Returns whether this call started it; a refresh already
@@ -257,6 +259,11 @@ pub fn refresh_index_in_background() -> bool {
     if INDEX_RUNNING.swap(true, Ordering::SeqCst) {
         return false;
     }
+    // Visible from the moment it starts, not from the first session read:
+    // opening the index and listing the stores takes a while on the
+    // machines this is for, and until then the UI would say "up to date".
+    *INDEXING.lock().unwrap() = Some(asm_core::index::RefreshProgress::default());
+    *INDEX_ERROR.lock().unwrap() = None;
     std::thread::spawn(|| {
         match asm_core::index::Index::open() {
             Ok(mut index) => {
@@ -268,9 +275,13 @@ pub fn refresh_index_in_background() -> bool {
                 });
                 if let Err(e) = outcome {
                     eprintln!("search index refresh failed: {e}");
+                    *INDEX_ERROR.lock().unwrap() = Some(e.to_string());
                 }
             }
-            Err(e) => eprintln!("could not open search index: {e}"),
+            Err(e) => {
+                eprintln!("could not open search index: {e}");
+                *INDEX_ERROR.lock().unwrap() = Some(e.to_string());
+            }
         }
         *INDEXING.lock().unwrap() = None;
         INDEX_RUNNING.store(false, Ordering::SeqCst);
@@ -282,11 +293,15 @@ async fn index_stats() -> ApiResult<Value> {
     // The progress is read here rather than in the blocking task so it is
     // current even while a refresh holds the database.
     let indexing = INDEXING.lock().unwrap().clone();
+    let running = INDEX_RUNNING.load(std::sync::atomic::Ordering::SeqCst);
+    let failed = INDEX_ERROR.lock().unwrap().clone();
     blocking(move || {
         let index = asm_core::index::Index::open().map_err(internal)?;
         let mut stats = serde_json::to_value(index.stats().map_err(internal)?).map_err(internal)?;
         if let Some(object) = stats.as_object_mut() {
             object.insert("indexing".into(), serde_json::to_value(indexing).map_err(internal)?);
+            object.insert("running".into(), running.into());
+            object.insert("index_error".into(), serde_json::to_value(failed).map_err(internal)?);
         }
         Ok(stats)
     })

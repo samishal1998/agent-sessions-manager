@@ -212,12 +212,16 @@ impl Documents {
         self.messages.iter().map(|(_, _, text, _)| text.len()).sum()
     }
 
-    fn of(session: &Session, ir: &crate::ir::IrSession) -> Documents {
+    /// `fingerprint` is taken BEFORE the session is read, and stored as
+    /// what this content was: a turn appended while asm reads the file
+    /// would otherwise be stamped as already indexed and never looked at
+    /// again.
+    fn of(session: &Session, ir: &crate::ir::IrSession, fingerprint: String) -> Documents {
         Documents {
             agent: session.handle.agent.to_string(),
             id: session.handle.native_id.clone(),
             label: format!("{} {}", session.handle.agent, session.short_id()),
-            fingerprint: fingerprint(session),
+            fingerprint,
             title: session.title.clone(),
             project_root: session.project_root.display().to_string(),
             updated_ms: session.updated.map(|t| t.as_millisecond()),
@@ -291,7 +295,13 @@ impl Index {
             return Ok(());
         }
         let sql_err = Self::sql_err_at(self.path.clone());
-        let tx = self.conn.transaction().map_err(&sql_err)?;
+        // Immediate, not deferred: a transaction that starts by reading and
+        // then writes is promoted, and SQLite does not call the busy
+        // handler for a promotion — so `busy_timeout` would never apply.
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(&sql_err)?;
         for session in sessions {
             tx.execute(
                 "UPDATE indexed_session SET title = ?3, project_root = ?4, status = ?5
@@ -315,10 +325,9 @@ impl Index {
             return Ok(());
         }
         let sql_err = Self::sql_err_at(self.path.clone());
-        let tx = self.conn.transaction().map_err(&sql_err)?;
-        // Let FTS5 keep more, smaller segments while a batch goes in and
-        // merge them afterwards, rather than merging as it writes.
-        tx.execute_batch("INSERT INTO message_fts(message_fts, rank) VALUES('automerge', 16);")
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(&sql_err)?;
         {
             let mut insert = tx
@@ -425,8 +434,9 @@ impl Index {
                     loop {
                         let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some(session) = changed.get(i) else { break };
+                        let before = fingerprint(session);
                         let extracted = match export(session) {
-                            Ok(ir) => Extracted::Read(Documents::of(session, &ir)),
+                            Ok(ir) => Extracted::Read(Documents::of(session, &ir, before)),
                             // One unreadable session must not abort the refresh.
                             Err(e) => Extracted::Failed(format!(
                                 "{}:{}: {e}",
@@ -446,7 +456,14 @@ impl Index {
             let mut flush_at = FIRST_BATCH;
             for item in rx {
                 match item {
-                    Extracted::Failed(why) => report.failed.push(why),
+                    Extracted::Failed(why) => {
+                        report.failed.push(why);
+                        progress(RefreshProgress {
+                            done: report.reindexed + report.failed.len(),
+                            total,
+                            note: None,
+                        });
+                    }
                     Extracted::Read(documents) => {
                         report.reindexed += 1;
                         report.messages_indexed += documents.messages.len();
@@ -561,7 +578,12 @@ impl Index {
     /// from the refresh on the search path.
     pub fn compact(&self) -> Result<u64, CoreError> {
         let before = std::fs::metadata(self.path()).map(|m| m.len()).unwrap_or(0);
-        self.conn.execute_batch("VACUUM;").map_err(self.sql_err())?;
+        // VACUUM builds a second copy of the whole database in temp
+        // storage, and this connection asks for temp storage in memory —
+        // which would mean holding the entire index in RAM to shrink it.
+        self.conn
+            .execute_batch("PRAGMA temp_store=FILE; VACUUM; PRAGMA temp_store=MEMORY;")
+            .map_err(self.sql_err())?;
         let after = std::fs::metadata(self.path()).map(|m| m.len()).unwrap_or(0);
         Ok(before.saturating_sub(after))
     }

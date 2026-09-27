@@ -375,6 +375,14 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     if app.filtered.len() != app.sessions.len() {
         title.push_str(&format!(" of {}", app.sessions.len()));
     }
+    if app.scanning {
+        // The count is not a total yet, and a list that does not say so
+        // reads as a store with that many sessions in it.
+        title.push_str(&format!("  ·  reading, {} so far", app.found()));
+    }
+    if !app.problems.is_empty() {
+        title.push_str(&format!("  ·  {} store(s) unreadable", app.problems.len()));
+    }
     if !app.selection.is_empty() {
         title.push_str(&format!("  ·  {} selected", app.selection.len()));
     }

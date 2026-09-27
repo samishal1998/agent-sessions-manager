@@ -46,6 +46,7 @@ const api = {
     const decoder = new TextDecoder()
     let buffer = ''
     let problems = []
+    let finished = false
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
@@ -57,10 +58,17 @@ const api = {
         buffer = buffer.slice(newline + 1)
         if (!line.trim()) continue
         const message = JSON.parse(line)
-        if (message.sessions) onBatch(message.sessions)
-        else problems = message.problems || []
+        // Awaited, so a caller can yield to the browser between batches.
+        if (message.sessions) await onBatch(message.sessions)
+        else {
+          problems = message.problems || []
+          finished = true
+        }
       }
     }
+    // A body that stops early looks exactly like a complete one, and the
+    // rows that did arrive would be shown as the whole store.
+    if (!finished) throw new Error('the list of sessions ended early, so some may be missing')
     return problems
   },
   projects: () => request('/api/projects'),

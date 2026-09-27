@@ -42,6 +42,7 @@ pub enum Response {
     Indexing(asm_core::index::RefreshProgress),
     /// (sessions re-read, sessions that could not be)
     Indexed(usize, usize),
+    IndexFailed(String),
     /// (session native id, rendered transcript lines)
     Preview(String, Vec<PreviewLine>),
     /// (query, hits)
@@ -119,7 +120,8 @@ pub fn spawn() -> Worker {
             if let Request::Scan = request {
                 let tx = resp_tx.clone();
                 let problems = ops::stream_sessions(&SessionFilter::default(), |_, batch| {
-                    let _ = tx.send(Response::SessionBatch(batch));
+                    // A closed channel means the TUI has gone; stop reading.
+                    tx.send(Response::SessionBatch(batch)).is_ok()
                 });
                 if resp_tx.send(Response::ScanDone(problems)).is_err() {
                     break;
@@ -260,7 +262,7 @@ fn spawn_indexer(tx: Sender<Response>) -> Sender<()> {
             let mut index = match asm_core::index::Index::open() {
                 Ok(index) => index,
                 Err(e) => {
-                    let _ = tx.send(Response::Error(format!("search index: {e}")));
+                    let _ = tx.send(Response::IndexFailed(e.to_string()));
                     continue;
                 }
             };
@@ -269,7 +271,7 @@ fn spawn_indexer(tx: Sender<Response>) -> Sender<()> {
             });
             let _ = match report {
                 Ok(report) => tx.send(Response::Indexed(report.reindexed, report.failed.len())),
-                Err(e) => tx.send(Response::Error(format!("search index: {e}"))),
+                Err(e) => tx.send(Response::IndexFailed(e.to_string())),
             };
         }
     });

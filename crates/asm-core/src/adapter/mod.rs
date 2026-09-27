@@ -127,10 +127,13 @@ pub trait AgentRead {
     /// rather than all at once. The default reads them all and emits one
     /// batch; an adapter that walks a directory tree overrides it, so a
     /// machine with thousands of sessions shows the first ones at once.
+    ///
+    /// `emit` returns false when whoever asked has stopped listening — a
+    /// browser that closed the tab — and the walk stops there.
     fn sessions_streamed(
         &self,
         filter: &SessionFilter,
-        emit: &mut dyn FnMut(Vec<Session>),
+        emit: &mut dyn FnMut(Vec<Session>) -> bool,
     ) -> Result<(), CoreError> {
         emit(self.sessions(filter)?);
         Ok(())
@@ -241,7 +244,7 @@ impl AgentRead for Adapter {
     fn sessions_streamed(
         &self,
         filter: &SessionFilter,
-        emit: &mut dyn FnMut(Vec<Session>),
+        emit: &mut dyn FnMut(Vec<Session>) -> bool,
     ) -> Result<(), CoreError> {
         dispatch!(self, a => a.sessions_streamed(filter, emit))
     }

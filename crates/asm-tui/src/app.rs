@@ -129,8 +129,15 @@ pub struct App {
     /// straight into the list, but replacing rows under the cursor while
     /// the user is reading them is worse than waiting a moment.
     incoming: Vec<Session>,
+    /// Stores that could not be read on the last scan.
+    pub problems: Vec<String>,
     /// Whether this scan's batches go straight on screen.
     streaming: bool,
+    /// A scan asked for while one was running.
+    rescan_pending: bool,
+    /// Set by anything that has something to say, so the scan that follows
+    /// does not overwrite it with a session count.
+    status_sticky: bool,
     /// How far the background index has got, while it is running.
     pub indexing: Option<asm_core::index::RefreshProgress>,
     /// The filter as it was when `/` was pressed, so esc can restore it.
@@ -183,7 +190,10 @@ impl App {
             project: None,
             picker: None,
             incoming: Vec::new(),
+            problems: Vec::new(),
             streaming: true,
+            rescan_pending: false,
+            status_sticky: false,
             indexing: None,
             filter_before: String::new(),
             projects: Vec::new(),
@@ -197,17 +207,41 @@ impl App {
     /// A batch of a scan, as the store gave it up.
     fn take_batch(&mut self, batch: Vec<Session>) {
         if self.streaming {
+            // Rows arriving must not move the cursor off the session it is
+            // on: `a` and `p` act on it with no confirmation.
+            let under_cursor = self.selected_session().map(Self::key_of);
             self.sessions.extend(batch);
             self.sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
             self.apply_filter();
+            self.keep_cursor_on(under_cursor);
         } else {
             self.incoming.extend(batch);
         }
-        let found = self.sessions.len().max(self.incoming.len());
-        self.status = format!("{found} sessions…");
+    }
+
+    /// Put the cursor back on a session after the list moved under it.
+    fn keep_cursor_on(&mut self, key: Option<(AgentKind, String)>) {
+        let Some(key) = key else { return };
+        if let Some(position) =
+            self.filtered.iter().position(|&i| Self::key_of(&self.sessions[i]) == key)
+        {
+            self.selected = position;
+        }
+    }
+
+    /// How many sessions there are, and whether more are still coming.
+    pub fn found(&self) -> usize {
+        self.sessions.len().max(self.incoming.len())
     }
 
     pub fn request_scan(&mut self) {
+        // One scan at a time: a second one would land its batches in the
+        // middle of the first's and publish whichever finished last as the
+        // whole list. Asking again while one runs queues it instead.
+        if self.scanning {
+            self.rescan_pending = true;
+            return;
+        }
         self.scanning = true;
         // With nothing on screen, rows go straight in as they arrive.
         // With a list already up, they are collected and swapped in at the
@@ -754,6 +788,7 @@ impl App {
                 Response::SessionBatch(batch) => self.take_batch(batch),
                 Response::ScanDone(problems) => {
                     self.scanning = false;
+                    let under_cursor = self.selected_session().map(Self::key_of);
                     if !self.streaming {
                         // A rescan's rows, held back so the list did not
                         // shift under the cursor while it was being read.
@@ -761,33 +796,41 @@ impl App {
                         self.sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
                         self.preview_for = None;
                         self.apply_filter();
+                        self.keep_cursor_on(under_cursor);
                         self.sync_preview();
                     }
                     self.streaming = false;
-                    self.status = match problems.as_slice() {
-                        [] => format!("{} sessions", self.sessions.len()),
-                        problems => format!(
-                            "{} sessions — {} could not be read: {}",
-                            self.sessions.len(),
-                            problems.len(),
-                            problems.join("; ")
-                        ),
-                    };
+                    self.problems = problems;
+                    // Whatever the last action said stands: a count is not
+                    // worth erasing "archived 4c0d9a71" with.
+                    if !self.status_sticky {
+                        self.status = format!("{} sessions", self.sessions.len());
+                    }
                     // Now that the list is up, keep the index current.
                     let _ = self.worker.index_tx.send(());
+                    if std::mem::take(&mut self.rescan_pending) {
+                        self.request_scan();
+                    }
                 }
                 // Cleared by `Indexed`, not by the last count: the final
                 // batch is still on its way into the database.
                 Response::Indexing(progress) => self.indexing = Some(progress),
                 Response::Indexed(reindexed, failed) => {
                     self.indexing = None;
-                    if reindexed > 0 {
+                    if reindexed > 0 && !self.status_sticky {
                         self.status = format!(
                             "{} sessions — indexed {reindexed}{}",
                             self.sessions.len(),
                             if failed > 0 { format!(", {failed} unreadable") } else { String::new() }
                         );
                     }
+                }
+                // The index stopped; saying so beats a spinner that never
+                // finishes.
+                Response::IndexFailed(message) => {
+                    self.indexing = None;
+                    self.status = format!("search index: {message}");
+                    self.status_sticky = true;
                 }
                 Response::Preview(id, lines) => {
                     if self.preview_for.as_deref() == Some(id.as_str()) {
@@ -820,10 +863,12 @@ impl App {
                 }
                 Response::Done(message) => {
                     self.status = message;
+                    self.status_sticky = true;
                     self.request_scan();
                 }
                 Response::Bulk(verb, report) => {
                     self.status = report.summary(&verb);
+                    self.status_sticky = true;
                     // Only interrupt with the detail when there is detail;
                     // a clean batch just updates the status line.
                     self.report =
@@ -834,6 +879,7 @@ impl App {
                 Response::Live(event) => self.on_live(event),
                 Response::Error(message) => {
                     self.status = format!("error: {message}");
+                    self.status_sticky = true;
                     self.scanning = false;
                 }
             }
@@ -917,6 +963,8 @@ impl App {
     }
 
     fn on_normal_key(&mut self, key: KeyEvent) -> Option<LoopOutcome> {
+        // The last action's message has been read by now.
+        self.status_sticky = false;
         // A reply in flight owns Esc: the agent is spending tokens and can
         // be editing files, so stopping it outranks whatever Esc would
         // otherwise back out of.
@@ -1640,6 +1688,30 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.filter, "mercury");
         assert_eq!(app.filtered.len(), before);
+    }
+
+    /// Rows arriving during a scan must not move the cursor off what the
+    /// user is pointing at, and a scan asked for mid-scan must not publish
+    /// half a list.
+    #[test]
+    fn a_scan_keeps_the_cursor_and_queues_a_rescan() {
+        let mut app = test_app(Vec::new());
+        app.scanning = true;
+        app.take_batch(vec![session(AgentKind::ClaudeCode, "old", "/w/mercury")]);
+        assert_eq!(app.selected_session().map(|s| s.handle.native_id.clone()), Some("old".into()));
+
+        // A newer session arrives and sorts above it; the cursor follows
+        // the session, not the row.
+        let mut newer = session(AgentKind::OpenCode, "new", "/w/atlas");
+        newer.updated = Some("2030-01-01T00:00:00Z".parse().unwrap());
+        app.take_batch(vec![newer]);
+        assert_eq!(app.sessions.len(), 2);
+        assert_eq!(app.selected_session().map(|s| s.handle.native_id.clone()), Some("old".into()));
+
+        // Asking for a scan while one runs waits for it.
+        app.request_scan();
+        assert!(app.rescan_pending, "queued, not started under the running one");
+        assert!(app.scanning);
     }
 
     /// Esc peels back one layer at a time, and only leaves when there is
