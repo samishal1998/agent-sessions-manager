@@ -528,6 +528,60 @@ button:hover,
   background: rgba(180, 142, 245, 0.12);
   border-color: rgba(180, 142, 245, 0.28);
 }
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  /* Their own row: the two search fields need the width more. */
+  flex-basis: 100%;
+  order: 1;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.chip:hover {
+  border-color: var(--border-strong);
+  color: var(--fg);
+}
+.chip.on {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.chip-count {
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+.chip.on .chip-count {
+  color: var(--accent);
+}
+.side-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin: 0 0 var(--space-2);
+}
+.side-search svg {
+  position: absolute;
+  left: var(--space-2);
+  color: var(--fg-faint);
+  pointer-events: none;
+}
+.side-search input {
+  width: 100%;
+  padding: 5px var(--space-2) 5px 28px;
+  font-size: 12px;
+}
+
 .pills {
   display: inline-flex;
   gap: var(--space-1);

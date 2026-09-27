@@ -6,6 +6,7 @@
 //! and re-enters the TUI when it exits.
 
 mod app;
+mod theme;
 mod ui;
 mod worker;
 

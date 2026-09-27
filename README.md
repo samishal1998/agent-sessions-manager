@@ -162,13 +162,21 @@ view of the CLI:
 
 | Key | |
 |---|---|
+| `?` | every key, grouped — the footer shows the ones that fit |
 | `⏎` | resume in the native agent (the TUI steps aside and comes back) |
+| `→` `←` `⇥` | open the transcript · close it · move between the two panes |
+| `A` `P` | pick agents (space toggles) · pick a project (type to narrow) |
+| `/` `s` | filter the list as you type · full-text search across transcripts |
 | `r` `a` `d` | rename · archive/unarchive · delete (confirmed, backed up) |
 | `m` `i` `e` | move to another project · import into the other agent · export IR |
 | `␣` `*` | tick this session · tick everything the filter shows |
-| `s` `/` | full-text search across transcripts · filter the list |
-| `D` | store health (the same report as `asm doctor`) |
-| `⇥` `R` `q` | focus the transcript · rescan · quit |
+| `p` `c` | push to the hub · reply to the session |
+| `D` `R` `q` | store health (the same report as `asm doctor`) · rescan · quit |
+| `esc` | back out one layer: the overlay, the selection, then the filters |
+
+The transcript pane is closed until you ask for it, so the list keeps the whole
+width; a transcript search opens it and follows the match you are on. What is
+narrowing the list is named above the status line, and `esc` clears it.
 
 With anything ticked, `a` `d` `m` `e` `i` run over the whole selection instead
 of the row under the cursor; with nothing ticked they behave as before. A batch

@@ -25,8 +25,9 @@ export const AGENTS = {
   jcode: {
     label: 'jcode',
     icon: Zap,
-    // jcode resolves --resume by memorable short name or by id.
-    resume: (s) => `jcode --resume ${s.slug || s.ref.native_id}`,
+    // By id: jcode gives two sessions on one machine the same short name,
+    // and asm's own resume does the same (adapter/jcode/mod.rs).
+    resume: (s) => `jcode --resume ${s.ref.native_id}`,
   },
   codex: {
     label: 'Codex',

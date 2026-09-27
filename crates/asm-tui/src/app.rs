@@ -2,6 +2,7 @@
 //! goes through the worker.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::Duration;
 
 use ratatui::DefaultTerminal;
@@ -39,6 +40,32 @@ pub enum Mode {
     BulkInput,
     /// Composing a message to send into the selected session.
     Send,
+    /// Choosing agents or a project to narrow the list to.
+    Picker,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+pub enum PickerKind {
+    Agent,
+    Project,
+}
+
+/// A list to pick from, over the session list. Agents toggle (several at
+/// once); a project is one choice, typed at to narrow.
+pub struct Picker {
+    pub kind: PickerKind,
+    pub cursor: usize,
+    pub query: String,
+}
+
+/// One row of a picker: what it stands for, how many sessions it has, and
+/// whether it is part of the filter now.
+pub struct PickerRow {
+    pub label: String,
+    pub detail: String,
+    pub count: usize,
+    pub on: bool,
+    pub agent: Option<AgentKind>,
 }
 
 pub struct App {
@@ -89,6 +116,16 @@ pub struct App {
     pub doctor: Vec<String>,
     pub doctor_warnings: usize,
     pub show_doctor: bool,
+    /// The transcript pane. Closed until asked for: the list is what the
+    /// browser is for, and a full-width list shows more of every session.
+    pub preview_open: bool,
+    pub help_open: bool,
+    pub help_scroll: u16,
+    /// Agents the list is narrowed to; empty means all of them.
+    pub agents: HashSet<AgentKind>,
+    /// The project the list is narrowed to, with its descendants.
+    pub project: Option<PathBuf>,
+    pub picker: Option<Picker>,
 }
 
 impl App {
@@ -127,6 +164,12 @@ impl App {
             doctor: Vec::new(),
             doctor_warnings: 0,
             show_doctor: false,
+            preview_open: false,
+            help_open: false,
+            help_scroll: 0,
+            agents: HashSet::new(),
+            project: None,
+            picker: None,
         }
     }
 
@@ -244,21 +287,186 @@ impl App {
         self.pending_action.as_ref().map(|a| (a, self.pending_batch.len()))
     }
 
-    fn apply_filter(&mut self) {
+    /// Every filter at once: the agents, the project and the typed text.
+    fn matches(&self, session: &Session) -> bool {
+        if !self.agents.is_empty() && !self.agents.contains(&session.handle.agent) {
+            return false;
+        }
+        if let Some(project) = &self.project
+            && !(session.project_root == *project || session.project_root.starts_with(project))
+        {
+            return false;
+        }
         let needle = self.filter.to_lowercase();
+        needle.is_empty()
+            || session.title.as_deref().unwrap_or("").to_lowercase().contains(&needle)
+            || session.handle.native_id.to_lowercase().contains(&needle)
+            || session.project_root.display().to_string().to_lowercase().contains(&needle)
+            || session.handle.agent.to_string().contains(&needle)
+    }
+
+    /// What the filters are, in words, for the bar above the status line.
+    pub fn active_filters(&self) -> Vec<String> {
+        let mut active = Vec::new();
+        if !self.agents.is_empty() {
+            let mut names: Vec<String> = self.agents.iter().map(|a| a.to_string()).collect();
+            names.sort();
+            active.push(names.join(", "));
+        }
+        if let Some(project) = &self.project {
+            active.push(crate::ui::shorten(&project.display().to_string(), 40));
+        }
+        if !self.filter.is_empty() {
+            active.push(format!("\"{}\"", self.filter));
+        }
+        active
+    }
+
+    pub fn clear_filters(&mut self) -> bool {
+        let had = !self.agents.is_empty() || self.project.is_some() || !self.filter.is_empty();
+        self.agents.clear();
+        self.project = None;
+        self.filter.clear();
+        if had {
+            self.apply_filter();
+            self.status = format!("{} sessions", self.sessions.len());
+        }
+        had
+    }
+
+    /// The rows of the open picker: agents, or projects narrowed by what
+    /// has been typed. Counts come from the sessions the OTHER filters
+    /// leave, so a count is what picking that row would show.
+    pub fn picker_rows(&self) -> Vec<PickerRow> {
+        let Some(picker) = &self.picker else { return Vec::new() };
+        match picker.kind {
+            PickerKind::Agent => {
+                let mut agents: Vec<AgentKind> =
+                    self.sessions.iter().map(|s| s.handle.agent).collect::<HashSet<_>>().into_iter().collect();
+                agents.sort_by_key(|a| a.to_string());
+                agents
+                    .into_iter()
+                    .map(|agent| PickerRow {
+                        label: agent.to_string(),
+                        detail: String::new(),
+                        count: self.sessions.iter().filter(|s| s.handle.agent == agent).count(),
+                        on: self.agents.contains(&agent),
+                        agent: Some(agent),
+                    })
+                    .collect()
+            }
+            PickerKind::Project => {
+                let needle = picker.query.to_lowercase();
+                let mut counts: HashMap<PathBuf, usize> = HashMap::new();
+                for session in &self.sessions {
+                    *counts.entry(session.project_root.clone()).or_default() += 1;
+                }
+                let mut rows: Vec<PickerRow> = counts
+                    .into_iter()
+                    .filter(|(root, _)| root.display().to_string().to_lowercase().contains(&needle))
+                    .map(|(root, count)| PickerRow {
+                        label: crate::ui::home_relative(&root),
+                        detail: String::new(),
+                        count,
+                        on: self.project.as_ref() == Some(&root),
+                        agent: None,
+                    })
+                    .collect();
+                rows.sort_by(|a, b| a.label.cmp(&b.label));
+                rows.insert(
+                    0,
+                    PickerRow {
+                        label: "all projects".into(),
+                        detail: String::new(),
+                        count: self.sessions.len(),
+                        on: self.project.is_none(),
+                        agent: None,
+                    },
+                );
+                rows
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn open_picker_for_test(&mut self, kind: PickerKind) {
+        self.open_picker(kind);
+    }
+
+    fn open_picker(&mut self, kind: PickerKind) {
+        self.picker = Some(Picker { kind, cursor: 0, query: String::new() });
+        self.mode = Mode::Picker;
+    }
+
+    /// Apply the highlighted row. Agents toggle and the picker stays open
+    /// for the next one; a project is one choice, so picking closes it.
+    fn pick(&mut self) {
+        let rows = self.picker_rows();
+        let Some(picker) = &self.picker else { return };
+        let Some(row) = rows.get(picker.cursor) else { return };
+        match picker.kind {
+            PickerKind::Agent => {
+                if let Some(agent) = row.agent
+                    && !self.agents.remove(&agent)
+                {
+                    self.agents.insert(agent);
+                }
+            }
+            PickerKind::Project => {
+                self.project = self
+                    .sessions
+                    .iter()
+                    .map(|s| s.project_root.clone())
+                    .find(|root| crate::ui::home_relative(root) == row.label);
+                self.picker = None;
+                self.mode = Mode::Normal;
+            }
+        }
+        self.apply_filter();
+        self.status = match self.active_filters().as_slice() {
+            [] => format!("{} sessions", self.sessions.len()),
+            filters => format!("{} of {} — {}", self.filtered.len(), self.sessions.len(), filters.join(" · ")),
+        };
+    }
+
+    fn on_picker_key(&mut self, key: KeyEvent) {
+        let len = self.picker_rows().len();
+        let Some(picker) = &mut self.picker else { return };
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') if picker.query.is_empty() => {
+                self.picker = None;
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Esc => picker.query.clear(),
+            KeyCode::Enter => {
+                self.pick();
+                if self.picker.is_some() && self.mode == Mode::Picker {
+                    // Agents: done choosing.
+                    self.picker = None;
+                    self.mode = Mode::Normal;
+                }
+            }
+            KeyCode::Char(' ') => self.pick(),
+            KeyCode::Down | KeyCode::Tab => picker.cursor = (picker.cursor + 1).min(len.saturating_sub(1)),
+            KeyCode::Up | KeyCode::BackTab => picker.cursor = picker.cursor.saturating_sub(1),
+            KeyCode::Backspace => {
+                picker.query.pop();
+                picker.cursor = 0;
+            }
+            KeyCode::Char(c) if picker.kind == PickerKind::Project => {
+                picker.query.push(c);
+                picker.cursor = 0;
+            }
+            _ => {}
+        }
+    }
+
+    fn apply_filter(&mut self) {
         self.filtered = self
             .sessions
             .iter()
             .enumerate()
-            .filter(|(_, s)| {
-                if needle.is_empty() {
-                    return true;
-                }
-                s.title.as_deref().unwrap_or("").to_lowercase().contains(&needle)
-                    || s.handle.native_id.to_lowercase().contains(&needle)
-                    || s.project_root.display().to_string().to_lowercase().contains(&needle)
-                    || s.handle.agent.to_string().contains(&needle)
-            })
+            .filter(|(_, s)| self.matches(s))
             .map(|(i, _)| i)
             .collect();
         if self.selected >= self.filtered.len() {
@@ -268,6 +476,13 @@ impl App {
     }
 
     fn sync_preview(&mut self) {
+        // Nothing is parsed for a pane nobody opened; opening it calls
+        // this again.
+        if !self.preview_open {
+            self.preview_for = None;
+            self.preview.clear();
+            return;
+        }
         let Some(session) = self.selected_session().cloned() else {
             self.preview_for = None;
             self.preview.clear();
@@ -324,6 +539,7 @@ impl App {
         }
         // The preview is the conversation being replied to, so open it if
         // the user has not already; typing into a blank pane is disorienting.
+        self.preview_open = true;
         if self.preview_for.as_deref() != Some(session.handle.native_id.as_str()) {
             self.load_preview(session.clone());
         }
@@ -460,6 +676,11 @@ impl App {
                     self.searched_for = query;
                     self.hit_selected = 0;
                     self.hits = Some(hits);
+                    // Searching inside transcripts is the one time the
+                    // transcript is what you are looking at, so it opens
+                    // itself and follows the highlighted match.
+                    self.preview_open = true;
+                    self.preview_hit();
                 }
                 Response::Done(message) => {
                     self.status = message;
@@ -510,7 +731,26 @@ impl App {
                 Mode::ConfirmBulk => self.on_confirm_bulk_key(key),
                 Mode::BulkInput => self.on_bulk_input_key(key),
                 Mode::Send => self.on_send_key(key),
+                Mode::Picker => self.on_picker_key(key),
             }
+        }
+    }
+
+    /// Load the transcript of the highlighted match, so moving through
+    /// results reads as moving through conversations.
+    fn preview_hit(&mut self) {
+        let Some(hits) = &self.hits else { return };
+        let Some(hit) = hits.get(self.hit_selected) else { return };
+        let (agent, id) = (hit.agent.clone(), hit.native_id.clone());
+        let found = self
+            .sessions
+            .iter()
+            .find(|s| s.handle.agent.to_string() == agent && s.handle.native_id == id)
+            .cloned();
+        if let Some(session) = found
+            && self.preview_for.as_deref() != Some(session.handle.native_id.as_str())
+        {
+            self.load_preview(session);
         }
     }
 
@@ -549,6 +789,21 @@ impl App {
             self.status = "stopping…".to_string();
             return None;
         }
+        // Help stays up while it is being read: only the scroll keys do
+        // anything else, and anything else at all closes it.
+        if self.help_open {
+            match key.code {
+                KeyCode::Down | KeyCode::Char('j') => self.help_scroll = self.help_scroll.saturating_add(1),
+                KeyCode::Up | KeyCode::Char('k') => self.help_scroll = self.help_scroll.saturating_sub(1),
+                _ => self.help_open = false,
+            }
+            return None;
+        }
+        if key.code == KeyCode::Char('?') {
+            self.help_open = true;
+            self.help_scroll = 0;
+            return None;
+        }
         // The health overlay swallows the next key, whatever it is.
         if self.show_doctor {
             self.show_doctor = false;
@@ -570,11 +825,15 @@ impl App {
                     let len = self.hits.as_ref().map_or(0, Vec::len);
                     if self.hit_selected + 1 < len {
                         self.hit_selected += 1;
+                        self.preview_hit();
                     }
                     return None;
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
-                    self.hit_selected = self.hit_selected.saturating_sub(1);
+                    if self.hit_selected > 0 {
+                        self.hit_selected -= 1;
+                        self.preview_hit();
+                    }
                     return None;
                 }
                 KeyCode::Enter => {
@@ -593,16 +852,31 @@ impl App {
             KeyCode::Char('q') => return Some(LoopOutcome::Quit),
             // Esc backs out of things in the order they were put up, and
             // only quits when there is nothing left to back out of.
+            // Esc backs out one layer at a time — the overlay, then the
+            // selection, then the filters — and only then leaves.
             KeyCode::Esc => {
                 if self.report.is_some() {
                     self.report = None;
                 } else if !self.selection.is_empty() {
                     self.selection.clear();
                     self.status = self.selection_status();
-                } else {
+                } else if self.preview_open {
+                    self.preview_open = false;
+                    self.preview_focus = false;
+                } else if !self.clear_filters() {
                     return Some(LoopOutcome::Quit);
                 }
             }
+            KeyCode::Right | KeyCode::Char('l') => {
+                self.preview_open = true;
+                self.sync_preview();
+            }
+            KeyCode::Left | KeyCode::Char('h') => {
+                self.preview_open = false;
+                self.preview_focus = false;
+            }
+            KeyCode::Char('A') => self.open_picker(PickerKind::Agent),
+            KeyCode::Char('P') => self.open_picker(PickerKind::Project),
             KeyCode::Char(' ') => {
                 self.toggle_tick();
                 self.move_down();
@@ -611,7 +885,16 @@ impl App {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return Some(LoopOutcome::Quit);
             }
-            KeyCode::Tab => self.preview_focus = !self.preview_focus,
+            // Tab reaches for the transcript, opening it if it is closed.
+            KeyCode::Tab => {
+                if self.preview_open {
+                    self.preview_focus = !self.preview_focus;
+                } else {
+                    self.preview_open = true;
+                    self.preview_focus = true;
+                    self.sync_preview();
+                }
+            }
             KeyCode::Down | KeyCode::Char('j') => {
                 if self.preview_focus {
                     self.preview_scroll = self.preview_scroll.saturating_add(1);

@@ -28,16 +28,16 @@ async function page(width, height) {
   return p
 }
 
-// Desktop: list, select menu open, transcript drawer, search results.
+// Desktop: list, agent filters, transcript drawer, search results.
 {
   const p = await page(1440, 900)
   await p.screenshot({ path: `${OUT}/01-desktop-list.png` })
 
-  await p.click('.select-trigger')
+  await p.click('.chip')
   await p.waitForTimeout(250)
   await p.screenshot({ path: `${OUT}/02-desktop-multiselect.png` })
-  // Pick both agents to prove multi-select stays open.
-  const options = await p.$$('.select-option')
+  // A second agent chip: the filter takes both.
+  const options = await p.$$('.chip')
   for (const o of options) {
     await o.click()
     await p.waitForTimeout(120)
@@ -85,18 +85,15 @@ async function page(width, height) {
   await p.close()
 }
 
-// Keyboard path through the custom select.
+// Keyboard path through the filters: tab to an agent chip, toggle it.
 {
   const p = await page(1440, 900)
-  await p.focus('.select-trigger')
+  await p.focus('.chip')
   await p.keyboard.press('Enter')
   await p.waitForTimeout(200)
-  await p.keyboard.press('ArrowDown')
-  await p.keyboard.press('Enter')
-  await p.waitForTimeout(200)
-  const summary = await p.textContent('.select-trigger')
-  problems.push(`[info] keyboard select summary: ${summary.trim()}`)
-  await p.screenshot({ path: `${OUT}/11-keyboard-select.png` })
+  const pressed = await p.getAttribute('.chip', 'aria-pressed')
+  if (pressed !== 'true') problems.push(`[keyboard] agent chip did not toggle (aria-pressed=${pressed})`)
+  await p.screenshot({ path: `${OUT}/11-keyboard-filter.png` })
   await p.close()
 }
 

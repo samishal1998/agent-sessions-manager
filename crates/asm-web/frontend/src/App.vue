@@ -9,6 +9,7 @@ import {
   CloudDownload,
   CloudUpload,
   Download,
+  FilterX,
   FolderInput,
   GitBranch,
   Menu,
@@ -26,7 +27,6 @@ import { uniqueTails } from './paths.js'
 import TranscriptView from './TranscriptView.vue'
 import AgentMark from './components/AgentMark.vue'
 import IconButton from './components/IconButton.vue'
-import SelectMenu from './components/SelectMenu.vue'
 import Tooltip from './components/Tooltip.vue'
 
 const sessions = ref([])
@@ -37,6 +37,7 @@ const hits = ref(null)
 const searchedFor = ref('')
 const selectedAgents = ref([])
 const projectFilter = ref('')
+const projectSearch = ref('')
 const showArchived = ref(true)
 const status = ref('')
 const selected = ref(null)
@@ -60,6 +61,29 @@ const AGENT_FILTER_OPTIONS = computed(() =>
     ...sessions.value.map((s) => s.ref.agent),
   ]),
 )
+
+// How many sessions each agent has, so a filter says what it would leave
+// rather than only what it is called.
+const agentCounts = computed(() => {
+  const counts = {}
+  for (const s of sessions.value) counts[s.ref.agent] = (counts[s.ref.agent] || 0) + 1
+  return counts
+})
+const toggleAgent = (agent) => {
+  selectedAgents.value = selectedAgents.value.includes(agent)
+    ? selectedAgents.value.filter((a) => a !== agent)
+    : [...selectedAgents.value, agent]
+}
+const anyFilter = computed(
+  () => filter.value !== '' || selectedAgents.value.length > 0 || projectFilter.value !== '' || !showArchived.value,
+)
+function clearFilters() {
+  filter.value = ''
+  selectedAgents.value = []
+  projectFilter.value = ''
+  projectSearch.value = ''
+  showArchived.value = true
+}
 
 /* Data ---------------------------------------------------------------- */
 async function refresh() {
@@ -135,6 +159,14 @@ const projects = ref([])
 const selectedProject = computed(() =>
   projects.value.find((p) => p.root === projectFilter.value),
 )
+// The sidebar list, narrowed by what was typed into it.
+const shownProjects = computed(() => {
+  const needle = projectSearch.value.trim().toLowerCase()
+  if (!needle) return projects.value
+  return projects.value.filter(
+    (p) => p.root.toLowerCase().includes(needle) || projectLabel(p.root).toLowerCase().includes(needle),
+  )
+})
 
 function inProject(session, project) {
   return project.worktrees.some(
@@ -581,6 +613,10 @@ function pickProject(root) {
 
       <div>
         <div class="side-heading">Projects</div>
+        <label v-if="projects.length > 6" class="side-search">
+          <Search :size="13" />
+          <input v-model="projectSearch" placeholder="Find a project…" aria-label="Find a project" />
+        </label>
         <div class="side-list">
           <button
             class="side-item"
@@ -591,7 +627,7 @@ function pickProject(root) {
             <span class="count">{{ sessions.length }}</span>
           </button>
           <button
-            v-for="p in projects"
+            v-for="p in shownProjects"
             :key="p.root"
             class="side-item"
             :class="{ active: projectFilter === p.root }"
@@ -714,18 +750,32 @@ function pickProject(root) {
           />
         </label>
 
-        <SelectMenu
-          v-model="selectedAgents"
-          :options="AGENT_FILTER_OPTIONS"
-          multiple
-          label="Filter by agent"
-          placeholder="All agents"
-        />
+        <!-- Five agents at most: one click each beats opening a menu. -->
+        <div class="chips" role="group" aria-label="Filter by agent">
+          <button
+            v-for="a in AGENT_FILTER_OPTIONS"
+            :key="a.value"
+            class="chip"
+            :class="{ on: selectedAgents.includes(a.value) }"
+            :aria-pressed="selectedAgents.includes(a.value)"
+            :title="`Show only ${a.label}`"
+            @click="toggleAgent(a.value)"
+          >
+            <component :is="a.icon" :size="14" />
+            <span>{{ a.label }}</span>
+            <span class="chip-count">{{ agentCounts[a.value] || 0 }}</span>
+          </button>
+        </div>
 
         <label class="checkbox">
           <input v-model="showArchived" type="checkbox" />
           <span>Archived</span>
         </label>
+
+        <button v-if="anyFilter" class="btn ghost" title="Show every session again" @click="clearFilters">
+          <FilterX :size="15" />
+          <span>Clear</span>
+        </button>
 
         <button class="btn" @click="refresh">
           <RefreshCw :size="15" />
