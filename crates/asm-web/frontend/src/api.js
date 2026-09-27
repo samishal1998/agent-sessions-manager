@@ -30,6 +30,39 @@ const api = {
       ...action,
     }),
   sessions: (all) => request(`/api/sessions?all=${all ? 'true' : 'false'}`),
+
+  // Sessions as the stores give them up, one JSON line per batch, so a
+  // machine with thousands of them draws the first rows at once instead of
+  // showing nothing until the last store has been read. `onBatch` is called
+  // per batch; the promise resolves with whatever could not be read. A
+  // server or browser without streaming falls back to the whole list.
+  async sessionsStreamed(all, onBatch) {
+    const response = await fetch(`/api/sessions?all=${all ? 'true' : 'false'}&stream=1`)
+    if (!response.ok || !response.body) {
+      onBatch(await api.sessions(all))
+      return []
+    }
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let problems = []
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      // A chunk boundary lands anywhere, including mid-line.
+      let newline
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline)
+        buffer = buffer.slice(newline + 1)
+        if (!line.trim()) continue
+        const message = JSON.parse(line)
+        if (message.sessions) onBatch(message.sessions)
+        else problems = message.problems || []
+      }
+    }
+    return problems
+  },
   projects: () => request('/api/projects'),
   doctor: () => request('/api/doctor'),
   search: (q, agent, project) => {

@@ -34,7 +34,14 @@ pub enum Request {
 }
 
 pub enum Response {
-    Sessions(Vec<Session>),
+    /// Part of a scan, as the store gave it up.
+    SessionBatch(Vec<Session>),
+    /// The scan is finished; anything that could not be read is here.
+    ScanDone(Vec<String>),
+    /// How far the background index has got.
+    Indexing(asm_core::index::RefreshProgress),
+    /// (sessions re-read, sessions that could not be)
+    Indexed(usize, usize),
     /// (session native id, rendered transcript lines)
     Preview(String, Vec<PreviewLine>),
     /// (query, hits)
@@ -64,6 +71,9 @@ pub enum PreviewKind {
 
 pub struct Worker {
     pub tx: Sender<Request>,
+    /// The index runs on its own thread: it is the slowest thing asm does
+    /// on a busy machine, and nothing else should wait behind it.
+    pub index_tx: Sender<()>,
     pub rx: Receiver<Response>,
     /// Set to stop a send in progress. A flag rather than a message
     /// because the worker is busy streaming and will not read its inbox
@@ -77,6 +87,7 @@ pub fn spawn() -> Worker {
     let (resp_tx, resp_rx) = channel::<Response>();
     let cancel = Arc::new(AtomicBool::new(false));
     let worker_cancel = cancel.clone();
+    let index_tx = spawn_indexer(resp_tx.clone());
     std::thread::spawn(move || {
         while let Ok(request) = req_rx.recv() {
             // Sending streams many responses, so it cannot go through
@@ -103,21 +114,30 @@ pub fn spawn() -> Worker {
                 }
                 continue;
             }
+            // Scanning streams: a machine with thousands of sessions
+            // shows the first of them while the rest are still being read.
+            if let Request::Scan = request {
+                let tx = resp_tx.clone();
+                let problems = ops::stream_sessions(&SessionFilter::default(), |_, batch| {
+                    let _ = tx.send(Response::SessionBatch(batch));
+                });
+                if resp_tx.send(Response::ScanDone(problems)).is_err() {
+                    break;
+                }
+                continue;
+            }
             let response = handle(request);
             if resp_tx.send(response).is_err() {
                 break;
             }
         }
     });
-    Worker { tx: req_tx, rx: resp_rx, cancel }
+    Worker { tx: req_tx, index_tx, rx: resp_rx, cancel }
 }
 
 fn handle(request: Request) -> Response {
     match request {
-        Request::Scan => match ops::list_sessions(&SessionFilter::default()) {
-            Ok(sessions) => Response::Sessions(sessions),
-            Err(e) => Response::Error(e.to_string()),
-        },
+        Request::Scan => unreachable!("streamed in the worker loop"),
         Request::LoadPreview(session) => match ops::export_ir(&session) {
             Ok(ir) => Response::Preview(session.handle.native_id.clone(), render_preview(&ir)),
             Err(e) => Response::Error(e.to_string()),
@@ -228,12 +248,40 @@ fn handle(request: Request) -> Response {
     }
 }
 
-/// Search runs on the worker thread, so the incremental index refresh it
-/// does first never blocks a frame.
+/// A thread that does nothing but keep the search index current, reporting
+/// how far it has got. Searching does not wait for it: what is indexed is
+/// searchable, and the rest arrives as it is read.
+fn spawn_indexer(tx: Sender<Response>) -> Sender<()> {
+    let (index_tx, index_rx) = channel::<()>();
+    std::thread::spawn(move || {
+        while index_rx.recv().is_ok() {
+            // Whatever piled up while the last refresh ran is one refresh.
+            while index_rx.try_recv().is_ok() {}
+            let mut index = match asm_core::index::Index::open() {
+                Ok(index) => index,
+                Err(e) => {
+                    let _ = tx.send(Response::Error(format!("search index: {e}")));
+                    continue;
+                }
+            };
+            let report = index.refresh(|progress| {
+                let _ = tx.send(Response::Indexing(progress));
+            });
+            let _ = match report {
+                Ok(report) => tx.send(Response::Indexed(report.reindexed, report.failed.len())),
+                Err(e) => tx.send(Response::Error(format!("search index: {e}"))),
+            };
+        }
+    });
+    index_tx
+}
+
+/// Search reads what the indexer has written so far; it never refreshes,
+/// because waiting for a whole store to be read is what the index thread
+/// exists to avoid.
 fn run_search(query: &str) -> anyhow::Result<Vec<asm_core::index::SearchHit>> {
     use asm_core::index::{Index, SearchQuery};
-    let mut index = Index::open()?;
-    index.refresh(|_| {})?;
+    let index = Index::open()?;
     Ok(index.search(&SearchQuery { text: query.to_string(), limit: 200, ..Default::default() })?)
 }
 

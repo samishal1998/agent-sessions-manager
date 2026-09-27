@@ -147,9 +147,62 @@ async fn hub_pull(Json(body): Json<PullBody>) -> ApiResult<Value> {
 struct SessionsQuery {
     #[serde(default)]
     all: bool,
+    /// Send them as they are read, one JSON object per line, rather than
+    /// one array when the last store has given up its last session.
+    /// `1` as well as `true`, so a curl by hand works.
+    #[serde(default)]
+    stream: Option<String>,
 }
 
-async fn sessions(Query(q): Query<SessionsQuery>) -> ApiResult<Vec<Session>> {
+impl SessionsQuery {
+    fn streaming(&self) -> bool {
+        matches!(self.stream.as_deref(), Some("1" | "true"))
+    }
+}
+
+/// Sessions as each store gives them up: `{"sessions":[…]}` per line, then
+/// `{"done":true,"problems":[…]}`. On a machine with thousands of them the
+/// first line arrives in a moment and the browser can draw it.
+async fn stream_sessions(all: bool) -> axum::response::Response {
+    use axum::body::{Body, Bytes};
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(8);
+    tokio::task::spawn_blocking(move || {
+        let filter = SessionFilter { include_children: all, ..SessionFilter::default() };
+        let line = |value: Value, tx: &tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>| {
+            let mut bytes = serde_json::to_vec(&value).unwrap_or_default();
+            bytes.push(b'\n');
+            // A send error means the browser went away; stop reading stores.
+            tx.blocking_send(Ok(Bytes::from(bytes))).is_ok()
+        };
+        let mut gone = false;
+        let problems = ops::stream_sessions(&filter, |_, batch| {
+            if !gone {
+                gone = !line(json!({ "sessions": batch }), &tx);
+            }
+        });
+        if !gone {
+            line(json!({ "done": true, "problems": problems }), &tx);
+        }
+    });
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/x-ndjson")],
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+        .into_response()
+}
+
+async fn sessions(Query(q): Query<SessionsQuery>) -> axum::response::Response {
+    if q.streaming() {
+        return stream_sessions(q.all).await;
+    }
+    match sessions_at_once(q.all).await {
+        Ok(json) => json.into_response(),
+        Err(e) => e.into_response(),
+    }
+}
+
+async fn sessions_at_once(all: bool) -> ApiResult<Vec<Session>> {
+    let q = SessionsQuery { all, stream: None };
     blocking(move || {
         let filter = SessionFilter { include_children: q.all, ..SessionFilter::default() };
         ops::list_sessions(&filter).map_err(internal)
@@ -188,23 +241,65 @@ async fn search(Query(params): Query<SearchParams>) -> ApiResult<Value> {
     .map(Json)
 }
 
+/// How far the background index has got, if it is running. A process-wide
+/// value because there is one index and one server.
+// ponytail: a static is enough for one server; give it to the router as
+// state if the web ever serves more than one index.
+static INDEXING: std::sync::Mutex<Option<asm_core::index::RefreshProgress>> =
+    std::sync::Mutex::new(None);
+static INDEX_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Bring the index up to date on a thread of its own, reporting progress
+/// as it goes. Returns whether this call started it; a refresh already
+/// running is left to finish rather than run twice over one database.
+pub fn refresh_index_in_background() -> bool {
+    use std::sync::atomic::Ordering;
+    if INDEX_RUNNING.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    std::thread::spawn(|| {
+        match asm_core::index::Index::open() {
+            Ok(mut index) => {
+                // Held until the refresh returns, not until the last session
+                // is read: the final batch is still being written, and a
+                // search would find less than the UI says is there.
+                let outcome = index.refresh(|progress| {
+                    *INDEXING.lock().unwrap() = Some(progress);
+                });
+                if let Err(e) = outcome {
+                    eprintln!("search index refresh failed: {e}");
+                }
+            }
+            Err(e) => eprintln!("could not open search index: {e}"),
+        }
+        *INDEXING.lock().unwrap() = None;
+        INDEX_RUNNING.store(false, Ordering::SeqCst);
+    });
+    true
+}
+
 async fn index_stats() -> ApiResult<Value> {
-    blocking(|| {
+    // The progress is read here rather than in the blocking task so it is
+    // current even while a refresh holds the database.
+    let indexing = INDEXING.lock().unwrap().clone();
+    blocking(move || {
         let index = asm_core::index::Index::open().map_err(internal)?;
-        serde_json::to_value(index.stats().map_err(internal)?).map_err(internal)
+        let mut stats = serde_json::to_value(index.stats().map_err(internal)?).map_err(internal)?;
+        if let Some(object) = stats.as_object_mut() {
+            object.insert("indexing".into(), serde_json::to_value(indexing).map_err(internal)?);
+        }
+        Ok(stats)
     })
     .await
     .map(Json)
 }
 
+/// Starts a refresh and says so; the UI follows it through `/api/index`.
+/// It does not wait: on a busy machine indexing takes minutes, and a
+/// request that hangs that long is a request that times out.
 async fn index_refresh() -> ApiResult<Value> {
-    blocking(|| {
-        let mut index = asm_core::index::Index::open().map_err(internal)?;
-        let report = index.refresh(|_| {}).map_err(internal)?;
-        serde_json::to_value(&report).map_err(internal)
-    })
-    .await
-    .map(Json)
+    let started = refresh_index_in_background();
+    Ok(Json(json!({ "started": started, "running": true })))
 }
 
 async fn projects() -> ApiResult<Vec<asm_core::model::Project>> {

@@ -462,6 +462,35 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
 
     let mut state = TableState::default().with_selected(Some(app.selected));
     frame.render_stateful_widget(table, area, &mut state);
+
+    // An empty table is the one place a browser must say what is going on:
+    // a store still being read looks exactly like a store with nothing in
+    // it, and on a busy machine the first is what it usually is.
+    if app.filtered.is_empty() {
+        let line = if app.scanning {
+            Line::from(vec![
+                Span::styled("⟳ ", Style::default().fg(theme::ACCENT)),
+                Span::styled(
+                    format!("reading your agent stores… {} found so far", app.sessions.len()),
+                    theme::label(),
+                ),
+            ])
+        } else if app.sessions.is_empty() {
+            Line::styled("no sessions in any store asm can see — R rescans, D checks the stores", theme::dim())
+        } else {
+            Line::styled(
+                format!("nothing here matches — {} sessions are hidden by the filters (esc clears)", app.sessions.len()),
+                theme::dim(),
+            )
+        };
+        let where_to = Rect {
+            x: area.x + 2,
+            y: area.y + 2,
+            width: area.width.saturating_sub(4),
+            height: 1,
+        };
+        frame.render_widget(Paragraph::new(line), where_to);
+    }
 }
 
 fn draw_preview(frame: &mut Frame, app: &App, area: Rect) {
@@ -692,6 +721,14 @@ fn status_line_of(app: &App) -> Line<'static> {
     if app.scanning {
         spans.push(Span::styled("  ⟳ scanning", Style::default().fg(theme::ACCENT)));
     }
+    // The index is what a search reads, and on a busy machine it takes a
+    // while to catch up; searching works meanwhile, on what it has.
+    if let Some(progress) = &app.indexing {
+        spans.push(Span::styled(
+            format!("  ⟳ indexing {}/{}", progress.done, progress.total),
+            Style::default().fg(theme::WARN),
+        ));
+    }
     if app.sending {
         spans.push(Span::styled("  ● replying (esc stops)", Style::default().fg(theme::GOOD)));
     }
@@ -782,6 +819,7 @@ mod tests {
         let (_tx2, rx) = std::sync::mpsc::channel();
         let worker = crate::worker::Worker {
             tx,
+            index_tx: std::sync::mpsc::channel().0,
             rx,
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
@@ -848,6 +886,40 @@ mod tests {
         app.picker = None;
         app.help_open = true;
         println!("— help —\n{}", render(&app, 110, 30));
+    }
+
+    /// A store still being read looks like an empty store unless the list
+    /// says otherwise.
+    #[test]
+    fn an_empty_list_says_why_it_is_empty() {
+        let mut app = app();
+        app.sessions.clear();
+        app.filtered.clear();
+        app.scanning = true;
+        let scanning = render(&app, 90, 10);
+        assert!(scanning.contains("reading your agent stores"), "{scanning}");
+        assert!(scanning.contains("⟳ scanning"), "and in the status line too");
+
+        app.scanning = false;
+        assert!(render(&app, 90, 10).contains("no sessions in any store"), "nothing found");
+
+        // Sessions exist but the filters hide them: a different message.
+        let mut app = super::tests::app();
+        app.filtered.clear();
+        let filtered = render(&app, 90, 10);
+        assert!(filtered.contains("hidden by the filters"), "{filtered}");
+    }
+
+    #[test]
+    fn the_index_says_how_far_it_has_got() {
+        let mut app = app();
+        app.indexing = Some(asm_core::index::RefreshProgress {
+            done: 120,
+            total: 2600,
+            note: Some("claude-code 7f3a1c88".into()),
+        });
+        let screen = render(&app, 110, 10);
+        assert!(screen.contains("indexing 120/2600"), "{screen}");
     }
 
     /// Every width keeps a title: the columns give way, not the thing

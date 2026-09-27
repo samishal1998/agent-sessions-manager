@@ -486,9 +486,30 @@ ever dropped.
 kept in asm's own data directory — the agents' stores are never written to.
 
 The index is incremental: each session carries an opaque content fingerprint,
-and only sessions whose fingerprint moved are re-extracted. On this machine, 30
-sessions index in about 5 seconds cold and refresh in ~0.15s warm, so
-`asm search` refreshes by default; pass `--no-refresh` to skip it.
+and only sessions whose fingerprint moved are re-extracted. `asm search`
+refreshes by default and prints how far it has got; pass `--no-refresh` to skip
+it.
+
+### On a machine with thousands of sessions
+
+Nothing waits for the whole store. Measured on a synthetic store of 2,600
+sessions (1,500 Claude, 400 OpenCode, 400 Codex, 300 jcode; 130 MB):
+
+| | |
+|---|---|
+| first sessions on screen | **~1 ms** (the list streams in as each project directory is read) |
+| whole list | 0.23 s |
+| first sessions searchable | **0.22 s** (the index commits early and often at first) |
+| whole index, cold | 9 s, in the background, with progress on screen |
+| refresh when nothing changed | 0.3 s |
+
+The TUI and the web UI both fill their list as the stores give sessions up,
+say so while they are reading, and index on a thread of their own: searching
+during the first build finds what has been read so far rather than blocking.
+The index is read in one query instead of two per session, transcripts are
+read on several threads, and writes are batched — bounded by bytes, not by
+session count, because one machine's session is a hundred kilobytes and
+another's is a hundred megabytes.
 
 Fingerprints are per-agent because the naive choice is wrong for OpenCode: its
 `session.time_updated` lags behind its own message rows, so keying on it would

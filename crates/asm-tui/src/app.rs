@@ -125,6 +125,14 @@ pub struct App {
     /// The project the list is narrowed to, with its descendants.
     pub project: Option<PathBuf>,
     pub picker: Option<Picker>,
+    /// A rescan's sessions, held until it finishes: the first scan streams
+    /// straight into the list, but replacing rows under the cursor while
+    /// the user is reading them is worse than waiting a moment.
+    incoming: Vec<Session>,
+    /// Whether this scan's batches go straight on screen.
+    streaming: bool,
+    /// How far the background index has got, while it is running.
+    pub indexing: Option<asm_core::index::RefreshProgress>,
     /// The filter as it was when `/` was pressed, so esc can restore it.
     filter_before: String,
     /// Projects as the CLI and the web UI mean them: a repository and its
@@ -174,6 +182,9 @@ impl App {
             agents: HashSet::new(),
             project: None,
             picker: None,
+            incoming: Vec::new(),
+            streaming: true,
+            indexing: None,
             filter_before: String::new(),
             projects: Vec::new(),
         }
@@ -183,8 +194,27 @@ impl App {
         self.status = status;
     }
 
+    /// A batch of a scan, as the store gave it up.
+    fn take_batch(&mut self, batch: Vec<Session>) {
+        if self.streaming {
+            self.sessions.extend(batch);
+            self.sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
+            self.apply_filter();
+        } else {
+            self.incoming.extend(batch);
+        }
+        let found = self.sessions.len().max(self.incoming.len());
+        self.status = format!("{found} sessions…");
+    }
+
     pub fn request_scan(&mut self) {
         self.scanning = true;
+        // With nothing on screen, rows go straight in as they arrive.
+        // With a list already up, they are collected and swapped in at the
+        // end: replacing rows under the cursor mid-read is worse than a
+        // moment's wait.
+        self.streaming = self.sessions.is_empty();
+        self.incoming.clear();
         let _ = self.worker.tx.send(Request::Scan);
         // Store health is cheap and worth knowing without being asked for:
         // duplicate ids and stale locks are exactly what a browser should
@@ -721,12 +751,43 @@ impl App {
     fn drain_worker(&mut self) {
         while let Ok(response) = self.worker.rx.try_recv() {
             match response {
-                Response::Sessions(sessions) => {
+                Response::SessionBatch(batch) => self.take_batch(batch),
+                Response::ScanDone(problems) => {
                     self.scanning = false;
-                    self.sessions = sessions;
-                    self.status = format!("{} sessions", self.sessions.len());
-                    self.preview_for = None;
-                    self.apply_filter();
+                    if !self.streaming {
+                        // A rescan's rows, held back so the list did not
+                        // shift under the cursor while it was being read.
+                        self.sessions = std::mem::take(&mut self.incoming);
+                        self.sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
+                        self.preview_for = None;
+                        self.apply_filter();
+                        self.sync_preview();
+                    }
+                    self.streaming = false;
+                    self.status = match problems.as_slice() {
+                        [] => format!("{} sessions", self.sessions.len()),
+                        problems => format!(
+                            "{} sessions — {} could not be read: {}",
+                            self.sessions.len(),
+                            problems.len(),
+                            problems.join("; ")
+                        ),
+                    };
+                    // Now that the list is up, keep the index current.
+                    let _ = self.worker.index_tx.send(());
+                }
+                // Cleared by `Indexed`, not by the last count: the final
+                // batch is still on its way into the database.
+                Response::Indexing(progress) => self.indexing = Some(progress),
+                Response::Indexed(reindexed, failed) => {
+                    self.indexing = None;
+                    if reindexed > 0 {
+                        self.status = format!(
+                            "{} sessions — indexed {reindexed}{}",
+                            self.sessions.len(),
+                            if failed > 0 { format!(", {failed} unreadable") } else { String::new() }
+                        );
+                    }
                 }
                 Response::Preview(id, lines) => {
                     if self.preview_for.as_deref() == Some(id.as_str()) {
@@ -1409,6 +1470,7 @@ pub(crate) fn test_app(sessions: Vec<Session>) -> App {
     let (_tx, rx) = std::sync::mpsc::channel();
     let worker = crate::worker::Worker {
         tx,
+        index_tx: std::sync::mpsc::channel().0,
         rx,
         cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };

@@ -206,3 +206,42 @@ fn live_pid_record_marks_session_live() {
     let b = sessions.iter().find(|s| s.handle.native_id == SESSION_B).unwrap();
     assert_eq!(b.status, SessionStatus::Idle);
 }
+
+/// A store is read one project directory at a time, so a machine with
+/// thousands of sessions can show the first of them at once.
+#[test]
+fn sessions_arrive_in_batches_and_add_up_to_the_whole_store() {
+    use asm_core::adapter::AgentRead;
+    let dir = tempfile::tempdir().unwrap();
+    write_store(dir.path());
+    // A second project, so there is more than one batch to tell apart.
+    let other = dir.path().join("projects/-home-user-projects-beta");
+    fs::create_dir_all(&other).unwrap();
+    let id = "9f3a1c88-2d4e-4b91-9a05-6c7e8f201b99";
+    fs::write(
+        other.join(format!("{id}.jsonl")),
+        format!(
+            "{{{},\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"beta\"}}}}\n",
+            envelope(id, "u1", "2026-08-11T10:00:00.000Z", "/home/user/projects/beta")
+        ),
+    )
+    .unwrap();
+
+    let adapter = ClaudeAdapter::with_root(dir.path());
+    let filter = SessionFilter::default();
+    let mut batches: Vec<Vec<String>> = Vec::new();
+    adapter
+        .sessions_streamed(&filter, &mut |batch| {
+            batches.push(batch.iter().map(|s| s.handle.native_id.clone()).collect())
+        })
+        .unwrap();
+
+    assert!(batches.len() >= 2, "one batch per project directory: {batches:?}");
+    assert!(batches.iter().all(|b| !b.is_empty()), "an empty batch is not worth a frame");
+    let mut streamed: Vec<String> = batches.concat();
+    let mut at_once: Vec<String> =
+        adapter.sessions(&filter).unwrap().iter().map(|s| s.handle.native_id.clone()).collect();
+    streamed.sort();
+    at_once.sort();
+    assert_eq!(streamed, at_once, "streaming finds exactly what reading it all does");
+}

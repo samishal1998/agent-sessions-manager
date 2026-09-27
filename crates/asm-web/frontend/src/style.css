@@ -557,6 +557,26 @@ button:hover,
   background: var(--accent-soft);
   border-color: var(--accent);
 }
+.chip.working {
+  color: var(--amber);
+  background: rgba(232, 195, 122, 0.12);
+  border-color: rgba(232, 195, 122, 0.3);
+  cursor: default;
+}
+.spin {
+  display: inline-block;
+  animation: spin 1.4s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
 .chip-count {
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;

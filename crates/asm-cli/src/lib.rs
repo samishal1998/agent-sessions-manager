@@ -344,11 +344,18 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
 
 /// Redrawing progress on one line only makes sense on a terminal; piped
 /// output would otherwise collect escape sequences.
-fn progress_reporter() -> impl FnMut(&str) {
+fn progress_reporter() -> impl FnMut(asm_core::index::RefreshProgress) {
     let tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
-    move |message: &str| {
-        if tty {
-            eprint!("\r\x1b[2K{message}");
+    move |p: asm_core::index::RefreshProgress| {
+        if !tty {
+            return;
+        }
+        match p.note {
+            // The count is what a long wait needs; the name says it is
+            // making progress through real sessions.
+            Some(note) => eprint!("\r\x1b[2Kindexing {}/{}  {note}", p.done, p.total),
+            None if p.total > 0 => eprint!("\r\x1b[2Kindexing {} sessions…", p.total),
+            None => {}
         }
     }
 }

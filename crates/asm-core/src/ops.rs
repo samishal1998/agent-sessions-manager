@@ -18,6 +18,29 @@ pub fn list_sessions(filter: &SessionFilter) -> Result<Vec<Session>, CoreError> 
     Ok(sessions)
 }
 
+/// Sessions as each agent's store gives them up, for a frontend that shows
+/// them arriving. Returns what could not be read rather than failing: one
+/// broken store should not leave the list empty.
+pub fn stream_sessions(
+    filter: &SessionFilter,
+    mut emit: impl FnMut(AgentKind, Vec<Session>),
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    for adapter in Adapter::available() {
+        let kind = adapter.kind();
+        let mut batch = |mut sessions: Vec<Session>| {
+            if !sessions.is_empty() {
+                sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
+                emit(kind, sessions);
+            }
+        };
+        if let Err(e) = adapter.sessions_streamed(filter, &mut batch) {
+            problems.push(format!("{kind}: {e}"));
+        }
+    }
+    problems
+}
+
 pub fn list_projects() -> Result<Vec<Project>, CoreError> {
     let sessions = list_sessions(&SessionFilter::default())?;
     Ok(group_projects(&sessions, crate::git::repo_of, |root| {

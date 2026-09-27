@@ -40,6 +40,7 @@ const projectFilter = ref('')
 const projectSearch = ref('')
 const showArchived = ref(true)
 const status = ref('')
+const scanning = ref(false)
 const selected = ref(null)
 const sidebarOpen = ref(false)
 // Below this width the transcript covers the list instead of splitting it,
@@ -94,14 +95,47 @@ function clearFilters() {
 }
 
 /* Data ---------------------------------------------------------------- */
-async function refresh() {
+// The first load streams, so rows appear while the stores are still being
+// read; the poll after that replaces the list in one go, which keeps it
+// from shifting under the pointer.
+async function refresh({ streamed = false } = {}) {
   try {
+    if (streamed) {
+      scanning.value = true
+      const arriving = []
+      const problems = await api.sessionsStreamed(false, (batch) => {
+        arriving.push(...batch)
+        arriving.sort((a, b) => (b.updated || '').localeCompare(a.updated || ''))
+        sessions.value = [...arriving]
+      })
+      scanning.value = false
+      if (problems.length) status.value = `Could not read: ${problems.join('; ')}`
+      projects.value = await api.projects()
+      return
+    }
     const [loaded, grouped] = await Promise.all([api.sessions(false), api.projects()])
     sessions.value = loaded
     projects.value = grouped
   } catch (e) {
+    scanning.value = false
     status.value = `Could not load sessions: ${e.message}`
   }
+}
+
+// What the search index is doing, when it is doing anything: on a busy
+// machine the first build takes minutes, and searches until then only find
+// what it has read so far.
+const indexing = ref(null)
+let indexTimer = null
+async function pollIndex() {
+  try {
+    const stats = await api.indexStats()
+    indexing.value = stats.indexing || null
+  } catch {
+    indexing.value = null
+  }
+  clearTimeout(indexTimer)
+  indexTimer = setTimeout(pollIndex, indexing.value ? 1500 : 15000)
 }
 
 // The hub is another machine, so it is asked less often than the local
@@ -143,9 +177,10 @@ async function loadDoctor() {
 }
 
 onMounted(() => {
-  refresh()
+  refresh({ streamed: true })
   loadDoctor()
   loadHub()
+  pollIndex()
   narrowQuery.addEventListener('change', onNarrowChange)
   let ticks = 0
   pollTimer = setInterval(() => {
@@ -155,6 +190,7 @@ onMounted(() => {
   }, 5000)
 })
 onUnmounted(() => {
+  clearTimeout(indexTimer)
   clearInterval(pollTimer)
   narrowQuery.removeEventListener('change', onNarrowChange)
 })
@@ -588,12 +624,10 @@ function clearSearch() {
 async function reindex() {
   status.value = 'Reindexing…'
   try {
-    const report = await api.indexRefresh()
-    status.value = `Indexed ${report.reindexed}, unchanged ${report.unchanged}.`
-    if (searchedFor.value) {
-      fullText.value = searchedFor.value
-      await runSearch()
-    }
+    // It runs on the server's own thread; this follows it.
+    await api.indexRefresh()
+    await pollIndex()
+    status.value = indexing.value ? 'Indexing…' : 'The index is up to date.'
   } catch (e) {
     status.value = `Reindex failed: ${e.message}`
   }
@@ -771,6 +805,15 @@ function pickProject(root) {
           <span>Archived</span>
         </label>
 
+        <span
+          v-if="indexing"
+          class="chip working"
+          :title="`Search reads an index of every transcript; it is being built now${indexing.note ? ' — ' + indexing.note : ''}`"
+        >
+          <span class="spin">⟳</span>
+          Indexing {{ indexing.done }}/{{ indexing.total }}
+        </span>
+
         <button v-if="anyFilter" class="btn ghost" title="Show every session again" @click="clearFilters">
           <FilterX :size="15" />
           <span>Clear filters</span>
@@ -850,7 +893,15 @@ function pickProject(root) {
 
         <!-- Session list -->
         <template v-else>
-          <div v-if="!visible.length" class="empty">No sessions match these filters.</div>
+          <div v-if="!visible.length" class="empty">
+            <template v-if="scanning">
+              <span class="spin">⟳</span> Reading your agent stores… {{ sessions.length }} found so far.
+            </template>
+            <template v-else-if="!sessions.length">
+              No sessions in any store asm can see. Refresh to look again.
+            </template>
+            <template v-else>No sessions match these filters.</template>
+          </div>
 
           <div v-if="visible.length" class="bulkbar" :class="{ active: ticked.size > 0 }">
             <label class="tickall">

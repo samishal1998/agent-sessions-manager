@@ -21,7 +21,8 @@ mod schema;
 mod search;
 
 pub use search::{
-    IndexStats, MATCH_END, MATCH_START, RefreshReport, SearchHit, SearchQuery, fingerprint,
+    IndexStats, MATCH_END, MATCH_START, RefreshProgress, RefreshReport, SearchHit, SearchQuery,
+    fingerprint,
 };
 
 use std::path::{Path, PathBuf};
@@ -69,8 +70,18 @@ impl Index {
     fn prepare(&mut self) -> Result<(), CoreError> {
         // WAL keeps searches readable while a refresh writes; the busy
         // timeout covers a CLI, a TUI and the web server refreshing at once.
+        // `synchronous=NORMAL` trades a fsync per commit for the risk of
+        // losing the last commits to a machine crash — which costs nothing
+        // here, because every row is derived from the agents' own stores
+        // and a lost one is simply re-indexed on the next refresh.
         self.conn
-            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA busy_timeout=5000;
+                 PRAGMA synchronous=NORMAL;
+                 PRAGMA temp_store=MEMORY;
+                 PRAGMA cache_size=-32000;",
+            )
             .map_err(self.sql_err())?;
 
         let existing: Option<u32> = self

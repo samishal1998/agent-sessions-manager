@@ -122,6 +122,19 @@ pub trait AgentRead {
     fn capabilities(&self) -> Capabilities;
     fn detect(&self) -> DetectResult;
     fn sessions(&self, filter: &SessionFilter) -> Result<Vec<Session>, CoreError>;
+
+    /// Sessions as they are found, for a frontend that shows them arriving
+    /// rather than all at once. The default reads them all and emits one
+    /// batch; an adapter that walks a directory tree overrides it, so a
+    /// machine with thousands of sessions shows the first ones at once.
+    fn sessions_streamed(
+        &self,
+        filter: &SessionFilter,
+        emit: &mut dyn FnMut(Vec<Session>),
+    ) -> Result<(), CoreError> {
+        emit(self.sessions(filter)?);
+        Ok(())
+    }
     /// Command that resumes this session interactively in its own agent,
     /// with the working directory already set to the session's project.
     fn resume_command(&self, session: &Session) -> Option<std::process::Command>;
@@ -223,6 +236,14 @@ impl AgentRead for Adapter {
 
     fn sessions(&self, filter: &SessionFilter) -> Result<Vec<Session>, CoreError> {
         dispatch!(self, a => a.sessions(filter))
+    }
+
+    fn sessions_streamed(
+        &self,
+        filter: &SessionFilter,
+        emit: &mut dyn FnMut(Vec<Session>),
+    ) -> Result<(), CoreError> {
+        dispatch!(self, a => a.sessions_streamed(filter, emit))
     }
 
     fn resume_command(&self, session: &Session) -> Option<std::process::Command> {

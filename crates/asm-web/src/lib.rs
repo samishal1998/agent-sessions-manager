@@ -19,15 +19,8 @@ pub fn run(host: &str, port: u16) -> anyhow::Result<()> {
 
     // Warm the search index off the request path so the first search is
     // fast; a failure here is not fatal, searches just return what is
-    // already indexed.
-    std::thread::spawn(|| match asm_core::index::Index::open() {
-        Ok(mut index) => {
-            if let Err(e) = index.refresh(|_| {}) {
-                eprintln!("search index refresh failed: {e}");
-            }
-        }
-        Err(e) => eprintln!("could not open search index: {e}"),
-    });
+    // already indexed. Progress is reported through `/api/index`.
+    api::refresh_index_in_background();
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {

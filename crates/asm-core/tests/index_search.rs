@@ -2,7 +2,7 @@
 //! incremental behavior — an index that silently goes stale, or that
 //! re-extracts everything every time, is the failure mode that matters.
 
-use std::cell::RefCell;
+use std::sync::Mutex;
 use std::path::PathBuf;
 
 use asm_core::CoreError;
@@ -68,27 +68,27 @@ fn text_message(role: IrRole, text: &str) -> IrMessage {
 
 /// An exporter that counts calls, so "did it re-extract?" is observable.
 struct Exporter {
-    bodies: RefCell<std::collections::HashMap<String, IrSession>>,
-    calls: RefCell<Vec<String>>,
+    bodies: Mutex<std::collections::HashMap<String, IrSession>>,
+    calls: Mutex<Vec<String>>,
 }
 
 impl Exporter {
     fn new() -> Self {
-        Exporter { bodies: RefCell::new(Default::default()), calls: RefCell::new(Vec::new()) }
+        Exporter { bodies: Mutex::new(Default::default()), calls: Mutex::new(Vec::new()) }
     }
     fn set(&self, id: &str, ir: IrSession) {
-        self.bodies.borrow_mut().insert(id.to_string(), ir);
+        self.bodies.lock().unwrap().insert(id.to_string(), ir);
     }
     fn export(&self, s: &Session) -> Result<IrSession, CoreError> {
-        self.calls.borrow_mut().push(s.handle.native_id.clone());
+        self.calls.lock().unwrap().push(s.handle.native_id.clone());
         self.bodies
-            .borrow()
+            .lock().unwrap()
             .get(&s.handle.native_id)
             .cloned()
             .ok_or_else(|| CoreError::Invalid { msg: "no fixture".into() })
     }
     fn take_calls(&self) -> Vec<String> {
-        self.calls.borrow_mut().drain(..).collect()
+        self.calls.lock().unwrap().drain(..).collect()
     }
 }
 
@@ -488,4 +488,40 @@ fn a_schema_version_change_rebuilds_rather_than_serving_stale_rows() {
     assert!(
         index.search(&SearchQuery { text: "persimmon".into(), ..Default::default() }).unwrap().is_empty()
     );
+}
+
+/// A refresh says how far it has got, and a second one has nothing to do:
+/// on a busy machine both matter more than anything else about indexing.
+#[test]
+fn refresh_reports_progress_and_the_second_one_reads_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = Exporter::new();
+    let sessions: Vec<Session> = (0..5)
+        .map(|i| {
+            let id = format!("s{i}");
+            let transcript = dir.path().join(format!("{id}.jsonl"));
+            std::fs::write(&transcript, format!("body of {id}")).unwrap();
+            exporter.set(&id, ir(&id, vec![text_message(IrRole::User, &format!("about {id}"))]));
+            session(&id, &transcript, "/proj/one")
+        })
+        .collect();
+
+    let mut index = open_index(dir.path());
+    let mut seen: Vec<(usize, usize)> = Vec::new();
+    let report = index
+        .refresh_with(&sessions, |s| exporter.export(s), |p| seen.push((p.done, p.total)))
+        .unwrap();
+    assert_eq!(report.reindexed, 5);
+    assert_eq!(seen.first(), Some(&(0, 5)), "it says how much there is before it starts");
+    assert_eq!(seen.last(), Some(&(5, 5)), "and counts every session");
+    assert!(seen.windows(2).all(|w| w[0].0 <= w[1].0), "progress never goes backwards");
+    assert_eq!(exporter.take_calls().len(), 5);
+
+    let mut seen = Vec::new();
+    let report = index
+        .refresh_with(&sessions, |s| exporter.export(s), |p| seen.push((p.done, p.total)))
+        .unwrap();
+    assert_eq!((report.reindexed, report.unchanged), (0, 5));
+    assert!(exporter.take_calls().is_empty(), "nothing is read twice");
+    assert_eq!(seen, vec![(0, 0)], "nothing to do, and it says so at once");
 }

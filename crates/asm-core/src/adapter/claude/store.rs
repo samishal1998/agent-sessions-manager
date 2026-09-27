@@ -30,6 +30,14 @@ pub(super) fn sessions(
     adapter: &ClaudeAdapter,
     filter: &SessionFilter,
 ) -> Result<Vec<Session>, CoreError> {
+    scan(adapter, filter, None)
+}
+
+fn scan(
+    adapter: &ClaudeAdapter,
+    filter: &SessionFilter,
+    mut emit: Option<&mut dyn FnMut(Vec<Session>)>,
+) -> Result<Vec<Session>, CoreError> {
     if let Some(agent) = filter.agent
         && agent != AgentKind::ClaudeCode
     {
@@ -70,10 +78,24 @@ pub(super) fn sessions(
                 sessions.push(session);
             }
         }
+        if let Some(emit) = emit.as_deref_mut() {
+            // A project's worth at a time: the first directory is on
+            // screen while the rest are still being read.
+            emit(std::mem::take(&mut sessions));
+        }
     }
 
     sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
     Ok(sessions)
+}
+
+/// The scan, one project directory at a time.
+pub(super) fn sessions_streamed(
+    adapter: &ClaudeAdapter,
+    filter: &SessionFilter,
+    emit: &mut dyn FnMut(Vec<Session>),
+) -> Result<(), CoreError> {
+    scan(adapter, filter, Some(emit)).map(|_| ())
 }
 
 

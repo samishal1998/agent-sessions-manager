@@ -114,6 +114,14 @@ impl AgentRead for ClaudeAdapter {
         }
     }
 
+    fn sessions_streamed(
+        &self,
+        filter: &SessionFilter,
+        emit: &mut dyn FnMut(Vec<Session>),
+    ) -> Result<(), CoreError> {
+        store::sessions_streamed(self, filter, emit)
+    }
+
     fn sessions(&self, filter: &SessionFilter) -> Result<Vec<Session>, CoreError> {
         store::sessions(self, filter)
     }
