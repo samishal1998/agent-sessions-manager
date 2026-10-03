@@ -187,6 +187,17 @@ impl Hub {
     /// Open (creating on first use) the store at `root`. A first open mints
     /// the join token.
     pub fn open(root: &Path) -> Result<Hub, CoreError> {
+        Self::open_with(root, true)
+    }
+
+    /// Open without sweeping `tmp/`. For a command run beside a live
+    /// `asm hub serve`: the uploads in `tmp/` are that server's in-flight
+    /// ones, and only a server starting up may call them abandoned.
+    pub fn attach(root: &Path) -> Result<Hub, CoreError> {
+        Self::open_with(root, false)
+    }
+
+    fn open_with(root: &Path, sweep: bool) -> Result<Hub, CoreError> {
         for dir in [root.to_path_buf(), root.join("blobs"), root.join("sessions"), root.join("tmp")]
         {
             fs::create_dir_all(&dir).map_err(io(&dir))?;
@@ -202,7 +213,9 @@ impl Hub {
         }
         // Uploads a previous run was killed in the middle of. They are
         // incomplete by construction and nothing references them.
-        if let Ok(entries) = fs::read_dir(root.join("tmp")) {
+        if sweep
+            && let Ok(entries) = fs::read_dir(root.join("tmp"))
+        {
             for entry in entries.flatten() {
                 if entry.path().extension().is_some_and(|e| e == "part") {
                     let _ = fs::remove_file(entry.path());
@@ -256,6 +269,20 @@ impl Hub {
         self.write_private(&self.machines_file(), &serde_json::to_vec_pretty(machines).unwrap())
     }
 
+    /// Hold an exclusive lock on the hub file's writers across processes: the
+    /// CLI mints tokens while a server may be rotating one. `self.lock` only
+    /// orders threads of one process.
+    fn hub_file_lock(&self) -> Result<fs::File, CoreError> {
+        let path = self.root.join("hub.lock");
+        for _ in 0..100 {
+            if let Some(file) = fsutil::lock_exclusive(&path)? {
+                return Ok(file);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        Err(CoreError::Invalid { msg: "the hub file is locked by another process".into() })
+    }
+
     pub fn join_token(&self) -> Result<String, CoreError> {
         Ok(self.read_hub_file()?.join_token)
     }
@@ -264,6 +291,7 @@ impl Hub {
     /// joined keep their own credentials.
     pub fn rotate_join_token(&self) -> Result<String, CoreError> {
         let _guard = self.lock.lock().unwrap();
+        let _flock = self.hub_file_lock()?;
         let mut file = self.read_hub_file()?;
         file.join_token = format!("asmj_{}", random_hex(24)?);
         self.write_hub_file(&file)?;
@@ -361,7 +389,20 @@ impl Hub {
         if let Some(bad) = shas.iter().find(|s| !valid_sha(s)) {
             return Err(HubError::BadRequest(format!("invalid sha256 {bad:?}")));
         }
-        Ok(shas.iter().filter(|s| !self.blob_path(s).is_file()).cloned().collect())
+        // A blob reported as present is about to be relied on by a revision:
+        // refresh its age so a collection in between does not take it.
+        Ok(shas
+            .iter()
+            .filter(|s| {
+                let path = self.blob_path(s);
+                let present = path.is_file();
+                if present {
+                    touch(&path);
+                }
+                !present
+            })
+            .cloned()
+            .collect())
     }
 
     /// Store `body` as the blob named `sha`, verifying it while it streams.
@@ -395,6 +436,7 @@ impl Hub {
             }
             let dest = self.blob_path(sha);
             if dest.is_file() {
+                touch(&dest);
                 return Ok(false);
             }
             let parent = dest.parent().unwrap();
@@ -608,6 +650,7 @@ impl Hub {
     /// its hash is kept, so this is the one time it can be shown.
     pub fn rotate_admin_token(&self) -> Result<String, CoreError> {
         let _guard = self.lock.lock().unwrap();
+        let _flock = self.hub_file_lock()?;
         let mut file = self.read_hub_file()?;
         let token = format!("asma_{}", random_hex(32)?);
         file.admin_token_sha256 = Some(hex(&sha256(&token)));
@@ -635,7 +678,22 @@ impl Hub {
 
     /// The most recent administrative actions, newest first.
     pub fn audit_log(&self, limit: usize) -> Vec<AuditEntry> {
-        let text = fs::read_to_string(self.root.join("admin.log")).unwrap_or_default();
+        // Only the tail: the log only grows, and a page asks for a few lines.
+        let text = (|| {
+            use std::io::{Read, Seek, SeekFrom};
+            let mut file = fs::File::open(self.root.join("admin.log")).ok()?;
+            let len = file.metadata().ok()?.len();
+            let start = len.saturating_sub(256 * 1024);
+            file.seek(SeekFrom::Start(start)).ok()?;
+            let mut text = String::new();
+            file.read_to_string(&mut text).ok()?;
+            // A cut mid-line leaves a partial first record: drop it.
+            if start > 0 {
+                text = text.split_once('\n').map(|(_, rest)| rest.to_string()).unwrap_or_default();
+            }
+            Some(text)
+        })()
+        .unwrap_or_default();
         let mut entries: Vec<AuditEntry> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
         entries.reverse();
         entries.truncate(limit);
@@ -747,12 +805,20 @@ impl Hub {
         for agent_dir in read_dirs(&self.root.join("sessions")) {
             for session_dir in read_dirs(&agent_dir) {
                 let revisions = session_dir.join("revisions");
-                let Ok(entries) = fs::read_dir(&revisions) else { continue };
+                // A revision that cannot be read or understood might be the
+                // only thing naming some blob. Treating it as naming none
+                // would delete data, so collecting stops instead.
+                let entries = match fs::read_dir(&revisions) {
+                    Ok(entries) => entries,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(CoreError::io(&revisions, e)),
+                };
                 for e in entries.flatten() {
-                    let Ok(bytes) = fs::read(e.path()) else { continue };
-                    if let Ok(m) = serde_json::from_slice::<Manifest>(&bytes) {
-                        referenced.extend(m.blob_shas().map(String::from));
-                    }
+                    let bytes = fs::read(e.path()).map_err(io(&e.path()))?;
+                    let m: Manifest = serde_json::from_slice(&bytes).map_err(|err| CoreError::Invalid {
+                        msg: format!("{} is unreadable ({err}); not collecting anything", e.path().display()),
+                    })?;
+                    referenced.extend(m.blob_shas().map(String::from));
                 }
             }
         }
@@ -781,6 +847,14 @@ impl Hub {
             self.audit("collect unused files", &format!("{removed} files, {freed} bytes"));
         }
         Ok(GcReport { removed, freed_bytes: freed, dry_run })
+    }
+}
+
+/// Mark a file as just used. Failing to is harmless: it only keeps an old
+/// file eligible for collection.
+fn touch(path: &Path) {
+    if let Ok(file) = fs::File::options().write(true).open(path) {
+        let _ = file.set_modified(std::time::SystemTime::now());
     }
 }
 
@@ -917,6 +991,50 @@ mod tests {
         assert!(hub.audit_log(10).iter().any(|e| e.action == "delete session"));
         assert!(matches!(hub.delete_session("claude-code", ID), Err(HubError::NotFound)));
         assert!(matches!(hub.delete_session("claude-code", "../etc"), Err(HubError::NotFound)));
+    }
+
+    /// A revision the hub cannot understand might be the only thing naming a
+    /// file, so collecting refuses rather than treating it as naming none.
+    #[test]
+    fn collecting_stops_when_a_revision_cannot_be_read() {
+        let (_d, hub) = hub();
+        let joined = hub.join(&hub.join_token().unwrap(), "laptop").unwrap();
+        let machine = hub.authenticate(&joined.credential).unwrap();
+        let kept = put(&hub, "kept");
+        let rev = hub.put_revision("claude-code", ID, &manifest(None, &[&kept]), &machine).unwrap();
+        age(&hub, &kept, 7200);
+        let path = hub.session_dir(AgentKind::ClaudeCode, ID).join("revisions").join(format!("{rev}.json"));
+        fs::write(&path, b"{ not json").unwrap();
+        assert!(hub.gc(false).is_err());
+        assert!(hub.gc(true).is_err());
+        assert!(hub.blob_path(&kept).is_file(), "nothing was deleted");
+    }
+
+    /// A dedup hit or a presence check refreshes a file's age, so a
+    /// collection cannot take what a push is about to rely on.
+    #[test]
+    fn a_file_a_push_reuses_is_not_collected_from_under_it() {
+        let (_d, hub) = hub();
+        let sha = put(&hub, "reused");
+        age(&hub, &sha, 7200);
+        assert!(hub.missing(std::slice::from_ref(&sha)).unwrap().is_empty());
+        assert_eq!(hub.gc(true).unwrap().removed, 0, "presence check refreshed it");
+        age(&hub, &sha, 7200);
+        hub.put_blob(&sha, "reused".as_bytes(), 1 << 20).unwrap();
+        assert_eq!(hub.gc(true).unwrap().removed, 0, "a dedup upload refreshed it");
+    }
+
+    /// `attach` leaves another process's in-flight uploads alone.
+    #[test]
+    fn attaching_does_not_sweep_uploads_in_flight() {
+        let (d, _hub) = hub();
+        let root = d.path().join("hub");
+        let part = root.join("tmp").join("abc.part");
+        fs::write(&part, b"half").unwrap();
+        Hub::attach(&root).unwrap();
+        assert!(part.is_file());
+        Hub::open(&root).unwrap();
+        assert!(!part.is_file());
     }
 
     #[test]

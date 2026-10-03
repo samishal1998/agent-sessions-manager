@@ -1088,7 +1088,8 @@ fn print_json(value: &impl serde::Serialize) -> anyhow::Result<()> {
 
 fn hub_store() -> anyhow::Result<asm_core::hub::store::Hub> {
     let root = asm_core::hub::store::Hub::default_root().context("cannot determine asm's data directory")?;
-    Ok(asm_core::hub::store::Hub::open(&root)?)
+    // `attach`, not `open`: this may run beside a live `asm hub serve`.
+    Ok(asm_core::hub::store::Hub::attach(&root)?)
 }
 
 /// Hub management runs on the hub machine and reads its store directly, so

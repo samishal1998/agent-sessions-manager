@@ -709,7 +709,7 @@ async function doCompare(row) {
     status.value =
       c.verdict === 'identical'
         ? `${row.short_id} is identical on the hub: now synced.`
-        : `${row.short_id} differs from the hub (${c.verdict.replace('_', ' ')}); pull it to see which way.`
+        : `${row.short_id} differs from the hub; pull it to see which side is ahead.`
   } catch (e) {
     status.value = `Compare failed: ${e.message}`
   }

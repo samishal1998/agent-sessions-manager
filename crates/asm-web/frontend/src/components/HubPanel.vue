@@ -90,7 +90,7 @@ const ICONS = { local: ArrowUp, ahead: ArrowUp, behind: ArrowDown, untracked: Ar
 const chips = computed(() =>
   ORDER.map((state) => {
     const of = rows.value.filter((r) => r.state === state)
-    return of.length ? { state, label: of[0].state_label, hint: of[0].hint, count: of.length } : null
+    return of.length ? { state, label: of[0].state_label, hint: of[0].state_hint, count: of.length } : null
   }).filter(Boolean),
 )
 const newOnHub = computed(() => rows.value.filter((r) => r.state === 'remote'))

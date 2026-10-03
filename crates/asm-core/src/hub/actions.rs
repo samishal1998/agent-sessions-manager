@@ -680,6 +680,8 @@ pub struct RowDetail {
     /// The state's own name, whatever this row's label says: what a filter
     /// chip for the state is called.
     pub state_label: &'static str,
+    /// The state's own explanation, for the same chip.
+    pub state_hint: &'static str,
     /// What a shallow comparison found, for a session the two sides have but
     /// this machine never compared.
     pub compare: Option<Compare>,
@@ -693,12 +695,8 @@ pub struct RowDetail {
 pub enum Shallow {
     /// Same conversation: nothing to push or pull.
     Identical,
-    /// Different, and this copy is the bigger one.
-    LocalLarger,
-    /// Different, and the hub's copy is the bigger one.
-    HubLarger,
-    /// Different at the same size.
-    SameSizeDiffers,
+    /// Different. Which side is ahead needs the content: a pull says.
+    Differs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -713,58 +711,54 @@ pub struct Compare {
 /// over a few listings instead of stalling the first.
 const COMPARE_BUDGET: usize = 25;
 
-/// Results already worked out: not equal today means not equal until either
-/// side changes, so the key is both sides' state.
-fn compare_cache() -> &'static std::sync::Mutex<HashMap<String, Compare>> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Compare>>> = std::sync::OnceLock::new();
+/// Results already worked out, one per session: the same pair of copies gives
+/// the same answer until either side changes, and a changed one replaces the
+/// entry rather than adding to it.
+type CompareCache = std::sync::Mutex<HashMap<String, (String, Compare)>>;
+
+fn compare_cache() -> &'static CompareCache {
+    static CACHE: std::sync::OnceLock<CompareCache> = std::sync::OnceLock::new();
     CACHE.get_or_init(Default::default)
 }
 
-/// The shallow verdict from what both sides recorded. Only equal identities
-/// prove anything; the sizes only say which side has more to give.
-pub(crate) fn verdict_of(local: &str, hub: &str, local_size: u64, hub_size: u64) -> Shallow {
-    if local == hub {
-        Shallow::Identical
-    } else if local_size > hub_size {
-        Shallow::LocalLarger
-    } else if local_size < hub_size {
-        Shallow::HubLarger
-    } else {
-        Shallow::SameSizeDiffers
-    }
+/// What a pair of copies is identified by: this side's fingerprint and the
+/// hub's revision.
+fn pair_key(session: &Session, head: &Head) -> (String, String) {
+    (
+        key(session.handle.agent, &session.handle.native_id),
+        format!("{}|{}", bundle::fingerprint(session), head.rev),
+    )
 }
 
-/// What an uncompared session is called once it has been looked at: what the
-/// sizes suggest, said as a suggestion.
+/// A result worked out before, if neither side has changed since.
+fn cached_compare(session: &Session, head: &Head) -> Option<Compare> {
+    let (k, pair) = pair_key(session, head);
+    compare_cache().lock().ok()?.get(&k).filter(|(p, _)| *p == pair).map(|(_, c)| *c)
+}
+
+/// The shallow verdict from what both sides recorded. Only equal identities
+/// prove anything. Sizes are shown, never read as direction: the two sides'
+/// file sets differ (sidecars, subagent transcripts), so "bigger" does not
+/// mean "newer".
+pub(crate) fn verdict_of(local: &str, hub: &str) -> Shallow {
+    if local == hub { Shallow::Identical } else { Shallow::Differs }
+}
+
+/// What an uncompared session is called once it has been looked at.
 fn compared_label(state: RowState, compare: Option<Compare>) -> &'static str {
     match (state, compare.map(|c| c.verdict)) {
-        (RowState::Untracked, Some(Shallow::HubLarger)) => "Hub looks newer",
-        (RowState::Untracked, Some(Shallow::LocalLarger)) => "Looks ahead",
-        (RowState::Untracked, Some(Shallow::SameSizeDiffers)) => "Differs",
+        (RowState::Untracked, Some(Shallow::Differs)) => "Differs",
         _ => state.label(),
     }
 }
 
 fn compared_hint(state: RowState, compare: Option<Compare>) -> &'static str {
     match (state, compare.map(|c| c.verdict)) {
-        (RowState::Untracked, Some(Shallow::HubLarger)) => {
-            "The copies differ and the hub's is the bigger one, so it is probably newer. Pull it to confirm: a hub copy that extends yours is applied."
-        }
-        (RowState::Untracked, Some(Shallow::LocalLarger)) => {
-            "The copies differ and yours is the bigger one, so it is probably ahead. Pull it to confirm; if it is ahead you can then push it."
-        }
-        (RowState::Untracked, Some(Shallow::SameSizeDiffers)) => {
-            "The copies differ at the same size. Pull it to see which way: one that moved on both sides is reported as diverged."
+        (RowState::Untracked, Some(Shallow::Differs)) => {
+            "The two copies differ, and which is ahead takes the content to tell. Pull it: a hub copy that extends yours is applied, a copy that is ahead of the hub's can then be pushed, and one that moved on both sides is reported as diverged."
         }
         _ => state.hint(),
     }
-}
-
-/// A result worked out before, if neither side has changed since.
-fn cached_compare(session: &Session, head: &Head) -> Option<Compare> {
-    let k = key(session.handle.agent, &session.handle.native_id);
-    let cache_key = format!("{k}|{}|{}", bundle::fingerprint(session), head.rev);
-    compare_cache().lock().ok().and_then(|c| c.get(&cache_key).copied())
 }
 
 /// Read this machine's copy and compare it with the hub's head. Identical
@@ -774,15 +768,19 @@ pub fn compare_session(state: &mut SyncState, session: &Session, head: &Head) ->
     if let Some(found) = cached_compare(session, head) {
         return Ok(found);
     }
-    let k = key(session.handle.agent, &session.handle.native_id);
+    let (k, pair) = pair_key(session, head);
     let fingerprint = bundle::fingerprint(session);
-    let cache_key = format!("{k}|{fingerprint}|{}", head.rev);
     let bundle = bundle::collect(session)?;
-    let local_size: u64 = bundle.files.iter().map(|f| f.entry.size).sum();
-    let hub_size = head.total_size;
-    let verdict = verdict_of(&bundle.canonical, &head.manifest.canonical, local_size, hub_size);
-    if verdict == Shallow::Identical {
-        state.record(
+    let found = Compare {
+        verdict: verdict_of(&bundle.canonical, &head.manifest.canonical),
+        local_size: bundle.files.iter().map(|f| f.entry.size).sum(),
+        hub_size: head.total_size,
+    };
+    if found.verdict == Shallow::Identical {
+        // Recording is what makes this permanent, but the answer is true
+        // whether or not it could be written (a read-only data dir): the
+        // cache below keeps it from being worked out again each listing.
+        let _ = state.record(
             &k,
             Tracked {
                 hub_rev: head.rev.clone(),
@@ -790,15 +788,10 @@ pub fn compare_session(state: &mut SyncState, session: &Session, head: &Head) ->
                 fingerprint,
                 files: files_hash(bundle.files.iter().map(|f| &f.entry)),
             },
-        )?;
+        );
     }
-    let found = Compare { verdict, local_size, hub_size };
-    // Only a difference is worth remembering: an identical pair is recorded
-    // as synced and never asked about again.
-    if verdict != Shallow::Identical
-        && let Ok(mut c) = compare_cache().lock()
-    {
-        c.insert(cache_key, found);
+    if let Ok(mut c) = compare_cache().lock() {
+        c.insert(k, (pair, found));
     }
     Ok(found)
 }
@@ -873,6 +866,7 @@ pub fn remote_list(remote: &Remote, local: &[Session]) -> Result<Vec<Row>, CoreE
                 agent_version: m.agent_version.clone(),
                 compare,
                 state_label: row_state.label(),
+                state_hint: row_state.hint(),
             },
         });
     }
@@ -905,6 +899,7 @@ pub fn remote_list(remote: &Remote, local: &[Session]) -> Result<Vec<Row>, CoreE
                 agent_version: s.agent_version.clone(),
                 compare: None,
                 state_label: RowState::Local.label(),
+                state_hint: RowState::Local.hint(),
             },
         });
     }
@@ -1114,19 +1109,18 @@ mod tests {
         RowState::Untracked,
     ];
 
-    /// Equal identity is the only proof; otherwise the bigger side has more
-    /// to give, and the same size says nothing about direction.
+    /// Equal identity is the only proof; a difference says nothing about
+    /// direction, because the two sides' sizes cover different files.
     #[test]
     fn a_shallow_compare_proves_only_equality() {
-        assert_eq!(verdict_of("a", "a", 10, 99), Shallow::Identical);
-        assert_eq!(verdict_of("a", "b", 20, 10), Shallow::LocalLarger);
-        assert_eq!(verdict_of("a", "b", 10, 20), Shallow::HubLarger);
-        assert_eq!(verdict_of("a", "b", 10, 10), Shallow::SameSizeDiffers);
-        // Once compared, a different pair is no longer just "not compared".
-        let looked = |v| Some(Compare { verdict: v, local_size: 1, hub_size: 2 });
-        assert_eq!(compared_label(RowState::Untracked, looked(Shallow::HubLarger)), "Hub looks newer");
+        assert_eq!(verdict_of("a", "a"), Shallow::Identical);
+        assert_eq!(verdict_of("a", "b"), Shallow::Differs);
+        let looked = Some(Compare { verdict: Shallow::Differs, local_size: 1, hub_size: 2 });
+        assert_eq!(compared_label(RowState::Untracked, looked), "Differs");
         assert_eq!(compared_label(RowState::Untracked, None), "Not compared");
-        assert_eq!(compared_label(RowState::Behind, looked(Shallow::HubLarger)), "Needs pull");
+        // Only an uncompared session is renamed by having been looked at.
+        assert_eq!(compared_label(RowState::Behind, looked), "Needs pull");
+        assert_ne!(compared_hint(RowState::Untracked, looked), RowState::Untracked.hint());
     }
 
     /// Every state says what to do about it, in words; two states never

@@ -342,7 +342,8 @@ button,
   font: inherit;
   transition: border-color 0.12s ease, background 0.12s ease;
 }
-input::placeholder {
+input::placeholder,
+textarea::placeholder {
   color: var(--fg-faint);
 }
 button,
@@ -719,9 +720,11 @@ button:hover,
 .hub-state.wait {
   color: var(--fg-muted);
 }
-.hub-line + .hub-daemon,
-.hub-daemon + .hub-problem,
-.hub-line + .hub-detail {
+.hub-line + .hub-daemon {
+  /* The daemon line belongs with the connection line above it. */
+  margin-top: calc(var(--space-2) - var(--space-4));
+}
+.hub-detail {
   font-size: var(--text-xs);
 }
 .hub-actions {
@@ -1613,9 +1616,6 @@ button:hover,
   .hv-chips .chip {
     min-height: 36px;
   }
-  .pill {
-    max-width: 100%;
-  }
   .hv-stitle .truncate {
     max-width: none;
   }
@@ -1664,11 +1664,6 @@ button:hover,
     width: 34px;
     height: 34px;
   }
-}
-/* Buttons the app disables with aria-disabled (so they stay focusable). */
-.h-button[aria-disabled='true'] {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 /* Hearth badges at the app's type floor, and last-known state shown by a
@@ -1801,4 +1796,11 @@ button:hover,
 }
 .admin .h-card {
   min-width: 0;
+}
+
+/* The status and sync badges of a row, in one grid cell. */
+.pills {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
 }

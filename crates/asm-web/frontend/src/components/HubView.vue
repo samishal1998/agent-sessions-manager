@@ -62,7 +62,7 @@ const open = ref(new Set())
 const stateChips = computed(() =>
   ORDER.map((state) => {
     const of = rows.value.filter((r) => r.state === state)
-    return of.length ? { state, label: of[0].state_label, hint: of[0].hint, count: of.length } : null
+    return of.length ? { state, label: of[0].state_label, hint: of[0].state_hint, count: of.length } : null
   }).filter(Boolean),
 )
 
@@ -173,10 +173,10 @@ const when = (ts) => ago(ts, now.value)
       <HButton
         v-if="summary.to_push"
         variant="secondary" size="compact"
-        :aria-disabled="!fresh || null"
+        :disabled="!fresh"
         :aria-label="`Push ${summary.to_push}${fresh ? '' : ' (unavailable: the hub cannot be reached)'}`"
         :title="fresh ? '' : 'The hub cannot be reached'"
-        @click="fresh && emit('push-needed')"
+        @click="emit('push-needed')"
       >
         <ArrowUp :size="15" />
         <span>Push {{ summary.to_push }}</span>
@@ -184,10 +184,10 @@ const when = (ts) => ago(ts, now.value)
       <HButton
         v-if="summary.to_pull"
         variant="secondary" size="compact"
-        :aria-disabled="!fresh || null"
+        :disabled="!fresh"
         :aria-label="`Pull ${summary.to_pull}${fresh ? '' : ' (unavailable: the hub cannot be reached)'}`"
         :title="fresh ? '' : 'The hub cannot be reached'"
-        @click="fresh && emit('pull-all')"
+        @click="emit('pull-all')"
       >
         <ArrowDown :size="15" />
         <span>Pull {{ summary.to_pull }}</span>
@@ -365,10 +365,10 @@ const when = (ts) => ago(ts, now.value)
                 <template v-if="buttonOf(r)">
                   <HButton
                     variant="secondary" size="compact"
-                    :aria-disabled="buttonOf(r).off ? 'true' : null"
+                    :disabled="!!buttonOf(r).off"
                     :title="buttonOf(r).off || r.hint"
                     :aria-label="`${buttonOf(r).text} ${r.title || r.short_id}${buttonOf(r).off ? ' (unavailable: ' + buttonOf(r).off + ')' : ''}`"
-                    @click="!buttonOf(r).off && press(r)"
+                    @click="press(r)"
                   >
                     <ArrowUp v-if="r.action === 'push'" :size="14" />
                     <ArrowUpDown v-else-if="r.action === 'resolve'" :size="14" />
@@ -408,7 +408,7 @@ const when = (ts) => ago(ts, now.value)
                     <dt>Compared</dt>
                     <dd>
                       {{ bytes(r.compare.local_size) }} here, {{ bytes(r.compare.hub_size) }} on the hub
-                      <span class="faint"> — sizes only hint at direction; pulling confirms</span>
+                      <span class="faint"> — they cover different files, so size does not say which is ahead; pulling does</span>
                     </dd>
                   </template>
                   <dt>Restorable here</dt>
