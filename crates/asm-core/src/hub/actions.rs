@@ -394,7 +394,82 @@ pub struct Pulled {
 /// Bring one session from the hub onto this machine.
 pub fn pull(remote: &Remote, query: &str, project_dir: Option<&Path>) -> Result<Pulled, CoreError> {
     let heads = remote.heads()?;
-    let head = resolve_head(&heads, query)?;
+    pull_head(remote, resolve_head(&heads, query)?, project_dir)
+}
+
+/// Whether a session on the hub is one the filters ask for. A hub session
+/// belongs to a project by where it lives on THIS machine — the pushing
+/// machine's path resolved against this home — or by sharing its git
+/// origin, so the same repository checked out elsewhere still matches.
+fn head_matches(head: &Head, agent: Option<AgentKind>, project: Option<&Path>) -> bool {
+    let m = &head.manifest;
+    if agent.is_some_and(|a| a != m.agent) {
+        return false;
+    }
+    let Some(project) = project else { return true };
+    let here = PortablePath(m.project_root_portable.clone()).resolve();
+    if here == project || here.starts_with(project) {
+        return true;
+    }
+    match (&m.git_origin, crate::git::origin(project)) {
+        (Some(theirs), Some(ours)) => *theirs == ours,
+        _ => false,
+    }
+}
+
+/// Pull everything on the hub that the filters match, each session at its
+/// own place. Every one is attempted: a session with nowhere to land here,
+/// or one that diverged, is listed per session and stops nothing else.
+pub fn pull_all(
+    remote: &Remote,
+    agent: Option<AgentKind>,
+    project: Option<&Path>,
+) -> Result<BulkReport, CoreError> {
+    let heads: Vec<Head> =
+        remote.heads()?.into_iter().filter(|h| head_matches(h, agent, project)).collect();
+    let mut report = BulkReport::default();
+    for head in &heads {
+        let (agent, id) = (head.manifest.agent, head.manifest.id.clone());
+        let outcome = match pull_head(remote, head, None) {
+            Ok(pulled) => match pulled.installed.outcome {
+                InstallOutcome::Diverged => ItemOutcome::Failed {
+                    error: "diverged: continued here and on the other machine; \
+                            `asm pull <id>` says more"
+                        .into(),
+                },
+                InstallOutcome::InSync => ItemOutcome::Skipped { reason: "already in sync".into() },
+                InstallOutcome::Ahead => ItemOutcome::Skipped {
+                    reason: "this machine is ahead of the hub; `asm push` it".into(),
+                },
+                InstallOutcome::New => ItemOutcome::Ok { note: "installed".into() },
+                InstallOutcome::FastForward { appended } => {
+                    ItemOutcome::Ok { note: format!("updated, {} appended", human(appended)) }
+                }
+                InstallOutcome::Replaced => {
+                    ItemOutcome::Ok { note: "updated, the older copy backed up".into() }
+                }
+            },
+            Err(e) => ItemOutcome::Failed { error: e.to_string() },
+        };
+        report.items.push(BulkItem {
+            agent,
+            native_id: id,
+            label: format!(
+                "{agent} {}",
+                short_id_of(agent, &head.manifest.id, head.manifest.slug.as_deref())
+            ),
+            outcome,
+        });
+    }
+    Ok(report)
+}
+
+/// Bring the session this head describes onto this machine.
+pub fn pull_head(
+    remote: &Remote,
+    head: &Head,
+    project_dir: Option<&Path>,
+) -> Result<Pulled, CoreError> {
     let (agent, id) = (head.manifest.agent, head.manifest.id.clone());
     if !bundle::restorable(agent) {
         return Err(invalid(format!(
@@ -629,5 +704,48 @@ mod tests {
         assert_eq!(resolve_head(&heads, "boar").unwrap().manifest.agent, AgentKind::JCode);
         assert!(resolve_head(&heads, "codex:7f3a").is_err());
         assert!(resolve_head(&heads, "nothing").is_err());
+    }
+
+    /// The hub's sessions are filtered the way local ones are: by agent,
+    /// and by project — where the session would live on THIS machine, or
+    /// the same repository by its origin. Everything here lives in a temp
+    /// directory: no `${HOME}` token, so nothing resolves into a real home.
+    #[test]
+    fn hub_sessions_are_matched_by_agent_and_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let mine = dir.path().join("code/mercury");
+        let at = |agent, id: &str, root: &std::path::Path| {
+            let mut h = head(agent, id, None);
+            h.manifest.project_root_portable = root.display().to_string();
+            h
+        };
+        let in_mercury = at(AgentKind::ClaudeCode, "a", &mine.join("crates/core"));
+        let at_tls = at(AgentKind::OpenCode, "b", &dir.path().join("code/mercury-tls"));
+
+        assert!(head_matches(&in_mercury, None, None), "no filter matches everything");
+        assert!(head_matches(&in_mercury, Some(AgentKind::ClaudeCode), None));
+        assert!(!head_matches(&in_mercury, Some(AgentKind::OpenCode), None));
+
+        // A subdirectory of the project is in it; a sibling that merely
+        // shares a prefix is not.
+        assert!(head_matches(&in_mercury, None, Some(&mine)));
+        assert!(!head_matches(&at_tls, None, Some(&mine)));
+        // Both filters have to hold.
+        assert!(!head_matches(&in_mercury, Some(AgentKind::OpenCode), Some(&mine)));
+
+        // The same repository checked out somewhere else still matches.
+        let origin = "https://example.com/acme/mercury.git";
+        let clone = dir.path().join("elsewhere");
+        for repo in [&mine, &clone] {
+            std::fs::create_dir_all(repo).unwrap();
+            for args in [vec!["init", "-q"], vec!["remote", "add", "origin", origin]] {
+                std::process::Command::new("git").arg("-C").arg(repo).args(args).status().unwrap();
+            }
+        }
+        let mut cloned = at(AgentKind::JCode, "c", std::path::Path::new("/nowhere/at/all"));
+        cloned.manifest.git_origin = crate::git::origin(&clone);
+        assert!(cloned.manifest.git_origin.is_some(), "git is available to this test");
+        assert!(head_matches(&cloned, None, Some(&mine)), "same origin, different path");
+        assert!(!head_matches(&at_tls, None, Some(&clone)), "no origin, no match");
     }
 }

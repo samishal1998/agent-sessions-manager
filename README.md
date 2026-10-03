@@ -99,7 +99,7 @@ is embedded.
 
 ```sh
 asm                          # interactive TUI on a terminal; plain table when piped
-asm list --agent opencode    # filter by agent, --project, --all (include subagents)
+asm list --agent opencode    # filter by agent, --project, --include-children (subagents)
 asm projects --worktrees     # projects are repositories; show each one's checkouts
 asm show 4c93a826            # metadata card; refs are unique id prefixes or agent:prefix
 asm resume 4c93a826          # hands off to the native agent, in the right directory
@@ -127,7 +127,8 @@ asm sync init && asm sync status
 
 asm hub serve                # on one machine: a hub, prints the join command
 ASM_JOIN_TOKEN=asmj_… asm join https://hub.example.ts.net   # on each of the others
-asm push --all               # upload what changed since the last push
+asm push --all               # upload what changed since the last push (honours --agent, --project)
+asm pull --all --agent codex # pull everything on the hub that the filters match
 asm remote list              # this machine and the hub, grouped by project
 asm pull 7f3a1c88            # install a session from another machine here
 asm push 7f3a1c88 --move     # hand a session to another machine: push, then archive here

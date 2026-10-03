@@ -29,8 +29,8 @@ pub struct Cli {
     project: Option<PathBuf>,
 
     /// Include subagent/child sessions (hidden by default).
-    #[arg(long, global = true)]
-    all: bool,
+    #[arg(long = "include-children", global = true)]
+    include_children: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -165,7 +165,8 @@ enum Command {
     Push {
         /// Sessions to push (ids, prefixes, `agent:prefix`).
         refs: Vec<String>,
-        /// Push every session on this machine (respects --agent/--project).
+        /// Push every session on this machine that the filters match
+        /// (--agent, --project, --include-children).
         #[arg(long)]
         all: bool,
         /// Make this machine's copy the hub's head even when another
@@ -189,7 +190,12 @@ enum Command {
     /// Bring a session from the hub onto this machine.
     Pull {
         /// The session on the hub (id, prefix, `agent:prefix`).
-        r#ref: String,
+        #[arg(conflicts_with = "all")]
+        r#ref: Option<String>,
+        /// Pull every session on the hub that the filters match
+        /// (--agent, --project), each at its own place on this machine.
+        #[arg(long, conflicts_with = "project_dir")]
+        all: bool,
         /// Where to put it, when the pushing machine's path does not exist
         /// here.
         #[arg(long)]
@@ -307,7 +313,9 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
                 eprintln!("{line}")
             })
         }
-        Command::Pull { r#ref, project_dir } => pull(&r#ref, project_dir.as_deref(), cli.json),
+        Command::Pull { r#ref, all, project_dir } => {
+            pull(r#ref.as_deref(), all, project_dir.as_deref(), &filter, cli.json)
+        }
         Command::Remote(command) => remote(command, &filter, cli.json),
         Command::List => list(&filter, cli.json),
         Command::Projects { worktrees } => projects(cli.json, worktrees),
@@ -691,7 +699,7 @@ fn build_filter(cli: &Cli) -> anyhow::Result<SessionFilter> {
         ),
         None => None,
     };
-    Ok(SessionFilter { agent, project, include_children: cli.all })
+    Ok(SessionFilter { agent, project, include_children: cli.include_children })
 }
 
 fn list(filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
@@ -1086,9 +1094,40 @@ fn push(
     Ok(())
 }
 
-fn pull(query: &str, project_dir: Option<&std::path::Path>, json: bool) -> anyhow::Result<()> {
+fn pull(
+    query: Option<&str>,
+    all: bool,
+    project_dir: Option<&std::path::Path>,
+    filter: &SessionFilter,
+    json: bool,
+) -> anyhow::Result<()> {
     use asm_core::hub::bundle::InstallOutcome;
     let remote = asm_core::hub::client::load()?;
+    let query = match (query, all) {
+        (Some(query), false) => query,
+        (None, true) => {
+            let report =
+                asm_core::hub::actions::pull_all(&remote, filter.agent, filter.project.as_deref())?;
+            if json {
+                print_json(&report)?;
+            } else {
+                for item in &report.items {
+                    if let asm_core::bulk::ItemOutcome::Ok { note } = &item.outcome {
+                        println!("{}: {note}", item.label);
+                    }
+                }
+                println!("{}", report.summary("Pull"));
+                for line in report.problems() {
+                    eprintln!("  {line}");
+                }
+            }
+            if report.failed() > 0 {
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
+        _ => bail!("name the session to pull, or pass --all"),
+    };
     let pulled = asm_core::hub::actions::pull(&remote, query, project_dir)?;
     if json {
         print_json(&pulled)?;
@@ -1153,4 +1192,34 @@ fn remote(command: RemoteCommand, filter: &SessionFilter, json: bool) -> anyhow:
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(std::iter::once("asm").chain(args.iter().copied()))
+    }
+
+    /// `--all` means "everything the filters match" on push and pull; the
+    /// subagent switch is `--include-children`. The two had one name, and
+    /// `asm push --all` set both.
+    #[test]
+    fn all_means_everything_matching_and_children_have_their_own_flag() {
+        assert!(parse(&["list", "--include-children"]).unwrap().include_children);
+        assert!(!parse(&["push", "--all"]).unwrap().include_children, "--all no longer adds children");
+        assert!(
+            parse(&["list", "--all"]).is_err(),
+            "the old spelling fails loudly rather than meaning something else"
+        );
+
+        // Pull takes a session or --all, never both, and --all lands every
+        // session at its own place.
+        assert!(parse(&["pull", "7f3a1c88"]).is_ok());
+        assert!(parse(&["pull", "--all", "--agent", "codex", "--project", "/x"]).is_ok());
+        assert!(parse(&["pull", "7f3a1c88", "--all"]).is_err());
+        assert!(parse(&["pull", "--all", "--project-dir", "/x"]).is_err());
+    }
 }
