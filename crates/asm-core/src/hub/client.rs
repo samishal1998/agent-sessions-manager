@@ -356,7 +356,8 @@ impl Remote {
     }
 
     pub fn machines(&self) -> Result<Vec<Machine>, CoreError> {
-        let r = expect(self.call("GET", "/hub/v1/machines", Body::None, Profile::Control)?, &[200], "listing machines")?;
+        let profile = if self.quick { Profile::Probe } else { Profile::Control };
+        let r = expect(self.call("GET", "/hub/v1/machines", Body::None, profile)?, &[200], "listing machines")?;
         parse(&r, "listing machines")
     }
 

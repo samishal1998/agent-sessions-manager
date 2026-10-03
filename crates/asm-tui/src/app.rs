@@ -1986,6 +1986,7 @@ mod tests {
                     label: state.label(),
                     hint: state.hint(),
                     restorable: true,
+                    detail: Default::default(),
                 }
             })
             .collect();

@@ -361,7 +361,7 @@ list` uses them too):
 | **Not on hub** | the hub does not have it yet — push it |
 | **Needs pull** | another machine pushed a newer copy |
 | **New on hub** | on the hub, not on this machine — pull it |
-| **Check sync** | on both, but this machine has no record of syncing it; pull to compare |
+| **Not compared** | on both, but this machine has no record of syncing it; pull to compare |
 | **Diverged** | continued on both sides; `asm push --force` picks this copy |
 
 A hub that stops answering is a status, not an error: the UIs say so with the

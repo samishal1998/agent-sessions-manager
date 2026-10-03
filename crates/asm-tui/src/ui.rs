@@ -409,7 +409,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     // its room: where a session stands with the hub is worth more than its
     // size, less than its name.
     let show_hub = app.has_sync_states() && inner >= 96;
-    let project_width = inner.saturating_sub(75 + if show_hub { 12 } else { 0 }).clamp(0, 40);
+    let project_width = inner.saturating_sub(75 + if show_hub { 14 } else { 0 }).clamp(0, 40);
     let show_project = project_width >= 12;
     let show_id = inner >= 62;
     let show_size = inner >= 50;
@@ -485,7 +485,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
         header.push("size");
     }
     if show_hub {
-        widths.push(Constraint::Length(12));
+        widths.push(Constraint::Length(14));
         header.push("sync");
     }
     widths.push(Constraint::Length(6));
@@ -954,7 +954,7 @@ fn draw_hub_view(frame: &mut Frame, app: &App, area: Rect) {
             Row::new(cells)
         })
         .collect();
-    let mut widths = vec![Constraint::Length(12), Constraint::Length(11), Constraint::Fill(2)];
+    let mut widths = vec![Constraint::Length(14), Constraint::Length(11), Constraint::Fill(2)];
     let mut header = vec!["sync", "agent", "title"];
     if wide {
         widths.push(Constraint::Length(26));
@@ -1289,6 +1289,7 @@ mod tests {
             label: state.label(),
             hint: state.hint(),
             restorable: true,
+            detail: Default::default(),
         }
     }
 

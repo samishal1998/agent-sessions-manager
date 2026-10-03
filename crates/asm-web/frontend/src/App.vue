@@ -27,6 +27,7 @@ import { uniqueTails } from './paths.js'
 import TranscriptView from './TranscriptView.vue'
 import AgentMark from './components/AgentMark.vue'
 import HubPanel from './components/HubPanel.vue'
+import HubView from './components/HubView.vue'
 import IconButton from './components/IconButton.vue'
 import Tooltip from './components/Tooltip.vue'
 
@@ -185,6 +186,23 @@ async function loadHub() {
 const hubRows = computed(() =>
   Object.fromEntries((hub.value?.rows || []).map((r) => [`${r.agent}:${r.id}`, r])),
 )
+// Which of the two screens is showing. The hub screen exists only once this
+// machine has joined a hub.
+const view = ref('sessions')
+const hubJoined = computed(() => !!hub.value?.joined)
+const hubAttention = computed(() => {
+  const s = hub.value?.summary
+  return s ? s.to_push + s.to_pull + s.to_resolve : 0
+})
+function showView(next) {
+  view.value = next
+  sidebarOpen.value = false
+}
+// From the hub screen: find the local session a row stands for.
+function pushRow(row) {
+  const s = sessions.value.find((x) => x.ref.agent === row.agent && x.ref.native_id === row.id)
+  if (s) doPush(s)
+}
 const hubRow = (s) => hubRows.value[`${s.ref.agent}:${s.ref.native_id}`]
 // Where this session stands with the hub, as the core words it: the label,
 // the hint and the next step all come from `RowState` in asm-core.
@@ -773,6 +791,16 @@ function pickProject(root) {
         <span>asm</span>
       </div>
 
+      <nav v-if="hubJoined" class="side-views" aria-label="Views">
+        <button class="side-item" :class="{ active: view === 'sessions' }" :aria-current="view === 'sessions' ? 'page' : null" @click="showView('sessions')">
+          <span class="label">Sessions</span>
+        </button>
+        <button class="side-item" :class="{ active: view === 'hub' }" :aria-current="view === 'hub' ? 'page' : null" @click="showView('hub')">
+          <span class="label">Hub</span>
+          <span v-if="hubAttention" class="count" :title="`${hubAttention} need attention`">{{ hubAttention }}</span>
+        </button>
+      </nav>
+
       <div>
         <h2 class="side-heading">Projects</h2>
         <label v-if="projectSearchShown" class="side-search">
@@ -860,8 +888,8 @@ function pickProject(root) {
     />
 
     <main id="main" class="main" tabindex="-1">
-      <h1 class="sr-only">Sessions</h1>
-      <div class="toolbar">
+      <h1 class="sr-only">{{ view === 'hub' ? 'Hub' : 'Sessions' }}</h1>
+      <div v-show="view === 'sessions'" class="toolbar">
         <button class="icon-btn mobile-only" aria-label="Show projects" @click="sidebarOpen = true">
           <Menu :size="18" />
         </button>
@@ -931,7 +959,22 @@ function pickProject(root) {
 
       </div>
 
-      <div ref="contentBox" class="content" @scroll.passive="onContentScroll">
+      <div v-if="view === 'hub' && hubJoined" class="content">
+        <HubView
+          :hub="hub"
+          :checking="hubChecking"
+          :checked-at="hubCheckedAt"
+          :home="home"
+          @check="loadHub"
+          @push="pushRow"
+          @pull="doPull"
+          @push-needed="pushNeeded"
+          @pull-all="pullAll"
+          @menu="sidebarOpen = true"
+        />
+      </div>
+
+      <div v-show="view === 'sessions' || !hubJoined" ref="contentBox" class="content" @scroll.passive="onContentScroll">
         <!-- Full-text results -->
         <template v-if="hits !== null">
           <div class="results-head">
@@ -989,7 +1032,7 @@ function pickProject(root) {
             @check="loadHub"
             @push-needed="pushNeeded"
             @pull-all="pullAll"
-            @pull="doPull"
+            @open="showView('hub')"
           />
 
           <div v-if="!visible.length" class="empty">

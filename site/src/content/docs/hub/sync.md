@@ -38,7 +38,7 @@ Each machine remembers, per session, the **last revision it agreed on with the h
 | changed | unchanged | **Needs push** |
 | unchanged | moved | **Needs pull** |
 | changed | moved | **Diverged** |
-| no record | exists | **Check sync** (pull to compare) |
+| no record | exists | **Not compared** (pull to compare) |
 
 ## Diverged
 

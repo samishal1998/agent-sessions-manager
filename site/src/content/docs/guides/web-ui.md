@@ -42,6 +42,15 @@ When the machine has joined a hub, a panel above the list says how it stands:
 
 Every session row also carries its sync state, in the same words as the CLI and TUI. When the hub cannot be reached, Push and Pull are disabled with the reason, and the last known states stay visible, marked old.
 
+## The Hub view
+
+Once this machine has joined a hub, the sidebar gains a **Hub** entry (with a count of what needs attention) beside **Sessions**. It is the detailed version of the panel above: 
+
+- **Connection, Daemon and Machines** cards — the hub and when it was last reached, whether the [daemon](/hub/daemon/) is running with its last push, what is waiting and its recent events, and every machine that has joined, with when it was last seen.
+- **A table of every session** here and on the hub, the ones that need a decision first: its sync state, the agent, title and id, project, where it is (both, hub only, this machine only), when it changed, and a button for the next step — **Push**, **Pull**, **Compare** or **Resolve**. A pull of a session of an agent that cannot be restored here is disabled with the reason, and every button is disabled while the hub cannot be reached.
+- **Details** on each row (the arrow at its start): the full explanation of the state, the full session id, the project path and branch, the hub's revision, its size, who pushed it and when, the agent version, and the terminal command that does the same, with a copy button.
+- **Filters** by state (the chips), a text filter over title, id, project, machine and branch, and *Only what needs doing*.
+
 ## Security
 
 :::caution

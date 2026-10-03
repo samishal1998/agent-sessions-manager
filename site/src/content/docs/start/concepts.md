@@ -40,7 +40,7 @@ Everywhere a session is compared with the hub, one vocabulary is used — in the
 | **Not on hub** | The hub does not have it yet. | push |
 | **Needs pull** | Another machine pushed a newer copy. | pull |
 | **New on hub** | On the hub, not on this machine. | pull |
-| **Check sync** | On both, but this machine has no record of syncing it. | pull to compare |
+| **Not compared** | On both, but this machine has never compared the two copies. | pull to compare: identical copies become Synced, a hub copy that extends yours is applied, one that moved on both sides is reported as diverged |
 | **Diverged** | Continued on both sides. | `asm push --force` picks this copy |
 
 ## Daemon

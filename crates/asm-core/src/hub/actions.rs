@@ -613,7 +613,7 @@ impl RowState {
             RowState::Behind => "Needs pull",
             RowState::Remote => "New on hub",
             RowState::Diverged => "Diverged",
-            RowState::Untracked => "Check sync",
+            RowState::Untracked => "Not compared",
         }
     }
 
@@ -630,8 +630,9 @@ impl RowState {
                  the head; `asm pull <id>` says more."
             }
             RowState::Untracked => {
-                "The hub has this session, but this machine has no record of syncing it. Pull it to \
-                 compare."
+                "On the hub and here, but this machine has never compared the two. Pull it: identical \
+                 copies become Synced, a hub copy that extends yours is applied, and one that moved \
+                 on both sides is reported as diverged."
             }
         }
     }
@@ -655,6 +656,27 @@ pub struct Row {
     pub hint: &'static str,
     /// Whether `asm pull` can bring it here.
     pub restorable: bool,
+    #[serde(flatten)]
+    pub detail: RowDetail,
+}
+
+/// What a detailed view shows beyond the state: where the session is, how
+/// big, and which hub revision. For a hub row these describe the hub's copy
+/// (as the pushing machine saw it); for a local-only row, this machine's.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RowDetail {
+    /// This machine has the session.
+    pub here: bool,
+    /// The hub has it.
+    pub on_hub: bool,
+    pub size: Option<u64>,
+    /// The hub's head revision, shortened.
+    pub rev: Option<String>,
+    pub pushed_at: Option<Timestamp>,
+    pub branch: Option<String>,
+    /// The project directory on the machine the copy came from.
+    pub project_root: String,
+    pub agent_version: Option<String>,
 }
 
 /// Every session on this machine and on the hub, grouped by project. The
@@ -699,6 +721,16 @@ pub fn remote_list(remote: &Remote, local: &[Session]) -> Result<Vec<Row>, CoreE
             label: row_state.label(),
             hint: row_state.hint(),
             restorable: bundle::restorable(m.agent),
+            detail: RowDetail {
+                here: by_key.contains_key(&k),
+                on_hub: true,
+                size: Some(head.total_size),
+                rev: Some(head.rev.chars().take(8).collect()),
+                pushed_at: m.pushed_at,
+                branch: m.git_branch.clone(),
+                project_root: m.project_root.clone(),
+                agent_version: m.agent_version.clone(),
+            },
         });
     }
     for s in local {
@@ -719,6 +751,16 @@ pub fn remote_list(remote: &Remote, local: &[Session]) -> Result<Vec<Row>, CoreE
             label: RowState::Local.label(),
             hint: RowState::Local.hint(),
             restorable: bundle::restorable(s.handle.agent),
+            detail: RowDetail {
+                here: true,
+                on_hub: false,
+                size: s.size_bytes,
+                rev: None,
+                pushed_at: None,
+                branch: s.git_branch.clone(),
+                project_root: s.project_root.display().to_string(),
+                agent_version: s.agent_version.clone(),
+            },
         });
     }
     rows.sort_by(|a, b| a.project.cmp(&b.project).then(b.updated.cmp(&a.updated)));
@@ -769,6 +811,8 @@ pub struct HubStatus {
     pub detail: Option<String>,
     pub rows: Vec<Row>,
     pub summary: Summary,
+    /// Every machine that has joined the hub, this one included.
+    pub machines: Vec<super::store::Machine>,
 }
 
 pub fn hub_status(local: &[Session]) -> HubStatus {
@@ -796,6 +840,9 @@ pub fn hub_status(local: &[Session]) -> HubStatus {
             status.connected = true;
             status.summary = summarize(&rows);
             status.rows = rows;
+            // Nice to have: a failure here must not turn a good answer into
+            // an error.
+            status.machines = remote.machines().unwrap_or_default();
         }
         Err(e) => {
             let raw = e.to_string();
@@ -938,6 +985,11 @@ mod tests {
         assert_eq!(RowState::Remote.action(), Some(SyncAction::Pull));
         assert_eq!(RowState::Diverged.action(), Some(SyncAction::Resolve));
         assert_eq!(RowState::InSync.action(), None);
+        // Pulling an uncompared session is how it gets compared, but it is
+        // not "needs pull": nothing is known to be newer on the hub.
+        assert_eq!(RowState::Untracked.action(), Some(SyncAction::Pull));
+        assert_eq!(RowState::Untracked.label(), "Not compared");
+        assert_ne!(RowState::Untracked.label(), RowState::Behind.label());
     }
 
     fn row(state: RowState) -> Row {
@@ -954,6 +1006,7 @@ mod tests {
             label: state.label(),
             hint: state.hint(),
             restorable: true,
+            detail: Default::default(),
         }
     }
 

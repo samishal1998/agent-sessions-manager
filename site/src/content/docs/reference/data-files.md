@@ -11,7 +11,7 @@ asm writes only inside its own directory — `$XDG_DATA_HOME/asm` (default `~/.l
 | `backups/<agent>/<id>/<timestamp>/` | Copies taken before a delete or a hub replace. | Only if you no longer want the undo. asm never deletes them. |
 | `index/sessions.db` | The search index. | Yes; it is rebuilt. |
 | `hub-client.json` | This machine's hub URL, machine id and **credential** (mode `0600`). | Deleting it un-joins the machine. |
-| `hub-state.json` | Per session, the last revision agreed with the hub and the local fingerprint at that time. | Yes, but every session then shows **Check sync** until pulled or pushed. |
+| `hub-state.json` | Per session, the last revision agreed with the hub and the local fingerprint at that time. | Yes, but every session then shows **Not compared** until pulled or pushed. |
 | `daemon/daemon.lock` | Held by a running daemon. | Harmless; recreated. |
 | `daemon/status.json` | What the daemon last reported. | Yes. |
 | `daemon/daemon.log` | Output of `asm daemon start`. | Yes. |

@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   ArrowDown,
+  ArrowRight,
   ArrowUp,
   ArrowUpDown,
   Check,
@@ -25,7 +26,7 @@ const props = defineProps({
   // Sync states the list is narrowed to.
   modelValue: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['update:modelValue', 'check', 'push-needed', 'pull-all', 'pull'])
+const emit = defineEmits(['update:modelValue', 'check', 'push-needed', 'pull-all', 'open'])
 
 const now = ref(Date.now())
 let clock = null
@@ -93,12 +94,6 @@ const chips = computed(() =>
   }).filter(Boolean),
 )
 const newOnHub = computed(() => rows.value.filter((r) => r.state === 'remote'))
-// A hub with a hundred sessions this machine lacks would bury the list, so
-// the first few show and the rest are one click away.
-const SHOWN = 4
-const expanded = ref(false)
-const newShown = computed(() => (expanded.value ? newOnHub.value : newOnHub.value.slice(0, SHOWN)))
-
 function toggle(state) {
   emit(
     'update:modelValue',
@@ -133,6 +128,10 @@ function toggle(state) {
       </span>
 
       <span class="hub-actions">
+        <button class="btn" @click="emit('open')">
+          <ArrowRight :size="14" />
+          <span>Hub view</span>
+        </button>
         <button class="btn" :disabled="checking" @click="emit('check')">
           <RefreshCw :size="14" />
           <span>{{ fresh ? 'Check' : 'Retry' }}</span>
@@ -195,42 +194,9 @@ function toggle(state) {
       </button>
     </div>
 
-    <div v-if="newOnHub.length" class="hub-new">
-      <div class="hub-new-head">
-        <CloudDownload :size="15" />
-        <strong>New on the hub</strong>
-        <span class="faint">{{ newOnHub.length }} not on this machine</span>
-      </div>
-      <ul>
-        <li v-for="r in newShown" :key="r.agent + r.id">
-          <span class="hub-new-title" :title="r.title || r.short_id">{{ r.title || r.short_id }}</span>
-          <span class="faint hub-new-meta">{{ r.machine }} · {{ r.agent }}</span>
-          <button
-            class="btn"
-            :disabled="!r.restorable || !fresh"
-            :title="
-              !fresh
-                ? 'The hub cannot be reached'
-                : r.restorable
-                  ? `Pull ${r.title || r.short_id} from ${r.machine}`
-                  : `${r.agent} sessions are backed up on the hub but cannot be restored here yet`
-            "
-            :aria-label="`Pull ${r.title || r.short_id} from ${r.machine}`"
-            @click="emit('pull', r)"
-          >
-            <ArrowDown :size="14" />
-            <span>Pull</span>
-          </button>
-        </li>
-      </ul>
-      <button
-        v-if="newOnHub.length > SHOWN"
-        class="btn ghost"
-        :aria-expanded="expanded"
-        @click="expanded = !expanded"
-      >
-        {{ expanded ? 'Show fewer' : `Show all ${newOnHub.length}` }}
-      </button>
-    </div>
+    <button v-if="newOnHub.length" class="btn ghost hub-open" @click="emit('open')">
+      <CloudDownload :size="15" />
+      <span>{{ newOnHub.length }} new on the hub</span>
+    </button>
   </section>
 </template>
