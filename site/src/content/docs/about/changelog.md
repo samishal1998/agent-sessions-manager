@@ -5,6 +5,10 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
+## Unreleased
+
+- **The web UI is rebuilt on Hearth UI's structure**, not just recoloured: the app frame is a Hearth dashboard shell with a mobile navigation drawer, filters are Hearth inputs, chips and a project combobox, the Hub screen and the hub admin page use Hearth stat cards, data tables, details sheets and tabs, and confirmations are dialogs instead of browser prompts. The Sessions screen starts higher (about seven rows above the fold at 1440×900), row actions line up and collapse into a menu on narrow screens, and the active screen is in the URL.
+
 ## 0.7.0 — 2026-10-03
 
 - **Shallow compare.** Sessions both sides have but this machine never compared are now compared without a pull: identical copies become **Synced** on their own, and a difference says ****Differs**. The web Hub view's **Compare** button does one on demand.

@@ -8,6 +8,8 @@ import { AGENTS, agentMeta } from '../agents.js'
 const props = defineProps({
   agent: { type: String, required: true },
   size: { type: Number, default: 17 },
+  // No tooltip: for inside a button, where a second focusable would nest.
+  plain: { type: Boolean, default: false },
 })
 
 const meta = computed(() => agentMeta(props.agent))
@@ -16,9 +18,9 @@ const cls = computed(() => (props.agent in AGENTS ? props.agent : 'unknown'))
 </script>
 
 <template>
-  <Tooltip :label="meta.label">
+  <component :is="plain ? 'span' : Tooltip" v-bind="plain ? {} : { label: meta.label }">
     <span class="agent-mark" :class="cls" :aria-label="meta.label" role="img">
       <component :is="meta.icon" :size="size" :stroke-width="2" />
     </span>
-  </Tooltip>
+  </component>
 </template>

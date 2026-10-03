@@ -1,37 +1,26 @@
 <script setup>
-import { HAlert, HBadge, HButton, HCard } from '@hearth-ui/vue'
-import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
-  ArrowDown,
-  ArrowUp,
-  ArrowUpDown,
-  Check,
-  ChevronRight,
-  Cloud,
-  CloudOff,
-  Copy,
-  Menu,
-  Monitor,
-  Radio,
-  RefreshCw,
-  Scale,
-  Search,
-} from 'lucide-vue-next'
+  HAlert, HBadge, HButton, HCard, HChipGroup, HConnectionState, HCopyField, HDataTable,
+  HDescriptionList, HEmptyState, HInput, HList, HListItem, HPageHeader, HSheet, HStatCard,
+  HSwitch, HTimeline, tableCellSlot,
+} from '@hearth-ui/vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, Monitor, RefreshCw, Scale } from 'lucide-vue-next'
 import AgentMark from './AgentMark.vue'
 import { ago, agoUnix, bytes, hubTone } from '../format.js'
 import { shortProject } from '../ids.js'
+import '../styles/hubview.css'
 
-// Everything about how this machine stands with the hub, in one place: the
-// connection, the daemon, the other machines, and every session here and on
-// the hub with what each needs and why. The wording of states and next steps
-// comes from the core (`RowState`), as everywhere else.
+// Everything about how this machine stands with the hub: the connection, the
+// daemon, the other machines, and every session here and on the hub with what
+// each needs and why. State wording and next steps come from the core (`RowState`).
 const props = defineProps({
   hub: { type: Object, default: null },
   checking: { type: Boolean, default: false },
   checkedAt: { type: Number, default: 0 },
   home: { type: String, default: null },
 })
-const emit = defineEmits(['check', 'push', 'pull', 'compare', 'push-needed', 'pull-all', 'menu'])
+const emit = defineEmits(['check', 'push', 'pull', 'compare', 'push-needed', 'pull-all'])
 
 const now = ref(Date.now())
 let clock = null
@@ -50,26 +39,68 @@ const summary = computed(() => props.hub?.summary || {})
 const daemon = computed(() => props.hub?.daemon || null)
 const machines = computed(() => props.hub?.machines || [])
 const rows = computed(() => props.hub?.rows || [])
+const when = (ts) => ago(ts, now.value)
+// The hub's portable form (`${HOME}/…`) reads as `~/…`, like local paths.
+const dir = (p) => shortProject((p || '').replace('${HOME}', props.home || '~'), props.home)
 
-/* The table ------------------------------------------------------------ */
+/* Connection / daemon ------------------------------------------------- */
+const connState = computed(() => (props.checking ? 'connecting' : fresh.value ? 'connected' : 'failed'))
+const connLabel = computed(() => (props.checking ? 'Checking the hub' : fresh.value ? 'Hub reachable' : "Can't reach the hub"))
+const connItems = computed(() => [
+  { key: 'hub', label: 'Hub', value: host.value },
+  { key: 'me', label: 'This machine', value: props.hub?.machine },
+  { key: 'at', label: fresh.value ? 'Checked' : 'Last reached', value: props.checkedAt ? when(props.checkedAt) : 'not yet' },
+])
+const daemonHealthy = computed(() => daemon.value?.state === 'running' && !daemon.value.file?.last_error)
+const daemonLabel = computed(() =>
+  ({ running: 'Running', hung: 'Not responding' })[daemon.value?.state] || 'Not running')
+const daemonTone = computed(() => (daemonHealthy.value ? 'success' : daemon.value?.state === 'not_running' ? 'neutral' : 'danger'))
+const daemonItems = computed(() => {
+  const f = daemon.value?.file
+  if (!f) return []
+  return [
+    { key: 'push', label: 'Last push', value: agoUnix(f.last_push, now.value) || 'none yet' },
+    { key: 'pass', label: 'Last pass', value: agoUnix(f.last_pass, now.value) || 'none yet' },
+    { key: 'wait', label: 'Waiting', value: `${f.pending}${f.idle ? ` · ${f.idle} idle` : ''}` },
+    {
+      key: 'what', label: 'Pushes',
+      value: f.active_window ? `live or changed in the last ${Math.round(f.active_window / 60)} min` : 'everything that differs',
+    },
+    { key: 'every', label: 'Every', value: `${f.interval}s` },
+  ]
+})
+const recent = computed(() =>
+  (daemon.value?.file?.recent || []).slice().reverse().slice(0, 8).map((e, i) => ({
+    id: String(i), title: e.line, timestamp: agoUnix(e.at, now.value), tone: e.ok ? 'neutral' : 'danger',
+  })),
+)
+const showAllMachines = ref(false)
+const shownMachines = computed(() => (showAllMachines.value ? machines.value : machines.value.slice(0, 5)))
+
+/* Filters --------------------------------------------------------------- */
 const ORDER = ['diverged', 'untracked', 'behind', 'remote', 'ahead', 'local', 'in_sync']
 const PRIORITY = Object.fromEntries(ORDER.map((s, i) => [s, i]))
 const query = ref('')
 const picked = ref([])
 const onlyAttention = ref(false)
-const open = ref(new Set())
+const page = ref(1)
 
-const stateChips = computed(() =>
-  ORDER.map((state) => {
-    const of = rows.value.filter((r) => r.state === state)
-    return of.length ? { state, label: of[0].state_label, hint: of[0].state_hint, count: of.length } : null
-  }).filter(Boolean),
-)
-
+// Chips use the rows' own labels so chip and badge never disagree (a compared
+// 'untracked' row reads 'Differs'); the label is the filter key.
+const stateOptions = computed(() => {
+  const g = new Map()
+  for (const r of rows.value) {
+    const e = g.get(r.label) || { n: 0, p: PRIORITY[r.state] }
+    e.n++
+    e.p = Math.min(e.p, PRIORITY[r.state])
+    g.set(r.label, e)
+  }
+  return [...g].sort((a, b) => a[1].p - b[1].p).map(([label, e]) => ({ value: label, label: `${label} (${e.n})` }))
+})
 const shown = computed(() => {
   const q = query.value.trim().toLowerCase()
   return rows.value
-    .filter((r) => !picked.value.length || picked.value.includes(r.state))
+    .filter((r) => !picked.value.length || picked.value.includes(r.label))
     .filter((r) => !onlyAttention.value || r.action)
     .filter(
       (r) =>
@@ -86,21 +117,28 @@ const shown = computed(() => {
         String(b.updated).localeCompare(String(a.updated)),
     )
 })
+watch([query, picked, onlyAttention], () => (page.value = 1))
 
-function toggleState(state) {
-  picked.value = picked.value.includes(state)
-    ? picked.value.filter((s) => s !== state)
-    : [...picked.value, state]
-}
+/* Table ------------------------------------------------------------------ */
 const rowKey = (r) => `${r.agent}:${r.id}`
-// An id the DOM and aria-controls can use whatever characters a session id has.
-const domId = (r) => 'hv-' + rowKey(r).replace(/[^A-Za-z0-9_-]/g, '_')
-function toggleRow(r) {
-  const next = new Set(open.value)
-  next.has(rowKey(r)) ? next.delete(rowKey(r)) : next.add(rowKey(r))
-  open.value = next
-}
-
+const byKey = computed(() => new Map(shown.value.map((r) => [rowKey(r), r])))
+const ALL = [
+  { key: 'sync', label: 'Sync' },
+  { key: 'session', label: 'Session' },
+  { key: 'project', label: 'Project' },
+  { key: 'where', label: 'Where' },
+  { key: 'updated', label: 'Updated' },
+  { key: 'act', label: 'Actions', align: 'end' },
+]
+const columns = computed(() => (compact.value ? ALL.filter((c) => c.key !== 'where' && c.key !== 'updated') : ALL))
+const where = (r) => (r.here && r.on_hub ? 'Both' : r.on_hub ? 'Hub only' : 'This machine only')
+const tableRows = computed(() =>
+  shown.value.map((r) => ({
+    id: rowKey(r), sync: r.label, session: r.title || 'Untitled session',
+    project: dir(r.project), where: where(r), updated: when(r.updated), act: '',
+  })),
+)
+const cell = (r, key) => tableCellSlot(rowKey(r), key)
 const STATE_ICON = { in_sync: Check, diverged: ArrowUpDown, ahead: ArrowUp, local: ArrowUp }
 const iconOf = (r) => STATE_ICON[r.state] || ArrowDown
 
@@ -116,317 +154,207 @@ function buttonOf(r) {
   if (r.state === 'untracked' && !r.compare) return { text: 'Compare', off: null, compare: true }
   return { text: r.action === 'push' ? 'Push' : 'Pull', off: null }
 }
+
+// HDataTable has no stacked layout of its own, so a phone gets a list.
+const mq = window.matchMedia('(max-width: 640px)')
+const mqc = window.matchMedia('(max-width: 1000px)')
+const narrow = ref(mq.matches)
+const compact = ref(mqc.matches) // drop Where/Updated so the action stays on screen
+const onMq = (e) => (narrow.value = e.matches)
+const onMqc = (e) => (compact.value = e.matches)
+onMounted(() => { mq.addEventListener('change', onMq); mqc.addEventListener('change', onMqc) })
+onUnmounted(() => { mq.removeEventListener('change', onMq); mqc.removeEventListener('change', onMqc) })
+
+/* Details sheet ------------------------------------------------------------ */
+const detailKey = ref(null)
+const detail = computed(() => rows.value.find((r) => rowKey(r) === detailKey.value) || null)
+const sheetOpen = computed(() => !!detail.value)
 function press(r) {
   const b = buttonOf(r)
-  if (b?.resolve) return toggleRow(r)
+  if (b?.resolve) return (detailKey.value = rowKey(r))
   if (b?.compare) return emit('compare', r)
   emit(r.action === 'push' ? 'push' : 'pull', r)
 }
-
 // The command that does the same from a terminal.
 function command(r) {
   const id = r.short_id || r.id
-  if (r.action === 'resolve') return `asm push ${id} --force`
-  if (r.action === 'push') return `asm push ${id}`
-  if (r.action === 'pull') return `asm pull ${id}`
-  return ''
+  return { resolve: `asm push ${id} --force`, push: `asm push ${id}`, pull: `asm pull ${id}` }[r.action] || ''
 }
-const copied = ref('')
-async function copy(text) {
-  try {
-    await navigator.clipboard.writeText(text)
-    copied.value = text
-    setTimeout(() => (copied.value = ''), 1500)
-  } catch {
-    /* no clipboard (an http page that is not localhost): the text is on screen to select */
-  }
-}
-// Where the session is, in a few words.
-function where(r) {
-  if (r.here && r.on_hub) return 'Both'
-  return r.on_hub ? 'Hub only' : 'This machine only'
-}
-// "revision abc, 14 KB, pushed 3d ago by machB"
 const hubCopy = (r) =>
   [`revision ${r.rev}`, bytes(r.size), r.pushed_at && `pushed ${when(r.pushed_at)}${r.machine ? ' by ' + r.machine : ''}`]
-    .filter(Boolean)
-    .join(', ')
-const showAllMachines = ref(false)
-const shownMachines = computed(() => (showAllMachines.value ? machines.value : machines.value.slice(0, 5)))
-// The hub's portable form (`${HOME}/…`) reads as `~/…`, like local paths.
-const dir = (p) => shortProject((p || '').replace('${HOME}', props.home || '~'), props.home)
-const when = (ts) => ago(ts, now.value)
+    .filter(Boolean).join(', ')
+const detailItems = computed(() => {
+  const r = detail.value
+  if (!r) return []
+  const items = [
+    { key: 'id', label: 'Session id', value: r.id },
+    {
+      key: 'project', label: 'Project',
+      value: dir(r.project_root) + (r.branch ? ` · ${r.branch}` : '') + (r.project !== r.project_root ? ` · as ${r.project}` : ''),
+    },
+    { key: 'where', label: 'Where it is', value: `${r.here ? 'on this machine' : 'not on this machine'}, ${r.on_hub ? 'on the hub' : 'not on the hub'}` },
+  ]
+  if (r.on_hub) items.push({ key: 'hub', label: 'Hub copy', value: hubCopy(r) })
+  else if (r.size != null) items.push({ key: 'size', label: 'Size here', value: bytes(r.size) })
+  if (r.agent_version) items.push({ key: 'ver', label: 'Agent version', value: r.agent_version })
+  if (r.compare)
+    items.push({
+      key: 'cmp', label: 'Compared',
+      value: `${bytes(r.compare.local_size)} here, ${bytes(r.compare.hub_size)} on the hub — they cover different files, so size does not say which is ahead; pulling does`,
+    })
+  items.push({ key: 'rest', label: 'Restorable here', value: r.restorable ? 'yes' : 'no — backed up only' })
+  return items
+})
 </script>
 
 <template>
-  <section class="hubview" aria-labelledby="hubview-title">
-    <header class="hv-head">
-      <button class="icon-btn mobile-only" aria-label="Show projects" @click="emit('menu')">
-        <Menu :size="18" />
-      </button>
-      <h1 id="hubview-title" class="hv-title">Hub</h1>
-      <span class="hv-spacer" />
-      <HButton variant="secondary" size="compact" :disabled="checking" @click="emit('check')">
-        <RefreshCw :size="15" :class="{ spin: checking }" />
-        <span>{{ fresh ? 'Check now' : 'Retry' }}</span>
-      </HButton>
-      <HButton
-        v-if="summary.to_push"
-        variant="secondary" size="compact"
-        :disabled="!fresh"
-        :aria-label="`Push ${summary.to_push}${fresh ? '' : ' (unavailable: the hub cannot be reached)'}`"
-        :title="fresh ? '' : 'The hub cannot be reached'"
-        @click="emit('push-needed')"
-      >
-        <ArrowUp :size="15" />
-        <span>Push {{ summary.to_push }}</span>
-      </HButton>
-      <HButton
-        v-if="summary.to_pull"
-        variant="secondary" size="compact"
-        :disabled="!fresh"
-        :aria-label="`Pull ${summary.to_pull}${fresh ? '' : ' (unavailable: the hub cannot be reached)'}`"
-        :title="fresh ? '' : 'The hub cannot be reached'"
-        @click="emit('pull-all')"
-      >
-        <ArrowDown :size="15" />
-        <span>Pull {{ summary.to_pull }}</span>
-      </HButton>
-    </header>
+  <section class="hubview" aria-label="Hub">
+    <HPageHeader title="Hub" :description="hub?.joined ? `${summary.synced ?? 0} in sync on ${host}` : undefined">
+      <div class="hv-actions">
+        <HButton variant="secondary" size="compact" :disabled="checking" @click="emit('check')">
+          <RefreshCw :size="15" :class="{ 'hv-spin': checking }" />
+          <span>{{ fresh ? 'Check now' : 'Retry' }}</span>
+        </HButton>
+        <HButton
+          v-if="summary.to_push" variant="secondary" size="compact" :disabled="!fresh"
+          :aria-label="`Push ${summary.to_push}${fresh ? '' : ' (unavailable: the hub cannot be reached)'}`"
+          :title="fresh ? '' : 'The hub cannot be reached'" @click="emit('push-needed')"
+        >
+          <ArrowUp :size="15" /><span>Push {{ summary.to_push }}</span>
+        </HButton>
+        <HButton
+          v-if="summary.to_pull" variant="secondary" size="compact" :disabled="!fresh"
+          :aria-label="`Pull ${summary.to_pull}${fresh ? '' : ' (unavailable: the hub cannot be reached)'}`"
+          :title="fresh ? '' : 'The hub cannot be reached'" @click="emit('pull-all')"
+        >
+          <ArrowDown :size="15" /><span>Pull {{ summary.to_pull }}</span>
+        </HButton>
+      </div>
+    </HPageHeader>
 
-    <p v-if="!hub?.joined" class="empty">
-      This machine has not joined a hub. Run <code class="mono">ASM_JOIN_TOKEN=… asm join &lt;url&gt;</code>.
-    </p>
+    <HEmptyState v-if="!hub?.joined" title="No hub joined" description="This machine has not joined a hub. Run: ASM_JOIN_TOKEN=… asm join <url>" />
 
     <template v-else>
-      <div class="hv-cards">
-        <!-- Connection -->
-        <HCard class="hv-card" title="Connection">
-          <p class="hv-state" :class="fresh ? 'ok' : checking ? 'wait' : 'bad'" role="status">
-            <RefreshCw v-if="checking" :size="15" class="spin" />
-            <Cloud v-else-if="fresh" :size="15" />
-            <CloudOff v-else :size="15" />
-            <template v-if="checking">Checking…</template>
-            <template v-else-if="fresh">Connected</template>
-            <template v-else>Can't reach the hub</template>
-          </p>
-          <dl class="hv-dl">
-            <dt>Hub</dt>
-            <dd class="mono">{{ host }}</dd>
-            <dt>This machine</dt>
-            <dd>{{ hub.machine }}</dd>
-            <dt>{{ fresh ? 'Checked' : 'Last reached' }}</dt>
-            <dd>{{ checkedAt ? when(checkedAt) : 'not yet' }}</dd>
-          </dl>
-          <HAlert v-if="hub.error && !checking" tone="warning" :description="hub.error + (hub.stale ? ` The sessions below are as of ${when(checkedAt)}.` : '')">
-            <small v-if="hub.detail" class="mono faint">{{ hub.detail }}</small>
-          </HAlert>
-        </HCard>
-
-        <!-- Daemon -->
-        <HCard class="hv-card" title="Daemon">
-          <template v-if="daemon">
-            <p
-              class="hv-state"
-              role="status"
-              :class="daemon.state === 'running' && !daemon.file?.last_error ? 'ok' : daemon.state === 'not_running' ? 'wait' : 'bad'"
+      <div class="hv-grid">
+        <HCard title="Connection">
+          <div class="hv-stack">
+            <HConnectionState :state="connState" :label="connLabel" :retryable="!fresh && !checking" @retry="emit('check')" />
+            <HDescriptionList :items="connItems" />
+            <HAlert
+              v-if="hub.error && !checking" tone="warning"
+              :description="hub.error + (hub.stale ? ` The sessions below are as of ${when(checkedAt)}.` : '')"
             >
-              <Radio :size="15" />
-              <template v-if="daemon.state === 'running'">Running</template>
-              <template v-else-if="daemon.state === 'hung'">Not responding</template>
-              <template v-else>Not running</template>
-            </p>
-            <dl v-if="daemon.file" class="hv-dl">
-              <dt>Last push</dt>
-              <dd>{{ agoUnix(daemon.file.last_push, now) || 'none yet' }}</dd>
-              <dt>Last pass</dt>
-              <dd>{{ agoUnix(daemon.file.last_pass, now) || 'none yet' }}</dd>
-              <dt>Waiting</dt>
-              <dd>{{ daemon.file.pending }} <span v-if="daemon.file.idle" class="faint">· {{ daemon.file.idle }} idle</span></dd>
-              <dt>Pushes</dt>
-              <dd>
-                <template v-if="daemon.file.active_window">live or changed in the last {{ Math.round(daemon.file.active_window / 60) }} min</template>
-                <template v-else>everything that differs</template>
-              </dd>
-              <dt>Every</dt>
-              <dd>{{ daemon.file.interval }}s</dd>
-            </dl>
-            <p v-if="daemon.state !== 'running'" class="faint">
-              <code class="mono">asm daemon start</code> keeps the hub up to date.
-            </p>
+              <small v-if="hub.detail" class="hv-mono">{{ hub.detail }}</small>
+            </HAlert>
+          </div>
+        </HCard>
+
+        <HCard title="Daemon">
+          <div v-if="daemon" class="hv-stack">
+            <div><HBadge :tone="daemonTone" dot>{{ daemonLabel }}</HBadge></div>
+            <HDescriptionList v-if="daemonItems.length" :items="daemonItems" />
+            <p v-if="daemon.state !== 'running'" class="hv-faint"><code class="hv-mono">asm daemon start</code> keeps the hub up to date.</p>
             <HAlert v-if="daemon.file?.last_error" tone="warning" :description="daemon.file.last_error" />
-            <details v-if="daemon.file?.recent?.length" class="hv-recent">
-              <summary>Recent ({{ daemon.file.recent.length }})</summary>
-              <ul>
-                <li v-for="(e, i) in daemon.file.recent.slice().reverse().slice(0, 8)" :key="i" :class="{ bad: !e.ok }">
-                  <span class="faint">{{ agoUnix(e.at, now) }}</span> {{ e.line }}
-                </li>
-              </ul>
-            </details>
-          </template>
-          <p v-else class="faint">No daemon information.</p>
+            <HTimeline v-if="recent.length" label="Recent daemon activity" :items="recent" />
+          </div>
+          <p v-else class="hv-faint">No daemon information.</p>
         </HCard>
 
-        <!-- Machines -->
-        <HCard class="hv-card" :title="`Machines (${machines.length})`">
-          <ul v-if="machines.length" class="hv-machines">
-            <li v-for="m in shownMachines" :key="m.id">
-              <Monitor :size="15" />
-              <span class="hv-mname">{{ m.name }}</span>
-              <span v-if="m.name === hub.machine" class="hv-tag">this machine</span>
-              <span class="faint hv-seen">{{ m.last_seen ? 'seen ' + when(m.last_seen) : 'never seen' }}</span>
-            </li>
-          </ul>
-          <HButton v-if="machines.length > 5" variant="ghost" size="compact" :aria-expanded="showAllMachines" @click="showAllMachines = !showAllMachines">
-            {{ showAllMachines ? 'Show fewer' : `Show all ${machines.length}` }}
-          </HButton>
-          <p v-if="!machines.length" class="faint">The hub did not list its machines.</p>
+        <HCard :title="`Machines (${machines.length})`">
+          <div class="hv-stack">
+            <HList v-if="machines.length" label="Machines on the hub">
+              <HListItem
+                v-for="m in shownMachines" :key="m.id" :title="m.name"
+                :description="m.last_seen ? 'seen ' + when(m.last_seen) : 'never seen'"
+                :badge="m.name === hub.machine ? 'this machine' : undefined"
+              >
+                <template #leading><Monitor :size="16" aria-hidden="true" /></template>
+              </HListItem>
+            </HList>
+            <HButton v-if="machines.length > 5" variant="ghost" size="compact" :aria-expanded="showAllMachines" @click="showAllMachines = !showAllMachines">
+              {{ showAllMachines ? 'Show fewer' : `Show all ${machines.length}` }}
+            </HButton>
+            <p v-if="!machines.length" class="hv-faint">The hub did not list its machines.</p>
+          </div>
         </HCard>
       </div>
 
-      <!-- Sessions -->
       <div class="hv-tools">
-        <label class="field">
-          <Search :size="15" />
-          <input v-model="query" placeholder="Filter by title, id, project, machine…" aria-label="Filter hub sessions" />
-        </label>
-        <label class="checkbox">
-          <input v-model="onlyAttention" type="checkbox" />
-          <span>Only what needs doing</span>
-        </label>
+        <HInput v-model="query" type="search" label="Filter hub sessions" placeholder="Title, id, project, machine…" />
+        <HSwitch v-model="onlyAttention" label="Only what needs doing" />
       </div>
-      <div v-if="stateChips.length" class="chips hv-chips" role="group" aria-label="Filter by sync state">
-        <button
-          v-for="c in stateChips"
-          :key="c.state"
-          class="chip"
-          :class="{ on: picked.includes(c.state) }"
-          :aria-pressed="picked.includes(c.state)"
-          :data-state="c.state"
-          :aria-label="`${c.label}, ${c.count}`"
-          :title="c.hint"
-          @click="toggleState(c.state)"
+      <HChipGroup v-if="stateOptions.length" v-model="picked" :options="stateOptions" label="Filter by sync state" />
+
+      <HEmptyState
+        v-if="!shown.length"
+        :title="rows.length ? 'Nothing matches these filters' : 'Nothing to sync'"
+        :description="rows.length ? 'Clear a filter to see more.' : 'Nothing on the hub, and nothing here to send.'"
+      />
+      <HList v-else-if="narrow" label="Sessions on this machine and on the hub">
+        <HListItem
+          v-for="r in shown" :key="rowKey(r)" interactive :title="r.title || 'Untitled session'"
+          :description="`${dir(r.project)} · ${where(r)} · ${when(r.updated)}`" @activate="detailKey = rowKey(r)"
         >
-          <span>{{ c.label }}</span>
-          <span class="chip-count">{{ c.count }}</span>
-        </button>
-      </div>
-
-      <p v-if="!shown.length" class="empty">
-        {{ rows.length ? 'Nothing matches these filters.' : 'Nothing on the hub, and nothing here to send.' }}
-      </p>
-
-      <table v-else class="hv-table">
-        <caption class="sr-only">Sessions on this machine and on the hub</caption>
-        <thead>
-          <tr>
-            <th scope="col"><span class="sr-only">Details</span></th>
-            <th scope="col">Sync</th>
-            <th scope="col">Session</th>
-            <th scope="col" class="hv-col-project">Project</th>
-            <th scope="col" class="hv-col-where">Where</th>
-            <th scope="col" class="hv-col-when">Updated</th>
-            <th scope="col"><span class="sr-only">Action</span></th>
-          </tr>
-        </thead>
-        <tbody>
-          <template v-for="r in shown" :key="rowKey(r)">
-            <tr class="hv-row" :class="{ open: open.has(rowKey(r)) }">
-              <td>
-                <button
-                  class="icon-btn hv-twist"
-                  :aria-expanded="open.has(rowKey(r))"
-                  :aria-controls="open.has(rowKey(r)) ? domId(r) : null"
-                  :aria-label="`Details for ${r.title || r.short_id}`"
-                  @click="toggleRow(r)"
-                >
-                  <ChevronRight :size="16" />
-                </button>
-              </td>
-              <td>
-                <HBadge :tone="hubTone(r.state)" :class="{ stale: hub.stale }" :title="r.hint">
-                  <component :is="iconOf(r)" :size="12" aria-hidden="true" />
-                  {{ r.label }}
-                </HBadge>
-              </td>
-              <td>
-                <div class="hv-session">
-                  <AgentMark :agent="r.agent" :size="15" />
-                  <span class="hv-stitle">
-                    <span class="truncate" :title="r.title || 'Untitled session'">{{ r.title || 'Untitled session' }}</span>
-                    <span class="faint mono">{{ r.short_id }}</span>
-                  </span>
-                </div>
-              </td>
-              <td class="hv-col-project" :title="r.project_root">{{ dir(r.project) }}</td>
-              <td class="hv-col-where">{{ where(r) }}</td>
-              <td class="hv-col-when">{{ when(r.updated) }}</td>
-              <td class="hv-act">
-                <template v-if="buttonOf(r)">
-                  <HButton
-                    variant="secondary" size="compact"
-                    :disabled="!!buttonOf(r).off"
-                    :title="buttonOf(r).off || r.hint"
-                    :aria-label="`${buttonOf(r).text} ${r.title || r.short_id}${buttonOf(r).off ? ' (unavailable: ' + buttonOf(r).off + ')' : ''}`"
-                    @click="press(r)"
-                  >
-                    <ArrowUp v-if="r.action === 'push'" :size="14" />
-                    <ArrowUpDown v-else-if="r.action === 'resolve'" :size="14" />
-                    <ArrowDown v-else-if="!buttonOf(r).compare" :size="14" />
-                    <Scale v-else :size="14" />
-                    <span>{{ buttonOf(r).text }}</span>
-                  </HButton>
-                </template>
-              </td>
-            </tr>
-            <tr v-if="open.has(rowKey(r))" :id="domId(r)" class="hv-detail">
-              <td />
-              <td colspan="6">
-                <p class="hv-hint">{{ r.hint }}</p>
-                <dl class="hv-dl hv-dl-wide">
-                  <dt>Session id</dt>
-                  <dd class="mono">{{ r.id }}</dd>
-                  <dt>Project</dt>
-                  <dd>
-                    <span class="mono">{{ dir(r.project_root) }}</span>
-                    <span v-if="r.branch" class="faint"> · {{ r.branch }}</span>
-                    <span v-if="r.project !== r.project_root" class="faint"> · as {{ r.project }}</span>
-                  </dd>
-                  <dt>Where it is</dt>
-                  <dd>{{ r.here ? 'on this machine' : 'not on this machine' }}, {{ r.on_hub ? 'on the hub' : 'not on the hub' }}</dd>
-                  <template v-if="r.on_hub">
-                    <dt>Hub copy</dt>
-                    <dd>{{ hubCopy(r) }}</dd>
-                  </template>
-                  <template v-else-if="r.size != null">
-                    <dt>Size here</dt>
-                    <dd>{{ bytes(r.size) }}</dd>
-                  </template>
-                  <dt v-if="r.agent_version">Agent version</dt>
-                  <dd v-if="r.agent_version">{{ r.agent_version }}</dd>
-                  <template v-if="r.compare">
-                    <dt>Compared</dt>
-                    <dd>
-                      {{ bytes(r.compare.local_size) }} here, {{ bytes(r.compare.hub_size) }} on the hub
-                      <span class="faint"> — they cover different files, so size does not say which is ahead; pulling does</span>
-                    </dd>
-                  </template>
-                  <dt>Restorable here</dt>
-                  <dd>{{ r.restorable ? 'yes' : 'no — backed up only' }}</dd>
-                </dl>
-                <p v-if="command(r)" class="hv-cmd">
-                  <code class="mono">{{ command(r) }}</code>
-                  <button class="icon-btn" :aria-label="`Copy ${command(r)}`" @click="copy(command(r))">
-                    <Check v-if="copied === command(r)" :size="14" />
-                    <Copy v-else :size="14" />
-                  </button>
-                  <span class="sr-only" role="status">{{ copied === command(r) ? 'Copied' : '' }}</span>
-                </p>
-              </td>
-            </tr>
+          <template #leading><AgentMark :agent="r.agent" :size="15" /></template>
+          <template #trailing>
+            <HBadge :tone="hubTone(r.state)"><component :is="iconOf(r)" :size="12" aria-hidden="true" /> {{ r.label }}</HBadge>
           </template>
-        </tbody>
-      </table>
+        </HListItem>
+      </HList>
+      <HDataTable
+        v-else v-model:page="page" label="Sessions on this machine and on the hub"
+        :rows="tableRows" :columns="columns" :page-size="25"
+      >
+          <template v-for="r in shown" :key="'s'+rowKey(r)" #[cell(r,`sync`)]>
+            <HBadge :tone="hubTone(r.state)" :title="r.hint" :style="hub.stale ? 'opacity:.75' : ''">
+              <component :is="iconOf(r)" :size="12" aria-hidden="true" /> {{ r.label }}
+            </HBadge>
+          </template>
+          <template v-for="r in shown" :key="'n'+rowKey(r)" #[cell(r,`session`)]>
+            <button class="hv-open" type="button" :aria-label="`Details for ${r.title || r.short_id}`" @click="detailKey = rowKey(r)">
+              <span class="hv-session">
+                <AgentMark :agent="r.agent" :size="15" />
+                <span class="hv-stitle">
+                  <span :title="r.title || 'Untitled session'">{{ r.title || 'Untitled session' }}</span>
+                  <span class="hv-id">{{ r.short_id }}</span>
+                </span>
+              </span>
+            </button>
+          </template>
+          <template v-for="r in shown" :key="'p'+rowKey(r)" #[cell(r,`project`)]>
+            <span class="hv-proj" :title="dir(r.project)">{{ dir(r.project) }}</span>
+          </template>
+          <template v-for="r in shown" :key="'a'+rowKey(r)" #[cell(r,`act`)]>
+            <div class="hv-rowact">
+              <HButton
+                v-if="buttonOf(r)" variant="secondary" size="compact" :disabled="!!buttonOf(r).off"
+                :title="buttonOf(r).off || r.hint"
+                :aria-label="`${buttonOf(r).text} ${r.title || r.short_id}${buttonOf(r).off ? ' (unavailable: ' + buttonOf(r).off + ')' : ''}`"
+                @click="press(r)"
+              >
+                <ArrowUp v-if="r.action === 'push'" :size="14" />
+                <ArrowUpDown v-else-if="r.action === 'resolve'" :size="14" />
+                <Scale v-else-if="buttonOf(r).compare" :size="14" />
+                <ArrowDown v-else :size="14" />
+                <span>{{ buttonOf(r).text }}</span>
+              </HButton>
+            </div>
+          </template>
+      </HDataTable>
+
+      <HSheet :open="sheetOpen" :title="detail?.title || 'Untitled session'" :description="detail?.hint" width="520px" @close="detailKey = null">
+        <div v-if="detail" class="hv-sheet">
+          <div><HBadge :tone="hubTone(detail.state)">{{ detail.label }}</HBadge></div>
+          <HDescriptionList :items="detailItems" />
+          <HCopyField v-if="command(detail)" label="Same from a terminal" :value="command(detail)" />
+        </div>
+        <template #footer>
+          <HButton v-if="detail && buttonOf(detail) && !buttonOf(detail).resolve" variant="primary" :disabled="!!buttonOf(detail).off" :title="buttonOf(detail).off" @click="press(detail)">
+            {{ buttonOf(detail).text }}
+          </HButton>
+          <HButton variant="ghost" @click="detailKey = null">Close</HButton>
+        </template>
+      </HSheet>
     </template>
   </section>
 </template>

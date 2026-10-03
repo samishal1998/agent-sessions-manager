@@ -1,0 +1,22 @@
+.admin { max-width: 72rem; margin: 0 auto; padding: var(--h-space-4, 1rem); display: grid; gap: var(--h-space-4, 1rem); }
+.admin-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: var(--h-space-3, 0.75rem); }
+.admin-login { max-width: 28rem; margin: 2rem auto; width: 100%; }
+.admin-form, .admin-stack { display: grid; gap: var(--h-space-3, 0.75rem); }
+.admin-actions { display: flex; flex-wrap: wrap; gap: var(--h-space-2, 0.5rem); align-items: center; }
+.admin-title { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.admin-session { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.admin-clip { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-cards { display: none; list-style: none; margin: 0; padding: 0; gap: 8px; }
+.admin-card { display: grid; gap: 8px; justify-items: start; min-width: 0; padding: 16px; border: 1px solid var(--h-border, currentColor); border-radius: 8px; }
+.admin-card > * { max-width: 100%; }
+.admin-meta { font-size: 12px; display: flex; flex-wrap: wrap; gap: 0 4px; min-width: 0; color: var(--h-text-muted, inherit); }
+@media (max-width: 880px) {
+  .admin-cards { display: grid; }
+  .admin-table { display: none; }
+  .admin { padding: 16px; }
+  .admin h1 { font-size: 20px; }
+  .admin h1 { font-size: 20px; line-height: 28px; overflow-wrap: anywhere; }
+}
+.admin-mono { font-family: var(--h-font-mono, ui-monospace, monospace); }
+.admin-table td, .admin-table th { white-space: nowrap; }
+.admin-session .admin-mono { flex: none; }

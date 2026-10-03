@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { ChevronDown, ChevronRight } from 'lucide-vue-next'
+import { HAccordion, HBadge } from '@hearth-ui/vue'
+import '../styles/transcript.css'
 import { KNOWN, textOf } from '../markup.js'
 
 // Renders the tree from markup.js. Known envelopes get a name and a tone;
@@ -39,6 +40,15 @@ function toggle(node, i) {
   openState.value = { ...openState.value, [key]: !isOpen(node, i) }
 }
 
+// HAccordion's model is an array of open ids; each block is its own
+// one-item accordion, so the id is constant.
+const ID = 'b'
+function title(node) {
+  const attrs = attrPairs(node).map(([k, v]) => (v === '' ? k : `${k}=${v}`))
+  const head = [label(node), ...attrs].join(' · ')
+  return head
+}
+
 function label(node) {
   return meta(node).label ?? node.name
 }
@@ -56,33 +66,27 @@ function attrPairs(node) {
 
 <template>
   <template v-for="(node, i) in visible" :key="i">
-    <div v-if="node.type === 'text'" class="message-text">{{ node.value }}</div>
+    <div v-if="node.type === 'text'" class="tv-text">{{ node.value }}</div>
 
     <!-- Short leaf: one row, no box. -->
-    <div v-else-if="isCompact(node) && depth > 0" class="markup-row">
-      <span class="markup-key">{{ label(node) }}</span>
-      <span class="markup-value">{{ textOf(node) }}</span>
+    <div v-else-if="isCompact(node) && depth > 0" class="tv-row">
+      <HBadge :label="label(node)" :tone="meta(node).tone === 'error' ? 'danger' : 'neutral'" />
+      <span class="tv-row-value">{{ textOf(node) }}</span>
     </div>
 
-    <div v-else class="markup" :class="[`tone-${meta(node).tone}`, { nested: depth > 0 }]">
-      <button
-        type="button"
-        class="markup-head"
-        :aria-expanded="isOpen(node, i)"
-        @click="toggle(node, i)"
-      >
-        <component :is="isOpen(node, i) ? ChevronDown : ChevronRight" :size="13" />
-        <span class="markup-label">{{ label(node) }}</span>
-        <code v-if="label(node) !== node.name" class="markup-tag">{{ node.name }}</code>
-        <code v-for="[k, v] in attrPairs(node)" :key="k" class="markup-attr">
-          {{ v === '' ? k : `${k}=${v}` }}
-        </code>
-        <span v-if="!isOpen(node, i)" class="markup-preview">{{ preview(node) }}</span>
-      </button>
-
-      <div v-show="isOpen(node, i)" class="markup-body">
+    <HAccordion
+      v-else
+      class="tv-markup"
+      :items="[{ id: ID, title: title(node), description: isOpen(node, i) ? undefined : preview(node) }]"
+      :model-value="isOpen(node, i) ? [ID] : []"
+      @update:model-value="toggle(node, i)"
+    >
+      <template #[ID]>
+        <div v-if="label(node) !== node.name" class="tv-tag">
+          <HBadge tone="neutral" :label="node.name" />
+        </div>
         <MarkupBlock :nodes="node.children" :depth="depth + 1" />
-      </div>
-    </div>
+      </template>
+    </HAccordion>
   </template>
 </template>

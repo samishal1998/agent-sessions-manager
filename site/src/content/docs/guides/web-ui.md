@@ -28,23 +28,21 @@ On a phone the sidebar becomes an overlay and the transcript takes the full scre
 
 ![The web UI at phone width](../../../assets/shots/mobile.png)
 
-## The hub panel
+## The hub summary
 
-When the machine has joined a hub, a panel above the list says how it stands:
-
-![The hub panel](../../../assets/shots/hub-panel.png)
+When the machine has joined a hub, one line above the list says how it stands (the screenshot at the top of this page shows it):
 
 - **Connection** — "Connected to host" with when it was last checked, or "Can't reach the hub" with the reason and what to try; **Check** / **Retry** asks again. A check runs every minute or so while the page is open.
-- **Daemon** — one line: `Daemon running · last push 12s ago · 1 waiting`, or that none is running with the command to start one; a failing session's error appears beside it.
+- **Daemon** — a badge for whether it is running; the details are on the Hub screen.
 - **Filter chips** — one per sync state that has sessions. Click to narrow the list; multiple chips combine.
 - **Push *n*** and **Pull *n*** — everything that needs it, in one click.
-- **New on the hub** — sessions other machines pushed that this one lacks, each with a Pull button. A session of an agent that cannot be restored here is shown disabled with the reason.
+- **Hub view** — opens the Hub screen, with the number of sessions that are new on the hub.
 
 Every session row also carries its sync state, in the same words as the CLI and TUI. When the hub cannot be reached, Push and Pull are disabled with the reason, and the last known states stay visible, marked old.
 
 ## The Hub view
 
-Once this machine has joined a hub, the sidebar gains a **Hub** entry (with a count of what needs attention) beside **Sessions**. It is the detailed version of the panel above: 
+Once this machine has joined a hub, the sidebar gains a **Hub** entry (with a count of what needs attention) beside **Sessions**. It is the detailed version of the summary above, and the URL follows the screen (`#/hub`), so reload and Back work: 
 
 - **Connection, Daemon and Machines** cards — the hub and when it was last reached, whether the [daemon](/hub/daemon/) is running with its last push, what is waiting and its recent events, and every machine that has joined, with when it was last seen.
 - **A table of every session** here and on the hub, the ones that need a decision first: its sync state, the agent, title and id, project, where it is (both, hub only, this machine only), when it changed, and a button for the next step — **Push**, **Pull**, **Compare** or **Resolve**. A pull of a session of an agent that cannot be restored here is disabled with the reason, and every button is disabled while the hub cannot be reached.

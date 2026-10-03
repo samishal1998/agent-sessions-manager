@@ -1,18 +1,7 @@
 <script setup>
-import { HAlert, HButton, HCard } from '@hearth-ui/vue'
+import { HAlert, HBadge, HButton, HChipGroup } from '@hearth-ui/vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import {
-  ArrowDown,
-  ArrowRight,
-  ArrowUp,
-  ArrowUpDown,
-  Check,
-  Cloud,
-  CloudDownload,
-  CloudOff,
-  Radio,
-  RefreshCw,
-} from 'lucide-vue-next'
+import { ArrowDown, ArrowRight, ArrowUp, RefreshCw } from 'lucide-vue-next'
 
 // How this machine stands with the hub, in one place: whether it answered,
 // what is out of step, and what is on the hub that is not here yet. The
@@ -25,6 +14,9 @@ const props = defineProps({
   checkedAt: { type: Number, default: 0 },
   // Sync states the list is narrowed to.
   modelValue: { type: Array, default: () => [] },
+  // 'line' is the one-line status; 'chips' is only the sync-state filter, which
+  // the toolbar shows beside the agent chips.
+  mode: { type: String, default: 'line' },
 })
 const emit = defineEmits(['update:modelValue', 'check', 'push-needed', 'pull-all', 'open'])
 
@@ -86,113 +78,83 @@ const fresh = computed(() => props.hub?.connected && !props.hub?.stale)
 // One chip per state that has sessions in it, in the order a person works
 // through them: what to send, what to fetch, what needs a decision, the rest.
 const ORDER = ['local', 'ahead', 'behind', 'untracked', 'diverged', 'in_sync']
-const ICONS = { local: ArrowUp, ahead: ArrowUp, behind: ArrowDown, untracked: ArrowDown, diverged: ArrowUpDown, in_sync: Check }
-const chips = computed(() =>
+const options = computed(() =>
   ORDER.map((state) => {
     const of = rows.value.filter((r) => r.state === state)
-    return of.length ? { state, label: of[0].state_label, hint: of[0].state_hint, count: of.length } : null
+    return of.length ? { value: state, label: `${of[0].label} (${of.length})` } : null
   }).filter(Boolean),
 )
+const connection = computed(() => (props.checking ? 'checking' : fresh.value ? 'connected' : 'failed'))
+const connectionTone = computed(() => ({ checking: 'info', connected: 'success', failed: 'danger' })[connection.value])
+const connectionLabel = computed(() => ({ checking: 'Checking', connected: 'Connected', failed: 'Unreachable' })[connection.value])
+const detail = computed(
+  () =>
+    (props.hub?.machine ? `as ${props.hub.machine}` : '') +
+    (ago.value ? `${props.hub?.machine ? ' · ' : ''}${fresh.value ? 'checked' : 'last reached'} ${ago.value}` : ''),
+)
 const newOnHub = computed(() => rows.value.filter((r) => r.state === 'remote'))
-function toggle(state) {
-  emit(
-    'update:modelValue',
-    props.modelValue.includes(state)
-      ? props.modelValue.filter((s) => s !== state)
-      : [...props.modelValue, state],
-  )
-}
+const daemonLabel = computed(() => (daemon.value?.state === 'running' ? 'Daemon' : daemon.value?.state === 'hung' ? 'Daemon stuck' : 'No daemon'))
+// What the daemon badge says when hovered: the whole story, one line.
+const daemonTitle = computed(() =>
+  [daemonLine.value, daemon.value?.state === 'running' ? daemon.value.file?.last_error : daemonHint.value].filter(Boolean).join(' — '),
+)
 </script>
 
 <template>
-  <HCard v-if="hub?.joined" class="hubpanel" aria-label="Hub">
-    <div class="hubpanel-body">
-    <h2 class="sr-only">Hub</h2>
-    <div class="hub-line">
-      <!-- Icon and words, never colour alone; announced when it changes. -->
-      <span
-        class="hub-state"
-        :class="fresh ? 'ok' : checking ? 'wait' : 'bad'"
-        role="status"
-        aria-live="polite"
-      >
-        <RefreshCw v-if="checking" :size="15" class="spin" />
-        <Cloud v-else-if="fresh" :size="15" />
-        <CloudOff v-else :size="15" />
-        <template v-if="checking">Checking the hub…</template>
-        <template v-else-if="fresh">Connected to {{ host }}</template>
-        <template v-else>Can't reach the hub</template>
-      </span>
-      <span class="faint hub-detail">
-        <template v-if="hub.machine">as {{ hub.machine }}</template>
-        <template v-if="ago"> · {{ fresh ? 'checked' : 'last reached' }} {{ ago }}</template>
-      </span>
+  <HChipGroup
+    v-if="mode === 'chips' && hub?.joined && options.length"
+    :model-value="modelValue"
+    label="Filter by sync state"
+    :options="options"
+    @update:model-value="emit('update:modelValue', $event)"
+  />
 
-      <span class="hub-actions">
-        <HButton variant="secondary" size="compact" @click="emit('open')">
-          <ArrowRight :size="14" />
-          <span>Hub view</span>
-        </HButton>
-        <HButton variant="secondary" size="compact" :disabled="checking" @click="emit('check')">
-          <RefreshCw :size="14" />
-          <span>{{ fresh ? 'Check' : 'Retry' }}</span>
+  <div v-else-if="mode === 'line' && hub?.joined" class="s-hub" role="group" aria-label="Hub">
+    <div class="s-hub-line">
+      <HBadge :tone="connectionTone" :dot="connection === 'connected'" :label="connectionLabel" :title="detail" />
+      <span class="s-hub-host" :title="detail">{{ host }}</span>
+      <HBadge
+        v-if="daemon"
+        class="s-hub-daemon"
+        :tone="daemonOk ? 'success' : 'warning'"
+        :dot="daemonOk"
+        :label="daemonLabel"
+        :title="daemonTitle"
+      />
+      <span class="s-hub-actions">
+        <HButton variant="ghost" size="compact" class="s-hub-check" :disabled="checking" aria-label="Check the hub" title="Check the hub" @click="emit('check')">
+          <RefreshCw :size="14" aria-hidden="true" />
+          <span class="s-hub-check-text">Check</span>
         </HButton>
         <HButton
           v-if="summary.to_push"
-          variant="secondary" size="compact"
+          variant="secondary"
+          size="compact"
           :disabled="!fresh"
           :title="fresh ? 'Push every session that is new or changed here' : 'The hub cannot be reached'"
           @click="emit('push-needed')"
         >
-          <ArrowUp :size="14" />
+          <ArrowUp :size="14" aria-hidden="true" />
           <span>Push {{ summary.to_push }}</span>
         </HButton>
         <HButton
           v-if="summary.to_pull"
-          variant="secondary" size="compact"
+          variant="secondary"
+          size="compact"
           :disabled="!fresh"
           :title="fresh ? 'Pull every session that is new or newer on the hub' : 'The hub cannot be reached'"
           @click="emit('pull-all')"
         >
-          <ArrowDown :size="14" />
+          <ArrowDown :size="14" aria-hidden="true" />
           <span>Pull {{ summary.to_pull }}</span>
+        </HButton>
+        <HButton variant="secondary" size="compact" @click="emit('open')">
+          <ArrowRight :size="14" aria-hidden="true" />
+          <span>Hub view<span v-if="newOnHub.length" class="s-hub-new"> · {{ newOnHub.length }} new</span></span>
         </HButton>
       </span>
     </div>
-
-    <div v-if="daemon" class="hub-daemon" :class="{ ok: daemonOk }" :title="daemonHint">
-      <Radio :size="14" />
-      <span>{{ daemonLine }}</span>
-      <span v-if="daemon.state === 'running' && daemon.file?.last_error" class="hub-daemon-err">
-        — {{ daemon.file.last_error }}
-      </span>
-      <span v-else-if="daemon.state !== 'running'" class="faint">— {{ daemonHint }}</span>
-    </div>
-
     <!-- What is wrong, and what to do about it. -->
     <HAlert v-if="hub.error && !checking" tone="warning" :description="hub.error + (hub.stale ? ` Sync states below are as of ${ago}.` : '')" />
-
-    <div v-if="chips.length" class="chips" role="group" aria-label="Filter by sync state">
-      <button
-        v-for="c in chips"
-        :key="c.state"
-        class="chip"
-        :class="{ on: modelValue.includes(c.state) }"
-        :aria-pressed="modelValue.includes(c.state)"
-        :data-state="c.state"
-        :title="c.hint"
-        @click="toggle(c.state)"
-      >
-        <component :is="ICONS[c.state]" :size="14" />
-        <span>{{ c.label }}</span>
-        <span class="chip-count">{{ c.count }}</span>
-      </button>
-    </div>
-
-    <HButton v-if="newOnHub.length" variant="ghost" size="compact" class="hub-open" @click="emit('open')">
-      <CloudDownload :size="15" />
-      <span>{{ newOnHub.length }} new on the hub</span>
-    </HButton>
-    </div>
-  </HCard>
+  </div>
 </template>

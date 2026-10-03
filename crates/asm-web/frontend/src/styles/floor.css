@@ -1,0 +1,41 @@
+/* Type floor: no text renders under 12px on any screen. Hearth emits 10px and
+   11px labels (and the transcript sizes in rem of a 14px root, 11.375px);
+   every one of Hearth's sub-12px rules is listed here and lifted to 12px.
+   !important because Hearth's own rules are scoped (`small[data-v-x]`) and
+   would otherwise win on specificity or source order.
+   Imported by main.js; hub-main.js needs the same import for the admin page. */
+.h-theme :is(
+    small,
+    th,
+    dt,
+    figcaption,
+    time,
+    kbd,
+    p[part='hint'],
+    .h-source,
+    .h-stat-label,
+    .h-eyebrow,
+    .h-host-note,
+    .h-nav-label,
+    .h-shell-footer,
+    .h-shell-footer > span,
+    .h-auth-note,
+    .h-chip,
+    .h-combo-hint,
+    .h-radio-help,
+    .h-progress-label > span,
+    .h-file-help,
+    .h-command-group,
+    .h-status-updated,
+    .h-setup-steps li,
+    .h-step-description,
+    .h-sidebar-lists h2,
+    .h-log-viewport,
+    .h-log-viewport footer
+  ) {
+  font-size: 12px !important;
+}
+/* Transcript and Hub: 0.8125rem of a 14px root is 11.375px. */
+.h-theme :is(.tv-title span, .tv-meta, .tv-meta span, .tv-actions, .tv-actions span, .hv-id, .hv-mono) {
+  font-size: 13px !important;
+}

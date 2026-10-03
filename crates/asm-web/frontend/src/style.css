@@ -128,9 +128,6 @@ body {
   font-family: var(--mono);
   font-size: inherit;
 }
-.dim {
-  color: var(--fg-muted);
-}
 .faint {
   color: var(--fg-faint);
 }
@@ -172,106 +169,6 @@ body {
 }
 .brand svg {
   color: var(--accent);
-}
-
-.side-heading {
-  font-size: var(--text-xs);
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--fg-faint);
-  margin-bottom: var(--space-2);
-}
-
-.side-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.side-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  border: 1px solid transparent;
-  color: var(--fg-muted);
-  text-align: left;
-  background: none;
-  font: inherit;
-  width: 100%;
-}
-.side-item:hover {
-  background: var(--bg-hover);
-  color: var(--fg);
-}
-.side-item.active {
-  background: var(--accent-soft);
-  border-color: var(--accent-border);
-  color: var(--accent);
-}
-.side-item .label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.side-item .count {
-  color: var(--fg-faint);
-  font-variant-numeric: tabular-nums;
-  flex-shrink: 0;
-}
-
-/* A project is named by the tail of its path, with the whole path beneath.
-   min-width: 0 so the ellipsis in .label actually engages — a flex child
-   defaults to its content width and would otherwise push the count out. */
-.side-item .ico {
-  width: 13px;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.side-item .stack {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-  flex: 1;
-}
-.side-item .sublabel {
-  font-size: var(--text-xs);
-  color: var(--fg-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* Truncated at the end, not the start. `direction: rtl` would put the
-   ellipsis on the informative side, but a path is slashes and neutral
-   characters, so the bidi algorithm reorders the whole run and
-   `~/code/atlas-web` renders as `code/atlas-web/~`. The distinguishing tail
-   is already the label above this, and the full path is on hover. */
-
-.side-resize {
-  flex: 0 0 7px;
-  margin: 0 -3px 0 -4px;
-  z-index: 2;
-  cursor: col-resize;
-  background: transparent;
-  border: 0;
-  padding: 0;
-  transition: background 0.12s ease;
-  touch-action: none;
-}
-.side-resize:hover,
-.sidebar.resizing + .side-resize {
-  background: var(--accent-soft);
-}
-.side-resize:focus-visible {
-  outline-offset: 0;
-  background: var(--accent);
 }
 
 .warnings {
@@ -362,29 +259,6 @@ button:hover,
   outline-offset: 2px;
 }
 
-
-.checkbox {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--fg-muted);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.checkbox:hover {
-  color: var(--fg);
-  background: var(--bg-hover);
-}
-.checkbox input {
-  accent-color: var(--accent);
-  width: 18px;
-  height: 18px;
-  padding: 0;
-}
-
 /* Content scroller ---------------------------------------------------- */
 .content {
   flex: 1;
@@ -437,47 +311,6 @@ button:hover,
 }
 .row:focus-visible {
   outline-offset: -2px;
-}
-
-.row-body {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.row-title {
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.row-meta {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-xs);
-  color: var(--fg-muted);
-  font-variant-numeric: tabular-nums;
-  /* Wraps rather than clips: at phone width the size or age used to be cut
-     off mid-value with no way to read it. */
-  flex-wrap: wrap;
-  row-gap: 2px;
-}
-/* Only the project path gives way; an id or a timestamp broken across two
-   lines reads worse than a truncated path. */
-.row-meta > * {
-  flex-shrink: 0;
-}
-.row-meta .sep {
-  opacity: 0.5;
-}
-.row-meta .project {
-  flex-shrink: 1;
-  min-width: 0;
-  max-width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .actions {
@@ -665,67 +498,15 @@ button:hover,
     animation: none;
   }
 }
-.chip-count {
-  color: var(--fg-muted);
-  font-variant-numeric: tabular-nums;
-}
-.chip.on .chip-count {
-  color: var(--accent);
-}
-.side-search {
-  position: relative;
-  display: flex;
-  align-items: center;
-  margin: 0 0 var(--space-2);
-}
-.side-search svg {
-  position: absolute;
-  left: var(--space-2);
-  color: var(--fg-faint);
-  pointer-events: none;
-}
-.side-search input {
-  width: 100%;
-  padding: 5px var(--space-2) 5px 28px;
-  font-size: var(--text-xs);
-}
-
-.hubpanel {
-  margin-bottom: var(--space-5);
-}
-.hubpanel-body {
-  display: flex;
-  flex-direction: column;
-  /* 16px between groups, 8px (below) within one. */
-  gap: var(--space-4);
-}
 .hub-line {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2) var(--space-3);
 }
-.hub-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 600;
-}
-.hub-state.ok {
-  color: var(--green);
-}
-.hub-state.bad {
-  color: var(--amber);
-}
-.hub-state.wait {
-  color: var(--fg-muted);
-}
 .hub-line + .hub-daemon {
   /* The daemon line belongs with the connection line above it. */
   margin-top: calc(var(--space-2) - var(--space-4));
-}
-.hub-detail {
-  font-size: var(--text-xs);
 }
 .hub-actions {
   display: inline-flex;
@@ -743,29 +524,11 @@ button:hover,
 .hub-daemon.ok {
   color: var(--green);
 }
-.hub-daemon-err {
-  color: var(--amber);
-}
-/* Narrow, whether the window is or the transcript drawer is open beside it:
-   the title is what says which session this is, so it gets a line of its
-   own and may wrap rather than being cut to a few letters. */
-@container (max-width: 560px) {
-      }
-.side-empty {
-  padding: var(--space-1) var(--space-2);
-  font-size: var(--text-xs);
-}
 .dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: currentColor;
-}
-
-/* Tooltip ------------------------------------------------------------- */
-.tt-wrap {
-  position: relative;
-  display: inline-flex;
 }
 /* Positioned from JS and teleported to <body>, so a scroll container can
    never clip it. */
@@ -798,42 +561,6 @@ button:hover,
   border-bottom: 1px solid var(--border);
   color: var(--fg-muted);
 }
-.results-head .spacer {
-  flex: 1;
-}
-
-.hit-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-.hit-snippet {
-  font-family: var(--mono);
-  font-size: var(--text-xs);
-  color: var(--fg-muted);
-  line-height: 1.6;
-  word-break: break-word;
-  margin-top: var(--space-1);
-}
-.hit-snippet mark {
-  background: var(--warn-bg);
-  color: var(--amber);
-  border-radius: 3px;
-  padding: 0 2px;
-}
-
-/* Status bar ---------------------------------------------------------- */
-.statusbar {
-  padding: var(--space-2) var(--space-4);
-  border-top: 1px solid var(--border);
-  color: var(--fg-muted);
-  font-size: var(--text-xs);
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: 34px;
-}
 
 /* Transcript drawer --------------------------------------------------- */
 .drawer {
@@ -843,26 +570,6 @@ button:hover,
   background: var(--bg-alt);
   display: flex;
   flex-direction: column;
-}
-.drawer-head {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--border);
-  flex-wrap: wrap;
-}
-.drawer-title {
-  flex: 1 1 160px;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.drawer-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: var(--space-4);
 }
 .drawer .field {
   flex: 0 1 200px;
@@ -876,25 +583,6 @@ button:hover,
 .message:last-child {
   border-bottom: none;
 }
-.message-role {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-weight: 600;
-  font-size: var(--text-xs);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--accent);
-  margin-bottom: var(--space-2);
-}
-.message.user .message-role {
-  color: var(--green);
-}
-.message-text {
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.6;
-}
 /* Parsed message markup ---------------------------------------------- */
 .markup {
   border: 1px solid var(--border);
@@ -906,148 +594,6 @@ button:hover,
 .markup.nested {
   margin: var(--space-1) 0;
   background: transparent;
-}
-.markup.tone-note {
-  border-color: var(--accent-border);
-}
-.markup.tone-error {
-  border-color: var(--danger-border);
-  background: var(--danger-bg);
-}
-
-.markup-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
-  background: none;
-  border: none;
-  border-radius: 0;
-  color: var(--fg-muted);
-  text-align: left;
-  min-width: 0;
-}
-.markup-head:hover {
-  background: var(--bg-hover);
-}
-.markup-label {
-  font-weight: 600;
-  font-size: var(--text-xs);
-  letter-spacing: 0.02em;
-  color: var(--fg);
-  white-space: nowrap;
-}
-.tone-note > .markup-head .markup-label {
-  color: var(--accent);
-}
-.tone-error > .markup-head .markup-label {
-  color: var(--red);
-}
-.markup-tag,
-.markup-attr {
-  font-family: var(--mono);
-  font-size: var(--text-xs);
-  padding: 1px 5px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-hover);
-  color: var(--fg-faint);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.markup-preview {
-  font-size: var(--text-xs);
-  color: var(--fg-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-.markup-body {
-  padding: var(--space-2) var(--space-3) var(--space-3);
-  border-top: 1px solid var(--border);
-}
-.markup.nested > .markup-body {
-  padding: var(--space-1) 0 var(--space-1) var(--space-3);
-  border-top: none;
-  border-left: 1px solid var(--border);
-  margin-left: var(--space-3);
-}
-
-.markup-row {
-  display: grid;
-  grid-template-columns: minmax(80px, max-content) minmax(0, 1fr);
-  gap: var(--space-3);
-  padding: 3px 0;
-  font-size: var(--text-sm);
-  align-items: baseline;
-}
-.markup-key {
-  font-family: var(--mono);
-  font-size: var(--text-xs);
-  color: var(--fg-faint);
-  white-space: nowrap;
-}
-.markup-value {
-  word-break: break-word;
-  white-space: pre-wrap;
-}
-
-.part-reasoning {
-  color: var(--fg-faint);
-  font-style: italic;
-  display: flex;
-  gap: var(--space-2);
-  margin: var(--space-2) 0;
-}
-.part-tool {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  color: var(--amber);
-  margin: var(--space-2) 0;
-  min-width: 0;
-}
-.part-tool .arg {
-  font-family: var(--mono);
-  font-size: var(--text-xs);
-  color: var(--fg-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.part-result {
-  margin: var(--space-1) 0 var(--space-2) var(--space-5);
-  color: var(--fg-muted);
-  cursor: pointer;
-  font-size: var(--text-sm);
-  display: flex;
-  gap: var(--space-2);
-  align-items: flex-start;
-}
-.part-result.error {
-  color: var(--red);
-}
-.part-result pre {
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 380px;
-  overflow-y: auto;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  padding: var(--space-3);
-  border-radius: var(--radius-sm);
-  font-family: var(--mono);
-  font-size: var(--text-xs);
-  width: 100%;
-}
-
-/* Mobile shell -------------------------------------------------------- */
-.mobile-only {
-  display: none;
-}
-.scrim {
-  display: none;
 }
 
 /* Below this the window cannot hold a list and a transcript side by side —
@@ -1066,9 +612,6 @@ button:hover,
 
 /* Tablet: sidebar becomes an overlay drawer, transcript takes over. */
 @media (max-width: 900px) {
-  .mobile-only {
-    display: inline-flex;
-  }
   .sidebar {
     position: fixed;
     top: 0;
@@ -1091,16 +634,6 @@ button:hover,
   .sidebar.open {
     transform: translateX(0);
     visibility: visible;
-  }
-  .side-resize {
-    display: none;
-  }
-  .scrim {
-    display: block;
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.55);
-    z-index: 90;
   }
 }
 
@@ -1135,42 +668,6 @@ button:hover,
     width: 34px;
     height: 34px;
   }
-  .statusbar {
-    padding: var(--space-2) var(--space-3);
-  }
-}
-
-/* --- multi-select ---------------------------------------------------- */
-.bulkbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  margin-bottom: var(--space-2);
-  border: 1px solid transparent;
-  border-radius: var(--radius);
-  /* Only announces itself once something is selected; until then it is a
-     quiet row of controls rather than a banner. */
-  transition: background 120ms ease, border-color 120ms ease;
-}
-.bulkbar.active {
-  background: var(--accent-soft);
-  border-color: var(--border-strong);
-}
-.tickall {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  user-select: none;
-}
-.bulkacts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-left: auto;
 }
 .tick {
   flex-shrink: 0;
@@ -1188,15 +685,6 @@ button:hover,
   padding: var(--space-3);
   margin-bottom: var(--space-3);
   background: var(--bg-alt);
-}
-.problems-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-2);
-}
-.problems-head .h-button {
-  margin-left: auto;
 }
 .problems ul {
   margin: 0;
@@ -1219,47 +707,6 @@ button:hover,
   flex-direction: column;
   gap: 8px;
   background: var(--bg-alt);
-}
-
-.composer-input {
-  width: 100%;
-  resize: vertical;
-  min-height: 44px;
-  font: inherit;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 8px 10px;
-}
-
-.composer-input:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
-}
-
-.composer-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.composer-actions .faint {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--text-xs);
-}
-
-.composer-error {
-  color: var(--red);
-  font-size: var(--text-sm);
-  margin: 0;
-}
-
-.composer-off {
-  color: var(--fg-muted);
-  font-size: var(--text-sm);
-  margin: 0;
 }
 
 /* The turn in flight is deliberately not styled like a stored message:
@@ -1298,16 +745,6 @@ button:hover,
   transform: none;
 }
 
-/* Views switch in the sidebar ------------------------------------------ */
-.side-views {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.hub-open {
-  align-self: flex-start;
-}
-
 /* Hub view ------------------------------------------------------------ */
 .hubview {
   display: flex;
@@ -1315,110 +752,6 @@ button:hover,
   gap: var(--space-5);
   /* Cards and the table adapt to the width the view gets, not the window's. */
   container-type: inline-size;
-}
-.hv-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-.hv-title {
-  font-size: var(--text-lg);
-  font-weight: 650;
-}
-.hv-spacer {
-  flex: 1;
-}
-.hv-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: var(--space-4);
-}
-.hv-card {
-  min-width: 0;
-}
-.hv-card .h-card-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-.hv-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 600;
-}
-.hv-state.ok {
-  color: var(--green);
-}
-.hv-state.bad {
-  color: var(--amber);
-}
-.hv-state.wait {
-  color: var(--fg-muted);
-}
-.hv-dl {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  gap: var(--space-1) var(--space-4);
-  font-size: var(--text-xs);
-}
-.hv-dl dt {
-  color: var(--fg-faint);
-}
-.hv-dl dd {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.hv-recent {
-  font-size: var(--text-xs);
-  color: var(--fg-muted);
-}
-.hv-recent summary {
-  cursor: pointer;
-  padding: var(--space-1) 0;
-}
-.hv-recent ul {
-  list-style: none;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-.hv-recent li.bad {
-  color: var(--amber);
-}
-.hv-machines {
-  list-style: none;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-.hv-machines li {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-.hv-mname {
-  font-weight: 550;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.hv-seen {
-  margin-inline-start: auto;
-  font-size: var(--text-xs);
-  white-space: nowrap;
-}
-.hv-tag {
-  font-size: var(--text-xs);
-  padding: 1px var(--space-2);
-  border-radius: 999px;
-  color: var(--accent);
-  background: var(--accent-soft);
-  white-space: nowrap;
 }
 .hv-tools {
   display: flex;
@@ -1429,45 +762,11 @@ button:hover,
 .hv-tools .field {
   flex: 1 1 260px;
 }
-.hv-chips {
-  margin-top: calc(var(--space-2) - var(--space-5));
-}
-.hv-table {
-  width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
-  font-size: var(--text-sm);
-}
-.hv-table th {
-  text-align: start;
-  font-size: var(--text-xs);
-  font-weight: 600;
-  color: var(--fg-faint);
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--border);
-  white-space: nowrap;
-}
-.hv-table td {
-  padding: var(--space-3);
-  border-bottom: 1px solid var(--border);
-  vertical-align: middle;
-}
 .hv-row:hover td {
   background: var(--bg-alt);
 }
 .hv-row.open td {
   border-bottom-color: transparent;
-}
-.hv-twist svg {
-  transition: transform 0.12s ease;
-}
-.hv-row.open .hv-twist svg {
-  transform: rotate(90deg);
-}
-@media (prefers-reduced-motion: reduce) {
-  .hv-twist svg {
-    transition: none;
-  }
 }
 .hv-session {
   display: flex;
@@ -1488,83 +787,13 @@ button:hover,
   font-size: var(--text-xs);
   white-space: nowrap;
 }
-.hv-col-project {
-  color: var(--fg-muted);
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.hv-col-where {
-  color: var(--fg-muted);
-  font-size: var(--text-xs);
-  white-space: nowrap;
-}
-.hv-col-when {
-  color: var(--fg-muted);
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
 .hv-act {
   text-align: end;
   white-space: nowrap;
 }
-.hv-detail td {
-  padding-top: 0;
-  background: var(--bg-alt);
-}
-.hv-hint,
-.hv-problem,
-.hv-recent li {
-  line-height: 1.45;
-}
-.hv-hint {
-  margin-bottom: var(--space-3);
-  color: var(--fg-muted);
-  max-width: 70ch;
-}
-.hv-dl-wide {
-  grid-template-columns: max-content minmax(0, 1fr);
-  margin-bottom: var(--space-3);
-}
-.hv-cmd {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-}
-/* Narrow: the table gives up the columns that repeat what the row says. */
-@container (max-width: 960px) {
-  .hv-table td.hv-col-where,
-  .hv-table th.hv-col-where {
-    display: none;
-  }
-}
-@container (max-width: 840px) {
-  .hv-cards .hv-card:last-child {
-    grid-column: 1 / -1;
-  }
-}
 /* Narrow: one block per session instead of columns, with the title on a
    line of its own so it can be read. */
 @container (max-width: 760px) {
-  .hv-table td.hv-col-project,
-  .hv-table td.hv-col-where,
-  .hv-table td.hv-col-when,
-  .hv-table th {
-    display: none;
-  }
-  .hv-table thead,
-  .hv-table tbody,
-  .hv-table {
-    display: block;
-  }
-  .hv-table thead {
-    display: none;
-  }
   .hv-row {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
@@ -1598,60 +827,9 @@ button:hover,
   .hv-row:hover td {
     background: transparent;
   }
-  .hv-detail,
-  .hv-detail td {
-    display: block;
-  }
-  .hv-detail td:first-child {
-    display: none;
-  }
-  .hv-detail td {
-    padding: var(--space-3);
-    border-radius: var(--radius-sm);
-  }
-  .hv-twist {
-    width: 40px;
-    height: 40px;
-  }
-  .hv-chips .chip {
-    min-height: 36px;
-  }
   .hv-stitle .truncate {
     max-width: none;
   }
-}
-
-/* Which machine this is, under the brand --------------------------------- */
-.side-machine {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  margin-top: calc(var(--space-2) - var(--space-5));
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg-raised);
-  min-width: 0;
-}
-.side-machine svg {
-  flex-shrink: 0;
-  color: var(--accent);
-}
-.side-machine-name {
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.side-machine-text {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-.side-machine-tag {
-  font-size: var(--text-xs);
-  color: var(--fg-muted);
-  white-space: nowrap;
 }
 
 /* Hearth buttons carry a 40px minimum height; the row's icon buttons are
@@ -1696,10 +874,6 @@ button:hover,
   background-clip: text;
   color: transparent;
 }
-.side-item.active {
-  background: linear-gradient(135deg, rgba(199, 146, 234, 0.22), rgba(244, 114, 182, 0.16));
-  border-color: var(--accent-border);
-}
 @media (forced-colors: active) {
   .brand span {
     background: none;
@@ -1716,25 +890,6 @@ button:hover,
   flex-direction: column;
   gap: var(--space-4);
 }
-.admin-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
-.admin-head svg {
-  color: var(--accent);
-}
-.admin-title {
-  font-size: var(--text-lg);
-  font-weight: 650;
-}
-.admin-title span {
-  background: linear-gradient(135deg, #c792ea, #f472b6);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
 .admin-login {
   max-width: 520px;
 }
@@ -1742,20 +897,6 @@ button:hover,
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  margin-bottom: var(--space-3);
-}
-.admin-field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  font-weight: 550;
-}
-.admin-num {
-  font-size: 28px;
-  font-weight: 650;
-  font-variant-numeric: tabular-nums;
-}
-.admin-filter {
   margin-bottom: var(--space-3);
 }
 .admin-actions {
@@ -1777,34 +918,18 @@ button:hover,
   flex-direction: column;
   gap: var(--space-3);
 }
-@media (forced-colors: active) {
-  .admin-title span {
-    background: none;
-    color: CanvasText;
-  }
-}
-.admin-filter {
-  flex: 0 0 auto;
-}
-.admin-scroll {
-  position: relative; /* contains the table's sr-only cells, which would otherwise widen the page */
-  overflow-x: auto;
-  max-width: 100%;
-}
-.admin .hv-cmd {
-  max-width: 100%;
-}
-.admin .hv-cmd code {
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
 .admin .h-card {
   min-width: 0;
 }
 
-/* The status and sync badges of a row, in one grid cell. */
-.pills {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
+/* Dialog host --------------------------------------------------------- */
+.dialog-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
 }

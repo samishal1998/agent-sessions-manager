@@ -1,0 +1,448 @@
+/* The app frame and the Sessions screen. Hearth supplies the parts; this only
+   places them and carries what no part offers (see the notes by each rule).
+   Colours are Hearth tokens throughout. */
+
+/* One page gutter, used by every screen (Sessions, Hub): 16px on a phone, 24px
+   beyond. Hearth's topbar and content both read it. */
+.asm-shell {
+  --h-content-max: 1400px;
+  --h-page-padding: 16px;
+  --s-ctl: 36px;
+  --s-field: 40px;
+}
+@media (min-width: 641px) {
+  .asm-shell {
+    --h-page-padding: 24px;
+  }
+}
+@media (pointer: coarse) {
+  .asm-shell {
+    --s-ctl: 44px;
+    --s-field: 44px;
+  }
+}
+/* A short top bar and a short top gap, so content starts high. */
+.asm-shell.h-dashboard .h-topbar,
+.asm-shell.h-dashboard.h-mobile .h-topbar {
+  height: 48px;
+  min-height: 48px;
+  padding-block: 0;
+  flex-wrap: nowrap;
+}
+.asm-shell .h-main-content {
+  padding-block: 16px 24px;
+}
+.asm-shell .h-shell-footer {
+  padding-block: 12px;
+}
+
+/* The workspace tile is this machine, not a "space": no lock, no "Your space". */
+.asm-shell .h-workspace {
+  margin-block: 24px 16px;
+}
+.asm-shell .h-workspace-icon,
+.asm-shell .h-nav-label {
+  display: none;
+}
+.s-side-note {
+  margin: 0;
+  padding-inline: 11px;
+  color: var(--h-muted);
+  font-size: 12px;
+}
+
+/* The transcript sits beside the page on a wide screen (its own rules make it
+   a full-screen dialog below 1100px). */
+.asm-split {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+  min-width: 0;
+}
+.asm-main {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.asm-split > .drawer {
+  position: sticky;
+  top: 16px;
+  height: calc(100dvh - 32px);
+  flex: 0 0 min(46%, 640px);
+  border: 1px solid var(--h-border);
+  border-radius: var(--h-radius-card, 16px);
+  overflow: hidden;
+}
+@media (max-width: 1100px) {
+  .asm-split > .drawer {
+    position: fixed;
+    top: 0;
+    height: auto;
+    border-radius: 0;
+  }
+}
+/* HubView brings its own padding; this keeps its left edge on the gutter. */
+.s-hubwrap {
+  min-width: 0;
+}
+.s-hubwrap .hubview {
+  padding: 0;
+}
+
+.s-page {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.s-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Heading row: the h1 and the two page controls on one line. */
+.s-head .h-page-copy {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  width: 100%;
+}
+/* One h1 size for both screens (Hearth's default is 38px). */
+.s-head h1 {
+  align-self: flex-start;
+}
+.s-head h1,
+.s-hubwrap .h-page-header h1 {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.2;
+}
+@media (max-width: 640px) {
+  .s-head .h-page-copy,
+  .s-head .h-header-actions {
+    gap: 8px;
+  }
+  .s-head h1,
+  .s-hubwrap .h-page-header h1 {
+    font-size: 24px;
+  }
+}
+.s-head .h-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 0 0 0 auto;
+}
+.s-head .h-button {
+  min-height: var(--s-ctl);
+}
+
+/* Filter, transcript search and project on one row; their labels stay as
+   accessible names, the placeholders explain. */
+.s-fields {
+  --h-control-height: var(--s-field);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+  gap: 8px;
+  align-items: start;
+}
+.s-fields .h-field > label,
+.s-fields .h-combobox > label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.s-fields .h-combobox {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.s-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.s-chips .h-chip-label {
+  min-height: 32px;
+}
+.s-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.s-results-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.s-push-end {
+  margin-inline-start: auto;
+}
+.s-reading {
+  display: grid;
+  gap: 12px;
+  color: var(--h-muted);
+}
+
+/* Hub: one line. The detail is on the Hub screen. */
+.s-hub-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.s-hub-host {
+  color: var(--h-muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.s-hub-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-inline-start: auto;
+}
+.s-hub .h-button {
+  min-height: var(--s-ctl);
+}
+@media (max-width: 640px) {
+  .s-hub-check-text,
+  .s-hub-new {
+    display: none;
+  }
+  .s-hub-actions {
+    order: 3;
+    flex: 1 0 100%;
+    margin: 0;
+    gap: 4px;
+  }
+}
+
+/* Bulk bar */
+.s-bulk-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.s-bulk .h-checkbox {
+  min-height: 32px;
+}
+.s-problems {
+  margin: 8px 0 0;
+  padding-inline-start: 20px;
+}
+
+/* Session row: an HListItem with the row's separate controls beside its
+   button. Columns are fixed so nothing shifts from row to row: the title takes
+   what is left, the badges and each action have a set width. */
+.s-row {
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  padding-inline: 8px;
+  /* Thousands of rows: the browser skips the ones nobody has scrolled to. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
+}
+.s-row .h-list-body {
+  flex: 1 1 0;
+  min-width: 0;
+  width: auto;
+  min-height: 24px;
+  padding-block: 10px;
+}
+.s-row .h-list-copy {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.s-row .h-list-copy strong {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.s-row .h-list-copy small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--h-muted);
+  font-variant-numeric: tabular-nums;
+}
+.s-row.selected {
+  box-shadow: inset 3px 0 0 var(--h-accent);
+}
+.s-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 150px;
+}
+/* Last-known state is a dashed edge, not a dimmer colour. */
+.s-badges .is-stale {
+  border-style: dashed;
+}
+.s-tick {
+  order: -1;
+  min-height: 24px;
+  flex: 0 0 auto;
+}
+/* The tick's label names the checkbox without being shown beside it. */
+.s-tick strong {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.s-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.s-actions .icon-btn,
+.s-actions .s-more .h-button,
+.s-slot {
+  position: relative;
+  box-sizing: border-box;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+}
+.s-slot {
+  display: inline-block;
+}
+.s-actions .s-more {
+  display: inline-flex;
+}
+/* The menu button is Hearth's: a text button. Show a kebab; the label stays as
+   its accessible name. */
+.s-more > .h-button {
+  background: transparent;
+  border-color: transparent;
+}
+.s-more > .h-button > svg {
+  display: none;
+}
+.s-more > .h-button [part='label'] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.s-more > .h-button::before {
+  content: '\22EF' / '';
+  font-size: 20px;
+  line-height: 1;
+}
+/* 30px to look at, 44px to hit on a touchscreen. */
+@media (pointer: coarse) {
+  .s-actions.is-compact {
+    gap: 14px;
+  }
+  .s-actions .icon-btn::after,
+  .s-actions .s-more .h-button::after {
+    content: '';
+    position: absolute;
+    inset: -7px;
+  }
+}
+
+/* Search hit: the snippet goes under the title, in the row's own button. */
+.s-hit .h-list-body {
+  flex-wrap: wrap;
+}
+.s-hit .h-list-copy {
+  flex: 1 1 0;
+}
+.s-snippet {
+  order: 3;
+  flex: 1 0 100%;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--h-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.s-snippet mark {
+  background: var(--h-accent-subtle);
+  color: var(--h-text);
+  border-radius: 3px;
+  outline: 1px solid var(--h-accent);
+}
+.s-hit-seq {
+  color: var(--h-faint);
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+}
+
+@media (forced-colors: active) {
+  .s-row.selected {
+    outline: 2px solid Highlight;
+  }
+  .s-snippet mark {
+    forced-color-adjust: none;
+    background: Mark;
+    color: MarkText;
+  }
+}
+
+
+/* Stacked row: on a phone, or with the transcript beside the list, the badges
+   drop under the title so the title keeps its width and can wrap to two lines. */
+@media (max-width: 640px) {
+  .s-row {
+    padding-inline: 0;
+  }
+  .s-row .h-list-body {
+    flex-wrap: wrap;
+    row-gap: 2px;
+    padding-block: 8px;
+  }
+  .s-row .h-list-copy strong {
+    -webkit-line-clamp: 2;
+  }
+  .s-row .s-badges {
+    flex: 1 0 100%;
+    justify-content: flex-start;
+    min-width: 0;
+    padding-inline-start: 43px;
+  }
+}
+.has-drawer .s-row .h-list-body {
+  flex-wrap: wrap;
+  row-gap: 2px;
+  padding-block: 8px;
+}
+.has-drawer .s-row .h-list-copy strong {
+  -webkit-line-clamp: 2;
+}
+.has-drawer .s-row .s-badges {
+  flex: 1 0 100%;
+  justify-content: flex-start;
+  min-width: 0;
+  padding-inline-start: 43px;
+}

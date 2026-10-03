@@ -1,13 +1,13 @@
 <script setup>
-import { HButton } from '@hearth-ui/vue'
+import { HAccordion, HAlert, HBadge, HButton, HCodeBlock, HEmptyState, HInput, HSkeleton, HTextarea } from '@hearth-ui/vue'
+import './styles/transcript.css'
 import { computed, onBeforeUnmount, onMounted, nextTick, ref, watch } from 'vue'
 import {
   Brain,
-  ChevronDown,
-  ChevronRight,
+  Check,
+  Copy,
   CornerDownRight,
   Paperclip,
-  Search,
   SendHorizontal,
   Square,
   Wrench,
@@ -47,6 +47,20 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (previouslyFocused?.isConnected) previouslyFocused.focus()
 })
+
+const copied = ref(false)
+let copiedTimer
+async function copyId() {
+  try {
+    await navigator.clipboard.writeText(props.session.ref.native_id)
+    copied.value = true
+    clearTimeout(copiedTimer)
+    copiedTimer = setTimeout(() => (copied.value = false), 1500)
+  } catch {
+    /* clipboard blocked (insecure origin); the id is selectable text anyway */
+  }
+}
+onBeforeUnmount(() => clearTimeout(copiedTimer))
 
 const ir = ref(null)
 const error = ref('')
@@ -90,6 +104,11 @@ function toggle(key) {
   set.has(key) ? set.delete(key) : set.add(key)
   expanded.value = set
 }
+// Each tool result is its own one-item accordion; its id doubles as the key.
+function resultItems(key, p) {
+  return [{ id: key, title: `${p.is_error ? 'Failed' : 'Result'}: ${firstLine(p.output) || '(empty)'}` }]
+}
+const roleTone = { user: 'accent', assistant: 'neutral' }
 
 // First line with something on it: a leading blank line would otherwise
 // render as an empty row with only an icon in it.
@@ -241,96 +260,90 @@ watch(
 <template>
   <aside
     ref="root"
-    class="drawer"
+    class="drawer tv"
     tabindex="-1"
     :role="modal ? 'dialog' : 'complementary'"
     :aria-modal="modal ? 'true' : undefined"
-    :aria-label="`Transcript of ${session.title || 'untitled session'}`"
+    :aria-label="`Transcript: ${session.title || 'untitled session'}`"
     @keydown.esc="emit('close')"
   >
-    <header class="drawer-head">
-      <AgentMark :agent="session.ref.agent" />
-      <div class="drawer-title">
-        <strong class="truncate">{{ session.title || 'Untitled session' }}</strong>
-        <span class="mono faint truncate">
-          {{ session.ref.native_id
-          }}<template v-if="session.size_bytes != null"> · {{ size }}</template>
-        </span>
+    <header class="tv-head">
+      <div class="tv-head-row">
+        <AgentMark :agent="session.ref.agent" />
+        <strong class="tv-title" :title="session.title || 'Untitled session'">{{ session.title || 'Untitled session' }}</strong>
+        <IconButton label="Close transcript" :icon="X" @click="$emit('close')" />
       </div>
-      <label class="field">
-        <Search :size="15" />
-        <input v-model="search" placeholder="Search this transcript…" />
-      </label>
-      <IconButton label="Close" :icon="X" @click="$emit('close')" />
+      <div class="tv-idline">
+        <button
+          type="button"
+          class="tv-copy"
+          :aria-label="`Copy session ID ${session.ref.native_id}`"
+          :title="session.ref.native_id"
+          @click="copyId"
+        >
+          <component :is="copied ? Check : Copy" :size="14" aria-hidden="true" />
+          <span class="tv-id">{{ session.ref.native_id }}</span>
+        </button>
+        <span v-if="session.size_bytes != null">{{ size }}</span>
+        <span class="tv-visually-hidden" role="status">{{ copied ? 'Session ID copied' : '' }}</span>
+      </div>
+      <div class="tv-search"><HInput v-model="search" type="search" label="Search this transcript" placeholder="Search this transcript…" /></div>
     </header>
 
-    <div v-if="error" class="empty" style="color: var(--red)">{{ error }}</div>
-    <div v-else-if="!ir" class="empty">Loading transcript…</div>
+    <HAlert v-if="error" tone="danger" title="Could not load the transcript" :description="error" />
+    <HSkeleton v-else-if="!ir" :lines="6" label="Loading transcript" />
 
-    <div v-else ref="body" class="drawer-body">
-      <HButton v-if="hidden" variant="secondary" size="compact" style="width: 100%" @click="windowSize += 300">
+    <div v-else ref="body" class="tv-body">
+      <HButton v-if="hidden" class="tv-more" variant="secondary" size="compact" @click="windowSize += 300">
         Show {{ hidden }} earlier message{{ hidden === 1 ? '' : 's' }}
       </HButton>
 
-      <div v-if="!matching.length" class="empty">No messages match that text.</div>
+      <HEmptyState v-if="!matching.length" icon="search" title="No messages match" description="Try different text." />
 
-      <div v-for="(m, mi) in visible" :key="m.source_id || mi" class="message" :class="m.role">
-        <div class="message-role">
-          {{ m.role }}
-          <span class="faint" style="text-transform: none; font-weight: 400">{{
-            when(m.timestamp)
-          }}</span>
+      <section v-for="(m, mi) in visible" :key="m.source_id || mi" class="tv-message" :aria-label="`${m.role} message`">
+        <div class="tv-meta">
+          <HBadge :tone="roleTone[m.role] ?? 'info'" :label="m.role" />
+          <span>{{ when(m.timestamp) }}</span>
         </div>
 
         <template v-for="(p, pi) in m.parts" :key="pi">
           <template v-if="p.type === 'text'">
             <MarkupBlock v-if="isStructured(p.text)" :nodes="markup(p.text)" />
-            <div v-else class="message-text">{{ p.text }}</div>
+            <div v-else class="tv-text">{{ p.text }}</div>
           </template>
 
-          <div v-else-if="p.type === 'reasoning'" class="part-reasoning">
-            <Brain :size="14" style="flex-shrink: 0; margin-top: 3px" />
+          <div v-else-if="p.type === 'reasoning'" class="tv-part">
+            <Brain :size="14" aria-hidden="true" />
             <span>{{ reasoningText(p) }}</span>
           </div>
 
-          <div v-else-if="p.type === 'tool_call'" class="part-tool">
-            <Wrench :size="14" style="flex-shrink: 0" />
+          <div v-else-if="p.type === 'tool_call'" class="tv-part">
+            <Wrench :size="14" aria-hidden="true" />
             <strong>{{ p.name }}</strong>
-            <span class="arg">{{ inputSummary(p.input) }}</span>
+            <span class="tv-arg">{{ inputSummary(p.input) }}</span>
           </div>
 
-          <div
+          <HAccordion
             v-else-if="p.type === 'tool_result'"
-            class="part-result"
-            :class="{ error: p.is_error }"
-            role="button"
-            tabindex="0"
-            @click="toggle(`${mi}:${pi}`)"
-            @keyup.enter="toggle(`${mi}:${pi}`)"
+            :items="resultItems(`${mi}:${pi}`, p)"
+            :model-value="expanded.has(`${mi}:${pi}`) ? [`${mi}:${pi}`] : []"
+            @update:model-value="toggle(`${mi}:${pi}`)"
           >
-            <component
-              :is="expanded.has(`${mi}:${pi}`) ? ChevronDown : ChevronRight"
-              :size="14"
-              style="flex-shrink: 0; margin-top: 3px"
-            />
-            <template v-if="expanded.has(`${mi}:${pi}`)">
-              <MarkupBlock
-                v-if="isStructured(p.output)"
-                :nodes="markup(p.output)"
-                style="width: 100%"
-              />
-              <pre v-else>{{ p.output }}</pre>
+            <template #[`${mi}:${pi}`]>
+              <template v-if="expanded.has(`${mi}:${pi}`)">
+                <MarkupBlock v-if="isStructured(p.output)" :nodes="markup(p.output)" />
+                <HCodeBlock v-else :code="p.output || ''" wrap />
+              </template>
             </template>
-            <span v-else>{{ p.is_error ? 'Failed' : 'Result' }}: {{ firstLine(p.output) }}</span>
-          </div>
+          </HAccordion>
 
-          <div v-else-if="p.type === 'file'" class="part-reasoning">
-            <Paperclip :size="14" style="flex-shrink: 0; margin-top: 3px" />
+          <div v-else-if="p.type === 'file'" class="tv-part">
+            <Paperclip :size="14" aria-hidden="true" />
             <span>{{ p.path || 'Attached file' }}</span>
           </div>
 
-          <div v-else-if="p.type === 'agent'" class="part-reasoning">
-            <CornerDownRight :size="14" style="flex-shrink: 0; margin-top: 3px" />
+          <div v-else-if="p.type === 'agent'" class="tv-part">
+            <CornerDownRight :size="14" aria-hidden="true" />
             <span>
               Subagent <strong>{{ p.name }}</strong> — {{ p.transcript.length }} turn{{
                 p.transcript.length === 1 ? '' : 's'
@@ -338,70 +351,63 @@ watch(
             </span>
           </div>
         </template>
-      </div>
+      </section>
 
-      <div v-if="streaming.length" class="message live">
-        <div class="message-role">
-          in flight
-          <span class="faint" style="text-transform: none; font-weight: 400">
-            not yet written to the session
-          </span>
+      <section v-if="streaming.length" class="tv-message tv-live" aria-label="Turn in flight">
+        <div class="tv-meta">
+          <HBadge tone="warning" dot label="in flight" />
+          <span>not yet written to the session</span>
         </div>
         <template v-for="(e, ei) in streaming" :key="ei">
-          <div v-if="e.event === 'text'" class="message-text">{{ e.text }}</div>
-          <div v-else-if="e.event === 'reasoning'" class="part-reasoning">
-            <Brain :size="14" style="flex-shrink: 0; margin-top: 3px" />
+          <div v-if="e.event === 'text'" class="tv-text">{{ e.text }}</div>
+          <div v-else-if="e.event === 'reasoning'" class="tv-part">
+            <Brain :size="14" aria-hidden="true" />
             <span>{{ firstLine(e.text) }}</span>
           </div>
-          <div v-else-if="e.event === 'tool_call'" class="part-tool">
-            <Wrench :size="14" style="flex-shrink: 0" />
+          <div v-else-if="e.event === 'tool_call'" class="tv-part">
+            <Wrench :size="14" aria-hidden="true" />
             <strong>{{ e.name }}</strong>
-            <span class="arg">{{ e.detail }}</span>
+            <span class="tv-arg">{{ e.detail }}</span>
           </div>
-          <div
-            v-else-if="e.event === 'tool_result'"
-            class="part-result"
-            :class="{ error: e.is_error }"
-          >
+          <div v-else-if="e.event === 'tool_result'" class="tv-part">
             <span>{{ e.is_error ? 'Failed' : 'Result' }}: {{ firstLine(e.output) }}</span>
           </div>
           <!-- A line asm did not recognise. Shown, not dropped: these
                formats change, and a swallowed line reads as silence. -->
-          <div v-else-if="e.event === 'raw'" class="part-reasoning">
-            <span class="mono">{{ firstLine(e.line) }}</span>
+          <div v-else-if="e.event === 'raw'" class="tv-part">
+            <span class="tv-arg">{{ firstLine(e.line) }}</span>
           </div>
         </template>
-      </div>
+      </section>
     </div>
 
-    <form v-if="ir" class="composer" @submit.prevent="sendDraft">
-      <p v-if="sendError" class="composer-error">{{ sendError }}</p>
-      <p v-if="!canSend" class="composer-off">
-        asm cannot send into {{ session.ref.agent }} sessions yet.
-      </p>
-      <p v-else-if="isLive" class="composer-off">
-        This session is being driven by another {{ session.ref.agent }} process right now.
-        Close it to reply from here.
-      </p>
+    <form v-if="ir" class="tv-composer" @submit.prevent="sendDraft">
+      <HAlert v-if="sendError" tone="danger" :description="sendError" />
+      <HAlert v-if="!canSend" tone="info" :description="`asm cannot send into ${session.ref.agent} sessions yet.`" />
+      <HAlert
+        v-else-if="isLive"
+        tone="warning"
+        :description="`This session is being driven by another ${session.ref.agent} process right now. Close it to reply from here.`"
+      />
       <template v-else>
-        <textarea
+        <HTextarea
           v-model="draft"
-          class="composer-input"
-          rows="2"
+          label="Reply"
+          :rows="2"
           :disabled="busy"
           :placeholder="`Reply in this ${session.ref.agent} session…`"
           @keydown.enter.exact.prevent="sendDraft"
-        ></textarea>
-        <div class="composer-actions">
-          <span class="faint">
-            {{ busy ? 'The agent is working — it can read and edit files in this project.'
+        />
+        <div class="tv-actions">
+          <span>
+            {{ busy ? 'The agent is working. It can read and edit files in this project.'
                     : 'Enter sends · Shift+Enter for a new line' }}
           </span>
           <HButton v-if="busy" type="button" variant="danger" size="compact" @click="stopSending">
-            <Square :size="14" /> Stop
+            <Square :size="14" aria-hidden="true" /> Stop
           </HButton>
           <HButton v-else type="submit" variant="secondary" size="compact" :disabled="!draft.trim()">
-            <SendHorizontal :size="14" /> Send
+            <SendHorizontal :size="14" aria-hidden="true" /> Send
           </HButton>
         </div>
       </template>

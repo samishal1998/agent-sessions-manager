@@ -80,7 +80,7 @@ recent
 
 "Running" is decided by the lock, not by a pid in a file, so a crash or reused pid cannot make a dead daemon look alive. The hub's reachability is checked every pass even when there is nothing to push, so *unreachable* shows up when it happens, not on the next push.
 
-The same information is in the UIs: the [web hub panel](/guides/web-ui/#the-hub-panel) shows it as its second line, and the [TUI](/guides/tui/#the-hub) shows `daemon on` / `no daemon` in the status line and the full line in the hub view.
+The same information is in the UIs: the [web Hub screen](/guides/web-ui/#the-hub-view) shows it as a card, and the [TUI](/guides/tui/#the-hub) shows `daemon on` / `no daemon` in the status line and the full line in the hub view.
 
 ### Repeated failures
 
