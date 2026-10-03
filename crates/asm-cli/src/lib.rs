@@ -1,5 +1,6 @@
 //! Command-line frontend: clap definitions and handlers over `asm_core::ops`.
 
+mod daemon_ctl;
 mod format;
 mod update;
 
@@ -212,16 +213,8 @@ enum Command {
     Daemon {
         #[command(subcommand)]
         action: Option<DaemonCommand>,
-        /// Seconds between passes; a changed session goes up after one
-        /// quiet pass.
-        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
-        interval: u64,
-        /// Push only sessions that are live or changed in the last N minutes
-        /// while the daemon runs: the ones being worked in, not every older
-        /// session that differs from the hub. Default: everything that
-        /// differs.
-        #[arg(long, value_name = "MINUTES", value_parser = clap::value_parser!(u64).range(1..))]
-        active_within: Option<u64>,
+        #[command(flatten)]
+        opts: DaemonOpts,
     },
     /// Bring a session from the hub onto this machine.
     Pull {
@@ -255,11 +248,46 @@ enum Command {
     },
 }
 
+#[derive(clap::Args, Clone, Copy)]
+struct DaemonOpts {
+    /// Seconds between passes; a changed session goes up after one quiet
+    /// pass.
+    #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
+    interval: u64,
+    /// Push only sessions that are live or changed in the last N minutes
+    /// while the daemon runs: the ones being worked in, not every older
+    /// session that differs from the hub. Default: everything that
+    /// differs.
+    #[arg(long, value_name = "MINUTES", value_parser = clap::value_parser!(u64).range(1..))]
+    active_within: Option<u64>,
+}
+
 #[derive(Subcommand)]
 enum DaemonCommand {
+    /// Run the daemon in the background, logging to the data directory.
+    Start(#[command(flatten)] DaemonOpts),
+    /// Stop the background daemon.
+    Stop,
+    /// Install it as a user service (systemd, or launchd on macOS) so it
+    /// starts at login and restarts if it dies.
+    Install {
+        #[command(flatten)]
+        opts: DaemonOpts,
+        /// Write the unit but do not enable or start it.
+        #[arg(long)]
+        no_start: bool,
+    },
+    /// Remove the user service.
+    Uninstall,
     /// Whether a daemon is running here, when it last pushed, and what it
     /// is waiting on or could not push.
     Status,
+}
+
+impl From<DaemonOpts> for daemon_ctl::Opts {
+    fn from(o: DaemonOpts) -> Self {
+        Self { interval: o.interval, active_within: o.active_within }
+    }
 }
 
 #[derive(Subcommand)]
@@ -353,8 +381,14 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
         Command::Push { refs, all, force, move_away } => {
             push(&refs, all, force, move_away, &filter, cli.json)
         }
-        Command::Daemon { action: Some(DaemonCommand::Status), .. } => daemon_status(cli.json),
-        Command::Daemon { action: None, interval, active_within } => {
+        Command::Daemon { action: Some(action), .. } => match action {
+            DaemonCommand::Status => daemon_status(cli.json),
+            DaemonCommand::Start(o) => daemon_ctl::start(o.into()),
+            DaemonCommand::Stop => daemon_ctl::stop(),
+            DaemonCommand::Install { opts, no_start } => daemon_ctl::install(opts.into(), !no_start),
+            DaemonCommand::Uninstall => daemon_ctl::uninstall(),
+        },
+        Command::Daemon { action: None, opts: DaemonOpts { interval, active_within } } => {
             let remote = asm_core::hub::client::load()?;
             eprintln!(
                 "Pushing to {} as {} every {interval}s{} (ctrl-c to stop).",

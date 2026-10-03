@@ -380,38 +380,24 @@ archived there once the hub holds it (`asm unarchive` undoes that) — then
 pushes each session that changed and then held still for a whole interval, so
 a turn being streamed goes up when it ends. It only ever pushes: it never
 writes into an agent's store, so it cannot disturb a session in use, and two
-machines running it do not echo each other's work back. Run it as a service:
+machines running it do not echo each other's work back.
 
-```ini
-# ~/.config/systemd/user/asm-daemon.service
-#   systemctl --user enable --now asm-daemon
-[Unit]
-Description=Push coding-agent sessions to the asm hub
-
-[Service]
-ExecStart=%h/.local/bin/asm daemon
-Restart=on-failure
-RestartSec=30
-
-[Install]
-WantedBy=default.target
+```sh
+asm daemon status                  # running? last push, what is waiting or failing
+asm daemon start                   # in the background; log in the data directory
+asm daemon stop
+asm daemon install                 # a user service: starts at login, restarts if it dies
+asm daemon uninstall
+asm daemon --interval 10           # or in the foreground
+asm daemon start --active-within 30   # only sessions live or changed in the last 30 min
 ```
 
-On macOS, as `~/Library/LaunchAgents/dev.asm.daemon.plist`, then
-`launchctl load` it:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>dev.asm.daemon</string>
-  <key>ProgramArguments</key>
-  <array><string>/Users/you/.local/bin/asm</string><string>daemon</string></array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>StandardErrorPath</key><string>/tmp/asm-daemon.log</string>
-</dict></plist>
-```
+Only one daemon runs per machine. `status` is also the hub panel's first line
+in the web UI and the `daemon on` / `no daemon` note in the TUI's status line;
+a daemon that stopped, or has not finished a pass in minutes, is shown as such.
+`install` writes `~/.config/systemd/user/asm-daemon.service` (or
+`~/Library/LaunchAgents/dev.asm.daemon.plist` on macOS) and enables it; add
+`--no-start` to only write the file.
 
 A session that never holds still — a long agent run — goes up anyway every
 ten intervals. So closing the lid loses up to two intervals of a session at
