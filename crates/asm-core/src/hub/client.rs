@@ -360,6 +360,13 @@ impl Remote {
         parse(&r, "listing machines")
     }
 
+    /// Can the hub be reached and does it accept this machine's credential?
+    /// One small request with the quick profile, for status checks.
+    pub fn ping(&self) -> Result<(), CoreError> {
+        let r = self.call("GET", "/hub/v1/machines", Body::None, Profile::Probe)?;
+        expect(r, &[200], "reaching the hub").map(|_| ())
+    }
+
     pub fn heads(&self) -> Result<Vec<Head>, CoreError> {
         let profile = if self.quick { Profile::Probe } else { Profile::Control };
         let r = expect(self.call("GET", "/hub/v1/sessions", Body::None, profile)?, &[200], "listing sessions")?;

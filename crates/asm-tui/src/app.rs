@@ -149,6 +149,9 @@ pub struct App {
     pub hub_checking: bool,
     /// The hub stopped answering, so `hub` is the last picture it gave.
     pub hub_stale: bool,
+    /// The daemon on this machine, as it last reported (a local file, so it
+    /// is never stale the way the hub's answer can be).
+    pub daemon: Option<asm_core::hub::daemon::DaemonStatus>,
     pub hub_checked: Option<std::time::Instant>,
     /// The hub view: every session here and there, with what to do about it.
     pub hub_view: bool,
@@ -215,6 +218,7 @@ impl App {
             hub: None,
             hub_checking: false,
             hub_stale: false,
+            daemon: None,
             hub_checked: None,
             hub_view: false,
             hub_cursor: 0,
@@ -1048,7 +1052,10 @@ impl App {
                         self.preview = lines;
                     }
                 }
-                Response::Hub(status) => self.take_hub(*status),
+                Response::Hub(status, daemon) => {
+                    self.daemon = daemon;
+                    self.take_hub(*status)
+                }
                 Response::PullFailed { agent, id, message, needs_dir } => {
                     self.status = format!("pull failed: {message}");
                     self.status_sticky = true;

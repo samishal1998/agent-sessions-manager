@@ -677,6 +677,19 @@ button:hover,
   color: var(--amber);
   font-size: 12px;
 }
+.hub-daemon {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  align-items: center;
+  font-size: 12px;
+}
+.hub-daemon.ok {
+  color: var(--green);
+}
+.hub-daemon-err {
+  color: var(--amber);
+}
 .hub-new-head {
   display: flex;
   align-items: center;

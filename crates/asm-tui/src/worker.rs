@@ -52,7 +52,7 @@ pub enum Response {
     /// (query, hits)
     Hits(String, Vec<asm_core::index::SearchHit>),
     Projects(Vec<asm_core::model::Project>),
-    Hub(Box<asm_core::hub::actions::HubStatus>),
+    Hub(Box<asm_core::hub::actions::HubStatus>, Option<asm_core::hub::daemon::DaemonStatus>),
     /// A pull that did not land. `needs_dir` when the session's directory
     /// does not exist here, so the TUI can ask for one rather than give up.
     PullFailed { agent: asm_core::model::AgentKind, id: String, message: String, needs_dir: bool },
@@ -184,7 +184,7 @@ fn handle(request: Request) -> Response {
             Response::Bulk(verb, asm_core::bulk::run(&sessions, &action))
         }
         Request::Hub(sessions) => {
-            Response::Hub(Box::new(asm_core::hub::actions::hub_status(&sessions)))
+            Response::Hub(Box::new(asm_core::hub::actions::hub_status(&sessions)), asm_core::hub::daemon::status().ok())
         }
         Request::Pull(agent, id, dir) => pull_one(agent, id, dir.as_deref()),
         Request::Projects => match ops::list_projects() {

@@ -14,6 +14,7 @@ use ratatui::widgets::{
 };
 
 use asm_core::hub::actions::{RowState, SyncAction};
+use asm_core::hub::daemon::DaemonState;
 use asm_core::model::SessionStatus;
 
 use crate::app::{App, Mode, PickerKind};
@@ -848,10 +849,16 @@ fn hub_chip(app: &App) -> Option<Line<'static>> {
     .filter(|(n, _)| *n > 0)
     .map(|(n, what)| format!("{n} {what}"))
     .collect();
+    // Whether something is keeping the hub current in the background.
+    let daemon = match app.daemon.as_ref().map(|d| d.state) {
+        Some(DaemonState::Running) => " · daemon on",
+        Some(DaemonState::Hung) => " · daemon stuck",
+        _ => " · no daemon",
+    };
     Some(if parts.is_empty() {
-        Line::styled("⇄ hub: in sync", Style::default().fg(theme::GOOD))
+        Line::styled(format!("⇄ hub: in sync{daemon}"), Style::default().fg(theme::GOOD))
     } else {
-        Line::styled(format!("⇄ hub: {}  (H)", parts.join(" · ")), Style::default().fg(theme::ACCENT))
+        Line::styled(format!("⇄ hub: {}{daemon}  (H)", parts.join(" · ")), Style::default().fg(theme::ACCENT))
     })
 }
 
@@ -893,11 +900,28 @@ fn draw_hub_view(frame: &mut Frame, app: &App, area: Rect) {
     // What is wrong, and what to try, above the table where it cannot be
     // missed.
     let problem = hub.error.as_deref().filter(|_| !app.hub_checking);
-    let [note, table_area] = Layout::vertical([
+    let [daemon_area, note, table_area] = Layout::vertical([
+        Constraint::Length(u16::from(app.daemon.is_some())),
         Constraint::Length(if problem.is_some() { 2 } else { 0 }),
         Constraint::Min(0),
     ])
     .areas(inner);
+    if let Some(d) = &app.daemon {
+        let running = d.state == DaemonState::Running;
+        let err = d.file.as_ref().and_then(|f| f.last_error.as_deref()).filter(|_| running);
+        let mut line = format!(" {}", d.line());
+        if let Some(e) = err {
+            line.push_str(&format!(" — {e}"));
+        } else if !running {
+            line.push_str(" — `asm daemon` keeps the hub up to date");
+        }
+        let colour = match (d.state, err) {
+            (DaemonState::Running, None) => theme::GOOD,
+            (DaemonState::NotRunning, _) => theme::FAINT,
+            _ => theme::WARN,
+        };
+        frame.render_widget(Paragraph::new(Line::styled(line, Style::default().fg(colour))), daemon_area);
+    }
     if let Some(error) = problem {
         let stale = if app.hub_stale { " Showing the last known state." } else { "" };
         frame.render_widget(
@@ -1313,6 +1337,16 @@ mod tests {
         joined(&mut app);
         let out_of_step = render(&app, 120, 12);
         assert!(out_of_step.contains("hub: 2 to push"), "{out_of_step}");
+
+        // Whether anything keeps the hub current in the background.
+        assert!(out_of_step.contains("no daemon"), "{out_of_step}");
+        app.daemon = Some(asm_core::hub::daemon::DaemonStatus {
+            state: DaemonState::Running,
+            file: None,
+            quiet_for: Some(1),
+        });
+        assert!(render(&app, 130, 12).contains("daemon on"));
+        app.daemon = None;
 
         app.hub_checking = true;
         app.hub_stale = false;

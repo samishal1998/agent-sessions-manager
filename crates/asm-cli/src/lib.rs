@@ -20,7 +20,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// Restrict to one agent (claude-code | opencode).
+    /// Restrict to one agent: claude-code, opencode, jcode, codex or antigravity.
     #[arg(long, global = true)]
     agent: Option<String>,
 
@@ -50,20 +50,43 @@ enum Command {
     },
     /// Show one session's metadata. REF is a native id, a unique id prefix,
     /// or `agent:id-prefix`.
-    Show { r#ref: String },
+    Show {
+        /// Session to act on: a native id, a unique id prefix, or `agent:id-prefix`.
+        r#ref: String,
+    },
     /// Resume a session interactively in its native agent.
-    Resume { r#ref: String },
+    Resume {
+        /// Session to act on: a native id, a unique id prefix, or `agent:id-prefix`.
+        r#ref: String,
+    },
     /// Set a session's title (uses the agent's native mechanism).
-    Rename { r#ref: String, title: String },
+    Rename {
+        /// Session to act on: a native id, a unique id prefix, or `agent:id-prefix`.
+        r#ref: String,
+        /// The new title.
+        title: String,
+    },
     /// Move a session to another project directory / worktree.
-    Move { r#ref: String, new_dir: PathBuf },
+    Move {
+        /// Session to act on: a native id, a unique id prefix, or `agent:id-prefix`.
+        r#ref: String,
+        /// Directory (or worktree) to move the session to.
+        new_dir: PathBuf,
+    },
     /// Archive a session (OpenCode: native flag; Claude: moved into asm's
     /// archive store).
-    Archive { r#ref: String },
+    Archive {
+        /// Session to act on: a native id, a unique id prefix, or `agent:id-prefix`.
+        r#ref: String,
+    },
     /// Restore an archived session.
-    Unarchive { r#ref: String },
+    Unarchive {
+        /// Session to act on: a native id, a unique id prefix, or `agent:id-prefix`.
+        r#ref: String,
+    },
     /// Delete a session and all its sidecars (backed up first).
     Delete {
+        /// Session to act on: a native id, a unique id prefix, or `agent:id-prefix`.
         r#ref: String,
         /// Skip the confirmation prompt.
         #[arg(long)]
@@ -71,12 +94,14 @@ enum Command {
     },
     /// Send a message into an existing session and stream the reply.
     Send {
+        /// Session to act on: a native id, a unique id prefix, or `agent:id-prefix`.
         r#ref: String,
         /// The message. Use `-` to read it from stdin.
         message: String,
     },
     /// Import a session into another agent (the flagship).
     Import {
+        /// Session to act on: a native id, a unique id prefix, or `agent:id-prefix`.
         r#ref: String,
         /// Target agent (claude-code | opencode).
         #[arg(long)]
@@ -97,6 +122,7 @@ enum Command {
     },
     /// Export a session as Session IR (versioned JSON).
     Export {
+        /// Session to act on: a native id, a unique id prefix, or `agent:id-prefix`.
         r#ref: String,
         /// Write to a file instead of stdout.
         #[arg(short, long)]
@@ -111,6 +137,7 @@ enum Command {
     Search {
         /// Words (AND-ed), or a "quoted phrase".
         query: Vec<String>,
+        /// Maximum number of results.
         #[arg(long, default_value_t = 20)]
         limit: usize,
         /// Search the existing index without bringing it up to date.
@@ -181,7 +208,10 @@ enum Command {
     },
     /// Keep pushing this machine's sessions to the hub, each once it has been
     /// still for an interval. Never pulls. Runs until stopped.
+    #[command(args_conflicts_with_subcommands = true)]
     Daemon {
+        #[command(subcommand)]
+        action: Option<DaemonCommand>,
         /// Seconds between passes; a changed session goes up after one
         /// quiet pass.
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
@@ -208,6 +238,7 @@ enum Command {
     Tui,
     /// Serve the web UI (loopback by default).
     Serve {
+        /// Port to listen on.
         #[arg(long, default_value_t = 7433)]
         port: u16,
         /// Address to bind. An IP or hostname; `0.0.0.0` / `::` bind every
@@ -219,9 +250,17 @@ enum Command {
 }
 
 #[derive(Subcommand)]
+enum DaemonCommand {
+    /// Whether a daemon is running here, when it last pushed, and what it
+    /// is waiting on or could not push.
+    Status,
+}
+
+#[derive(Subcommand)]
 enum SyncCommand {
     /// Make the archive a git repository (optionally with a remote).
     Init {
+        /// Git remote URL to use as `origin`.
         #[arg(long)]
         remote: Option<String>,
     },
@@ -229,6 +268,7 @@ enum SyncCommand {
     Status,
     /// Commit the current archive contents locally.
     Commit {
+        /// Commit message (default: "asm archive snapshot <timestamp>").
         #[arg(short, long)]
         message: Option<String>,
     },
@@ -238,6 +278,7 @@ enum SyncCommand {
 enum HubCommand {
     /// Serve a hub from this machine (loopback by default).
     Serve {
+        /// Port to listen on.
         #[arg(long, default_value_t = 7434)]
         port: u16,
         /// Address to bind. Plain HTTP: bind a network you trust, or keep
@@ -258,7 +299,10 @@ enum HubCommand {
     /// Machines that have joined this hub.
     Machines,
     /// Remove a machine's access, by id or unique name.
-    Revoke { machine: String },
+    Revoke {
+        /// Machine id or unique name.
+        machine: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -303,15 +347,16 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
         Command::Push { refs, all, force, move_away } => {
             push(&refs, all, force, move_away, &filter, cli.json)
         }
-        Command::Daemon { interval } => {
+        Command::Daemon { action: Some(DaemonCommand::Status), .. } => daemon_status(cli.json),
+        Command::Daemon { action: None, interval } => {
             let remote = asm_core::hub::client::load()?;
             eprintln!(
                 "Pushing to {} as {} every {interval}s (ctrl-c to stop).",
                 remote.url, remote.machine.name
             );
-            asm_core::hub::daemon::run(&remote, &filter, std::time::Duration::from_secs(interval), |line| {
+            Ok(asm_core::hub::daemon::run(&remote, &filter, std::time::Duration::from_secs(interval), |line| {
                 eprintln!("{line}")
-            })
+            })?)
         }
         Command::Pull { r#ref, all, project_dir } => {
             pull(r#ref.as_deref(), all, project_dir.as_deref(), &filter, cli.json)
@@ -688,7 +733,11 @@ fn build_filter(cli: &Cli) -> anyhow::Result<SessionFilter> {
     let agent = match &cli.agent {
         Some(name) => Some(
             AgentKind::parse(name)
-                .with_context(|| format!("unknown agent '{name}' (try: claude-code, opencode)"))?,
+                .with_context(|| {
+                    format!(
+                        "unknown agent '{name}' (try: claude-code, opencode, jcode, codex, antigravity)"
+                    )
+                })?,
         ),
         None => None,
     };
@@ -754,6 +803,46 @@ fn rename(query: &str, title: &str, filter: &SessionFilter) -> anyhow::Result<()
     let session = resolve(query, filter)?;
     ops::rename(&session, title)?;
     println!("Renamed {} to \"{title}\".", session.short_id());
+    Ok(())
+}
+
+fn daemon_status(json: bool) -> anyhow::Result<()> {
+    use asm_core::hub::daemon::{DaemonState, ago, status};
+    let st = status()?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&st)?);
+        return Ok(());
+    }
+    let now = jiff::Timestamp::now().as_second().max(0) as u64;
+    let since = |t: u64| format!("{} ago", ago(now.saturating_sub(t)));
+    let Some(f) = &st.file else {
+        println!("daemon      not running (never started here; `asm daemon` starts one)");
+        return Ok(());
+    };
+    match st.state {
+        DaemonState::Running => println!("daemon      running (pid {}, up {})", f.pid, ago(now.saturating_sub(f.started))),
+        DaemonState::Hung => println!(
+            "daemon      not responding (pid {}): no pass finished for {}",
+            f.pid,
+            ago(st.quiet_for.unwrap_or(0))
+        ),
+        DaemonState::NotRunning => println!("daemon      not running (last ran {})", since(f.last_pass.unwrap_or(f.started))),
+    }
+    println!("hub         {} as {}{}", f.hub, f.machine, if f.hub_reachable { "" } else { "  (unreachable)" });
+    println!("interval    {}s", f.interval);
+    println!("last pass   {}", f.last_pass.map_or("none yet".into(), since));
+    println!("last push   {}", f.last_push.map_or("none yet".into(), since));
+    println!("waiting     {} session{}", f.pending, if f.pending == 1 { "" } else { "s" });
+    println!("totals      {} synced over {} passes", f.synced, f.passes);
+    if let Some(e) = &f.last_error {
+        println!("problem     {e}");
+    }
+    if !f.recent.is_empty() {
+        println!("\nrecent");
+        for e in f.recent.iter().rev().take(8) {
+            println!("  {:>5} ago  {}{}", ago(now.saturating_sub(e.at)), if e.ok { "" } else { "! " }, e.line);
+        }
+    }
     Ok(())
 }
 

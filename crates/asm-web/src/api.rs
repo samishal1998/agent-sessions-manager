@@ -112,7 +112,11 @@ async fn meta() -> Json<serde_json::Value> {
 async fn hub() -> ApiResult<Value> {
     blocking(|| {
         let local = ops::list_sessions(&SessionFilter::default()).map_err(internal)?;
-        serde_json::to_value(asm_core::hub::actions::hub_status(&local)).map_err(internal)
+        let mut status = serde_json::to_value(asm_core::hub::actions::hub_status(&local)).map_err(internal)?;
+        // The daemon is a separate process; this is only what it last wrote.
+        // An unreadable status is "no daemon information", not a failed page.
+        status["daemon"] = asm_core::hub::daemon::status().ok().and_then(|d| serde_json::to_value(d).ok()).unwrap_or(Value::Null);
+        Ok(status)
     })
     .await
     .map(Json)

@@ -8,6 +8,7 @@ import {
   Cloud,
   CloudDownload,
   CloudOff,
+  Radio,
   RefreshCw,
   TriangleAlert,
 } from 'lucide-vue-next'
@@ -46,6 +47,35 @@ const host = computed(() => {
     return props.hub?.url || 'the hub'
   }
 })
+
+// The background `asm daemon` on this machine, as it last reported. Times
+// are unix seconds from the file; `now` ticks so "12s ago" does not freeze.
+const daemon = computed(() => props.hub?.daemon || null)
+const since = (t) => {
+  if (!t) return 'not yet'
+  const s = Math.max(0, Math.round(now.value / 1000 - t))
+  if (s < 60) return `${s}s ago`
+  if (s < 3600) return `${Math.round(s / 60)}m ago`
+  return `${Math.round(s / 3600)}h ago`
+}
+const daemonLine = computed(() => {
+  const d = daemon.value
+  if (!d) return ''
+  const f = d.file
+  if (d.state === 'running') {
+    const bits = [`Daemon running · last push ${since(f?.last_push)}`]
+    if (f?.pending) bits.push(`${f.pending} waiting`)
+    return bits.join(' · ')
+  }
+  if (d.state === 'hung') return `Daemon not responding — no pass finished for ${since(f?.last_pass || f?.started).replace(' ago', '')}`
+  return f ? `Daemon stopped (last ran ${since(f.last_pass || f.started)})` : 'No daemon on this machine'
+})
+const daemonHint = computed(() =>
+  daemon.value?.state === 'running'
+    ? daemon.value.file?.last_error || ''
+    : 'Run `asm daemon` to keep the hub up to date automatically.',
+)
+const daemonOk = computed(() => daemon.value?.state === 'running' && !daemon.value.file?.last_error)
 
 const rows = computed(() => props.hub?.rows || [])
 const summary = computed(() => props.hub?.summary || {})
@@ -126,6 +156,15 @@ function toggle(state) {
           <span>Pull {{ summary.to_pull }}</span>
         </button>
       </span>
+    </div>
+
+    <div v-if="daemon" class="hub-daemon" :class="{ ok: daemonOk }" :title="daemonHint">
+      <Radio :size="14" />
+      <span>{{ daemonLine }}</span>
+      <span v-if="daemon.state === 'running' && daemon.file?.last_error" class="hub-daemon-err">
+        — {{ daemon.file.last_error }}
+      </span>
+      <span v-else-if="daemon.state !== 'running'" class="faint">— {{ daemonHint }}</span>
     </div>
 
     <!-- What is wrong, and what to do about it. -->
