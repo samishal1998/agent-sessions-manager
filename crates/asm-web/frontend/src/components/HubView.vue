@@ -1,4 +1,5 @@
 <script setup>
+import { HAlert, HBadge, HButton, HCard } from '@hearth-ui/vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   ArrowDown,
@@ -15,10 +16,9 @@ import {
   RefreshCw,
   Scale,
   Search,
-  TriangleAlert,
 } from 'lucide-vue-next'
 import AgentMark from './AgentMark.vue'
-import { ago, agoUnix, bytes } from '../format.js'
+import { ago, agoUnix, bytes, hubTone } from '../format.js'
 import { shortProject } from '../ids.js'
 
 // Everything about how this machine stands with the hub, in one place: the
@@ -166,13 +166,13 @@ const when = (ts) => ago(ts, now.value)
       </button>
       <h1 id="hubview-title" class="hv-title">Hub</h1>
       <span class="hv-spacer" />
-      <button class="btn" :disabled="checking" @click="emit('check')">
+      <HButton variant="secondary" size="compact" :disabled="checking" @click="emit('check')">
         <RefreshCw :size="15" :class="{ spin: checking }" />
         <span>{{ fresh ? 'Check now' : 'Retry' }}</span>
-      </button>
-      <button
+      </HButton>
+      <HButton
         v-if="summary.to_push"
-        class="btn"
+        variant="secondary" size="compact"
         :aria-disabled="!fresh || null"
         :aria-label="`Push ${summary.to_push}${fresh ? '' : ' (unavailable: the hub cannot be reached)'}`"
         :title="fresh ? '' : 'The hub cannot be reached'"
@@ -180,10 +180,10 @@ const when = (ts) => ago(ts, now.value)
       >
         <ArrowUp :size="15" />
         <span>Push {{ summary.to_push }}</span>
-      </button>
-      <button
+      </HButton>
+      <HButton
         v-if="summary.to_pull"
-        class="btn"
+        variant="secondary" size="compact"
         :aria-disabled="!fresh || null"
         :aria-label="`Pull ${summary.to_pull}${fresh ? '' : ' (unavailable: the hub cannot be reached)'}`"
         :title="fresh ? '' : 'The hub cannot be reached'"
@@ -191,7 +191,7 @@ const when = (ts) => ago(ts, now.value)
       >
         <ArrowDown :size="15" />
         <span>Pull {{ summary.to_pull }}</span>
-      </button>
+      </HButton>
     </header>
 
     <p v-if="!hub?.joined" class="empty">
@@ -201,8 +201,7 @@ const when = (ts) => ago(ts, now.value)
     <template v-else>
       <div class="hv-cards">
         <!-- Connection -->
-        <div class="hv-card">
-          <h2 class="hv-card-title">Connection</h2>
+        <HCard class="hv-card" title="Connection">
           <p class="hv-state" :class="fresh ? 'ok' : checking ? 'wait' : 'bad'" role="status">
             <RefreshCw v-if="checking" :size="15" class="spin" />
             <Cloud v-else-if="fresh" :size="15" />
@@ -219,18 +218,13 @@ const when = (ts) => ago(ts, now.value)
             <dt>{{ fresh ? 'Checked' : 'Last reached' }}</dt>
             <dd>{{ checkedAt ? when(checkedAt) : 'not yet' }}</dd>
           </dl>
-          <p v-if="hub.error && !checking" class="hv-problem" role="alert" :title="hub.detail">
-            <TriangleAlert :size="15" />
-            <span>
-              {{ hub.error }}
-              <template v-if="hub.stale"> The sessions below are as of {{ when(checkedAt) }}.</template>
-            </span>
-          </p>
-        </div>
+          <HAlert v-if="hub.error && !checking" tone="warning" :description="hub.error + (hub.stale ? ` The sessions below are as of ${when(checkedAt)}.` : '')">
+            <small v-if="hub.detail" class="mono faint">{{ hub.detail }}</small>
+          </HAlert>
+        </HCard>
 
         <!-- Daemon -->
-        <div class="hv-card">
-          <h2 class="hv-card-title">Daemon</h2>
+        <HCard class="hv-card" title="Daemon">
           <template v-if="daemon">
             <p
               class="hv-state"
@@ -260,10 +254,7 @@ const when = (ts) => ago(ts, now.value)
             <p v-if="daemon.state !== 'running'" class="faint">
               <code class="mono">asm daemon start</code> keeps the hub up to date.
             </p>
-            <p v-if="daemon.file?.last_error" class="hv-problem" role="alert">
-              <TriangleAlert :size="15" />
-              <span>{{ daemon.file.last_error }}</span>
-            </p>
+            <HAlert v-if="daemon.file?.last_error" tone="warning" :description="daemon.file.last_error" />
             <details v-if="daemon.file?.recent?.length" class="hv-recent">
               <summary>Recent ({{ daemon.file.recent.length }})</summary>
               <ul>
@@ -274,11 +265,10 @@ const when = (ts) => ago(ts, now.value)
             </details>
           </template>
           <p v-else class="faint">No daemon information.</p>
-        </div>
+        </HCard>
 
         <!-- Machines -->
-        <div class="hv-card">
-          <h2 class="hv-card-title">Machines <span class="faint">{{ machines.length }}</span></h2>
+        <HCard class="hv-card" :title="`Machines (${machines.length})`">
           <ul v-if="machines.length" class="hv-machines">
             <li v-for="m in shownMachines" :key="m.id">
               <Monitor :size="15" />
@@ -287,11 +277,11 @@ const when = (ts) => ago(ts, now.value)
               <span class="faint hv-seen">{{ m.last_seen ? 'seen ' + when(m.last_seen) : 'never seen' }}</span>
             </li>
           </ul>
-          <button v-if="machines.length > 5" class="btn ghost" :aria-expanded="showAllMachines" @click="showAllMachines = !showAllMachines">
+          <HButton v-if="machines.length > 5" variant="ghost" size="compact" :aria-expanded="showAllMachines" @click="showAllMachines = !showAllMachines">
             {{ showAllMachines ? 'Show fewer' : `Show all ${machines.length}` }}
-          </button>
+          </HButton>
           <p v-if="!machines.length" class="faint">The hub did not list its machines.</p>
-        </div>
+        </HCard>
       </div>
 
       <!-- Sessions -->
@@ -354,10 +344,10 @@ const when = (ts) => ago(ts, now.value)
                 </button>
               </td>
               <td>
-                <span class="pill hub" :class="[r.state, { stale: hub.stale }]" :title="r.hint">
-                  <component :is="iconOf(r)" :size="12" />
+                <HBadge :tone="hubTone(r.state)" :class="{ stale: hub.stale }" :title="r.hint">
+                  <component :is="iconOf(r)" :size="12" aria-hidden="true" />
                   {{ r.label }}
-                </span>
+                </HBadge>
               </td>
               <td>
                 <div class="hv-session">
@@ -373,8 +363,8 @@ const when = (ts) => ago(ts, now.value)
               <td class="hv-col-when">{{ when(r.updated) }}</td>
               <td class="hv-act">
                 <template v-if="buttonOf(r)">
-                  <button
-                    class="btn"
+                  <HButton
+                    variant="secondary" size="compact"
                     :aria-disabled="buttonOf(r).off ? 'true' : null"
                     :title="buttonOf(r).off || r.hint"
                     :aria-label="`${buttonOf(r).text} ${r.title || r.short_id}${buttonOf(r).off ? ' (unavailable: ' + buttonOf(r).off + ')' : ''}`"
@@ -385,7 +375,7 @@ const when = (ts) => ago(ts, now.value)
                     <ArrowDown v-else-if="!buttonOf(r).compare" :size="14" />
                     <Scale v-else :size="14" />
                     <span>{{ buttonOf(r).text }}</span>
-                  </button>
+                  </HButton>
                 </template>
               </td>
             </tr>

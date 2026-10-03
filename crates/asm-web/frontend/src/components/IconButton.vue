@@ -1,5 +1,5 @@
 <script setup>
-import Tooltip from './Tooltip.vue'
+import { HButton, HTooltip } from '@hearth-ui/vue'
 
 // Icon-only controls need a name for assistive tech and a tooltip for
 // everyone else; this keeps the two from drifting apart.
@@ -15,26 +15,17 @@ defineProps({
 </script>
 
 <template>
-  <Tooltip :label="label">
-    <a
-      v-if="href"
+  <HTooltip :text="label">
+    <HButton
       class="icon-btn"
-      :class="{ danger }"
+      :variant="danger ? 'danger' : 'ghost'"
+      size="compact"
+      :aria-label="label"
+      :disabled="disabled"
       :href="href"
       :download="download"
-      :aria-label="label"
     >
-      <component :is="icon" :size="size" />
-    </a>
-    <button
-      v-else
-      type="button"
-      class="icon-btn"
-      :class="{ danger, disabled }"
-      :disabled="disabled"
-      :aria-label="label"
-    >
-      <component :is="icon" :size="size" />
-    </button>
-  </Tooltip>
+      <component :is="icon" :size="size" aria-hidden="true" />
+    </HButton>
+  </HTooltip>
 </template>

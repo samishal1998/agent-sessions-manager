@@ -1,4 +1,5 @@
 <script setup>
+import { HAlert, HButton, HCard } from '@hearth-ui/vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   ArrowDown,
@@ -11,7 +12,6 @@ import {
   CloudOff,
   Radio,
   RefreshCw,
-  TriangleAlert,
 } from 'lucide-vue-next'
 
 // How this machine stands with the hub, in one place: whether it answered,
@@ -105,7 +105,8 @@ function toggle(state) {
 </script>
 
 <template>
-  <section v-if="hub?.joined" class="hubpanel" aria-label="Hub">
+  <HCard v-if="hub?.joined" class="hubpanel" aria-label="Hub">
+    <div class="hubpanel-body">
     <h2 class="sr-only">Hub</h2>
     <div class="hub-line">
       <!-- Icon and words, never colour alone; announced when it changes. -->
@@ -128,34 +129,34 @@ function toggle(state) {
       </span>
 
       <span class="hub-actions">
-        <button class="btn" @click="emit('open')">
+        <HButton variant="secondary" size="compact" @click="emit('open')">
           <ArrowRight :size="14" />
           <span>Hub view</span>
-        </button>
-        <button class="btn" :disabled="checking" @click="emit('check')">
+        </HButton>
+        <HButton variant="secondary" size="compact" :disabled="checking" @click="emit('check')">
           <RefreshCw :size="14" />
           <span>{{ fresh ? 'Check' : 'Retry' }}</span>
-        </button>
-        <button
+        </HButton>
+        <HButton
           v-if="summary.to_push"
-          class="btn"
+          variant="secondary" size="compact"
           :disabled="!fresh"
           :title="fresh ? 'Push every session that is new or changed here' : 'The hub cannot be reached'"
           @click="emit('push-needed')"
         >
           <ArrowUp :size="14" />
           <span>Push {{ summary.to_push }}</span>
-        </button>
-        <button
+        </HButton>
+        <HButton
           v-if="summary.to_pull"
-          class="btn"
+          variant="secondary" size="compact"
           :disabled="!fresh"
           :title="fresh ? 'Pull every session that is new or newer on the hub' : 'The hub cannot be reached'"
           @click="emit('pull-all')"
         >
           <ArrowDown :size="14" />
           <span>Pull {{ summary.to_pull }}</span>
-        </button>
+        </HButton>
       </span>
     </div>
 
@@ -169,13 +170,7 @@ function toggle(state) {
     </div>
 
     <!-- What is wrong, and what to do about it. -->
-    <div v-if="hub.error && !checking" class="hub-problem" role="alert" :title="hub.detail">
-      <TriangleAlert :size="15" />
-      <span>
-        {{ hub.error }}
-        <template v-if="hub.stale"> Sync states below are as of {{ ago }}.</template>
-      </span>
-    </div>
+    <HAlert v-if="hub.error && !checking" tone="warning" :description="hub.error + (hub.stale ? ` Sync states below are as of ${ago}.` : '')" />
 
     <div v-if="chips.length" class="chips" role="group" aria-label="Filter by sync state">
       <button
@@ -194,9 +189,10 @@ function toggle(state) {
       </button>
     </div>
 
-    <button v-if="newOnHub.length" class="btn ghost hub-open" @click="emit('open')">
+    <HButton v-if="newOnHub.length" variant="ghost" size="compact" class="hub-open" @click="emit('open')">
       <CloudDownload :size="15" />
       <span>{{ newOnHub.length }} new on the hub</span>
-    </button>
-  </section>
+    </HButton>
+    </div>
+  </HCard>
 </template>

@@ -62,6 +62,53 @@
   color-scheme: dark;
 }
 
+/* The app root takes its colours from the Hearth theme, under the short
+   names the rest of this file already uses. The hex values above remain as
+   the first-paint fallback, before the theme island exists. */
+.asm-root {
+  --bg: var(--h-bg);
+  --bg-alt: var(--h-surface);
+  --bg-raised: var(--h-raised);
+  --bg-hover: color-mix(in srgb, var(--h-raised), white 9%);
+  --fg: var(--h-text);
+  --fg-muted: var(--h-muted);
+  --fg-faint: var(--h-faint);
+  --accent: var(--h-accent-text);
+  --accent-soft: color-mix(in srgb, var(--h-accent) 16%, transparent);
+  --accent-border: color-mix(in srgb, var(--h-accent) 40%, transparent);
+  --accent-border-strong: color-mix(in srgb, var(--h-accent) 55%, transparent);
+  --green: var(--h-success);
+  --amber: var(--h-warning);
+  --red: var(--h-danger);
+  /* "New on the hub" and Antigravity: a blue apart from the rose accent, so
+     the accent keeps one meaning. */
+  --violet: var(--h-info);
+  --ok-bg: color-mix(in srgb, var(--green) 13%, transparent);
+  --ok-border: color-mix(in srgb, var(--green) 32%, transparent);
+  --warn-bg: color-mix(in srgb, var(--amber) 13%, transparent);
+  --warn-border: color-mix(in srgb, var(--amber) 32%, transparent);
+  --danger-bg: color-mix(in srgb, var(--red) 12%, transparent);
+  --danger-border: color-mix(in srgb, var(--red) 42%, transparent);
+  --violet-bg: color-mix(in srgb, var(--violet) 13%, transparent);
+  --violet-border: color-mix(in srgb, var(--violet) 32%, transparent);
+  --border: var(--h-border);
+  --border-strong: color-mix(in srgb, var(--h-border-strong) 55%, transparent);
+  --field-border: var(--h-border-strong);
+  --shadow: 0 6px 24px rgba(8, 3, 16, 0.55);
+  --font: var(--h-font);
+  color: var(--fg);
+  min-height: 100vh;
+}
+
+html,
+body {
+  background:
+    radial-gradient(1100px 560px at 8% -8%, rgba(199, 146, 234, 0.2), transparent 60%),
+    radial-gradient(900px 520px at 100% 0%, rgba(244, 114, 182, 0.14), transparent 55%),
+    #130b1f;
+  background-attachment: fixed;
+}
+
 *,
 *::before,
 *::after {
@@ -73,7 +120,6 @@
 }
 
 body {
-  background: var(--bg);
   color: var(--fg);
   -webkit-font-smoothing: antialiased;
 }
@@ -315,27 +361,6 @@ button:hover,
   outline-offset: 2px;
 }
 
-.btn:disabled,
-.btn[aria-disabled='true'] {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-.btn:disabled:hover,
-.btn[aria-disabled='true']:hover {
-  background: var(--bg-raised);
-  border-color: var(--field-border);
-}
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  white-space: nowrap;
-}
-.btn-primary {
-  background: var(--accent-soft);
-  border-color: var(--accent-border);
-  color: var(--accent);
-}
 
 .checkbox {
   display: inline-flex;
@@ -478,6 +503,7 @@ button:hover,
 }
 
 /* Icon buttons -------------------------------------------------------- */
+.h-button.icon-btn,
 .icon-btn {
   display: inline-flex;
   align-items: center;
@@ -554,31 +580,6 @@ button:hover,
   background: var(--bg-hover);
 }
 
-.pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  font-size: var(--text-xs);
-  font-weight: 550;
-  border: 1px solid transparent;
-  white-space: nowrap;
-}
-.pill.live {
-  color: var(--green);
-  background: var(--ok-bg);
-  border-color: var(--ok-border);
-}
-.pill.idle {
-  color: var(--fg-muted);
-  background: var(--bg-hover);
-}
-.pill.archived {
-  color: var(--violet);
-  background: var(--violet-bg);
-  border-color: var(--violet-border);
-}
 .chips {
   display: flex;
   flex-wrap: wrap;
@@ -688,52 +689,14 @@ button:hover,
   font-size: var(--text-xs);
 }
 
-.pills {
-  display: inline-flex;
-  gap: var(--space-1);
-}
-.pill.hub {
-  color: var(--fg-muted);
-  background: var(--bg-hover);
-}
-.pill.hub.in_sync {
-  color: var(--green);
-  background: var(--ok-bg);
-  border-color: var(--ok-border);
-}
-.pill.hub.ahead,
-.pill.hub.local,
-.pill.hub.behind {
-  color: var(--accent);
-  background: var(--accent-soft);
-  border-color: var(--accent-border);
-}
-.pill.hub.diverged,
-.pill.hub.untracked {
-  color: var(--amber);
-  background: var(--warn-bg);
-  border-color: var(--warn-border);
-}
-.pill.hub.remote {
-  color: var(--violet);
-  background: var(--violet-bg);
-  border-color: var(--violet-border);
-}
-.pill.hub.stale {
-  /* Last known, not current: a dashed edge, not a dimmer colour, which would
-     cost the contrast the text needs. */
-  border-style: dashed;
-}
 .hubpanel {
+  margin-bottom: var(--space-5);
+}
+.hubpanel-body {
   display: flex;
   flex-direction: column;
   /* 16px between groups, 8px (below) within one. */
   gap: var(--space-4);
-  margin-bottom: var(--space-5);
-  padding: var(--space-4);
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
 }
 .hub-line {
   display: flex;
@@ -758,10 +721,7 @@ button:hover,
 }
 .hub-line + .hub-daemon,
 .hub-daemon + .hub-problem,
-.hub-line + .hub-problem {
-  margin-top: calc(var(--space-2) - var(--space-4));
-}
-.hub-detail {
+.hub-line + .hub-detail {
   font-size: var(--text-xs);
 }
 .hub-actions {
@@ -769,13 +729,6 @@ button:hover,
   flex-wrap: wrap;
   gap: var(--space-1);
   margin-left: auto;
-}
-.hub-problem {
-  display: flex;
-  gap: var(--space-2);
-  align-items: flex-start;
-  color: var(--amber);
-  font-size: var(--text-xs);
 }
 .hub-daemon {
   display: flex;
@@ -1224,21 +1177,6 @@ button:hover,
   cursor: pointer;
   accent-color: var(--accent);
 }
-.btn.danger {
-  color: var(--red);
-  border-color: color-mix(in srgb, var(--red) 45%, var(--border-strong));
-}
-.btn.danger:hover {
-  background: color-mix(in srgb, var(--red) 14%, transparent);
-}
-.btn.ghost {
-  color: var(--fg-faint);
-  border-color: transparent;
-}
-.btn.ghost:hover {
-  color: var(--fg);
-  border-color: var(--border-strong);
-}
 
 .problems {
   border: 1px solid var(--border-strong);
@@ -1254,7 +1192,7 @@ button:hover,
   gap: var(--space-3);
   margin-bottom: var(--space-2);
 }
-.problems-head .btn {
+.problems-head .h-button {
   margin-left: auto;
 }
 .problems ul {
@@ -1394,21 +1332,12 @@ button:hover,
   gap: var(--space-4);
 }
 .hv-card {
+  min-width: 0;
+}
+.hv-card .h-card-body {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  padding: var(--space-4);
-  background: var(--bg-alt);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  min-width: 0;
-}
-.hv-card-title {
-  font-size: var(--text-xs);
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--fg-faint);
 }
 .hv-state {
   display: inline-flex;
@@ -1437,17 +1366,6 @@ button:hover,
 .hv-dl dd {
   min-width: 0;
   overflow-wrap: anywhere;
-}
-.hv-problem {
-  display: flex;
-  gap: var(--space-2);
-  align-items: flex-start;
-  color: var(--amber);
-  font-size: var(--text-xs);
-}
-.hv-problem svg {
-  flex-shrink: 0;
-  margin-top: 1px;
 }
 .hv-recent {
   font-size: var(--text-xs);
@@ -1730,4 +1648,62 @@ button:hover,
   font-size: var(--text-xs);
   color: var(--fg-muted);
   white-space: nowrap;
+}
+
+/* Hearth buttons carry a 40px minimum height; the row's icon buttons are
+   squares of their own. */
+.h-button.icon-btn {
+  min-height: 30px;
+  min-width: 30px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+@media (max-width: 640px) {
+  .h-button.icon-btn {
+    width: 34px;
+    height: 34px;
+  }
+}
+/* Buttons the app disables with aria-disabled (so they stay focusable). */
+.h-button[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Hearth badges at the app's type floor, and last-known state shown by a
+   dashed edge rather than a dimmer colour. */
+.asm-root .h-badge {
+  font-size: var(--text-xs);
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+.asm-root .h-badge.stale {
+  outline: 1px dashed currentColor;
+  outline-offset: -1px;
+}
+/* A button's icon and text sit side by side. */
+.h-button [part='label'] {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Where you are, and the brand, in the rose-to-purple accent. */
+.brand span {
+  background: linear-gradient(135deg, #c792ea, #f472b6);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.side-item.active {
+  background: linear-gradient(135deg, rgba(199, 146, 234, 0.22), rgba(244, 114, 182, 0.16));
+  border-color: var(--accent-border);
+}
+@media (forced-colors: active) {
+  .brand span {
+    background: none;
+    color: CanvasText;
+  }
 }

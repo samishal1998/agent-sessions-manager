@@ -1,9 +1,11 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "asm-frontend",
       "dependencies": {
+        "@hearth-ui/vue": "^0.6.0",
         "lucide-vue-next": "^1.0.0",
         "vue": "^3.5.13",
       },
@@ -74,6 +76,8 @@
     "@esbuild/win32-ia32": ["@esbuild/win32-ia32@0.25.12", "", { "os": "win32", "cpu": "ia32" }, "sha512-HkqnmmBoCbCwxUKKNPBixiWDGCpQGVsrQfJoVGYLPT41XWF8lHuE5N6WhVia2n4o5QK5M4tYr21827fNhi4byQ=="],
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
+
+    "@hearth-ui/vue": ["@hearth-ui/vue@0.6.0", "", { "peerDependencies": { "vue": "^3.5.0" } }, "sha512-a2Im6ZX023OL8uiHacq10HDkYafFGK9vEqvL0y+RZHonj8SC5mKiI2JVE90jPw0j86AJbxitihCZlDSDLHEWyQ=="],
 
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 

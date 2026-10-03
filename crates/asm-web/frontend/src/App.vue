@@ -29,6 +29,9 @@ import TranscriptView from './TranscriptView.vue'
 import AgentMark from './components/AgentMark.vue'
 import HubPanel from './components/HubPanel.vue'
 import HubView from './components/HubView.vue'
+import { HBadge, HButton, HTheme } from '@hearth-ui/vue'
+import { hubTone } from './format.js'
+import { NIGHT_OWL } from './theme.js'
 import IconButton from './components/IconButton.vue'
 import Tooltip from './components/Tooltip.vue'
 
@@ -802,6 +805,7 @@ function pickProject(root) {
 </script>
 
 <template>
+  <HTheme class="asm-root" theme="dusk" mode="dark" :tokens="NIGHT_OWL">
   <div class="layout">
     <a class="skip" href="#main">Skip to sessions</a>
     <div v-if="sidebarOpen" class="scrim" @click="sidebarOpen = false" />
@@ -961,15 +965,15 @@ function pickProject(root) {
           <template v-else>Indexing…</template>
         </span>
 
-        <button v-if="anyFilter" class="btn ghost" title="Show every session again" @click="clearFilters">
+        <HButton v-if="anyFilter" variant="ghost" size="compact" title="Show every session again" @click="clearFilters">
           <FilterX :size="15" />
           <span>Clear filters</span>
-        </button>
+        </HButton>
 
-        <button class="btn" @click="refresh">
+        <HButton variant="secondary" size="compact" @click="refresh">
           <RefreshCw :size="15" />
           <span>Refresh</span>
-        </button>
+        </HButton>
 
         <!-- Five agents at most: one click each beats opening a menu. -->
         <div class="chips" role="group" aria-label="Filter by agent">
@@ -1010,19 +1014,19 @@ function pickProject(root) {
         <!-- Full-text results -->
         <template v-if="hits !== null">
           <div class="results-head">
-            <button class="btn" @click="clearSearch">
+            <HButton variant="secondary" size="compact" @click="clearSearch">
               <ArrowLeft :size="15" />
               <span>Back to sessions</span>
-            </button>
+            </HButton>
             <span>
               {{ hits.length }} match{{ hits.length === 1 ? '' : 'es' }} for
               <strong>“{{ searchedFor }}”</strong>
             </span>
             <span class="spacer" />
-            <button class="btn" @click="reindex">
+            <HButton variant="secondary" size="compact" @click="reindex">
               <RefreshCw :size="15" />
               <span>Reindex</span>
-            </button>
+            </HButton>
           </div>
 
           <div v-if="!hits.length" class="empty">
@@ -1045,7 +1049,7 @@ function pickProject(root) {
               <div class="row-body">
                 <div class="hit-head">
                   <span class="row-title">{{ h.title || 'Untitled session' }}</span>
-                  <span class="pill archived" v-if="h.status === 'archived'">Archived</span>
+                  <HBadge v-if="h.status === 'archived'" tone="accent" label="Archived" />
                 </div>
                 <div class="hit-snippet" v-html="highlight(h.snippet)" />
               </div>
@@ -1090,21 +1094,21 @@ function pickProject(root) {
             </label>
 
             <div v-if="ticked.size" class="bulkacts">
-              <button class="btn" @click="bulkArchive">Archive</button>
-              <button class="btn" @click="bulkUnarchive">Unarchive</button>
-              <button class="btn" @click="bulkImport">Import</button>
-              <button class="btn" @click="bulkMove">Move</button>
-              <button class="btn" @click="bulkExport">Export</button>
-              <button v-if="hub?.joined" class="btn" @click="bulkPush">Push</button>
-              <button class="btn danger" @click="bulkDelete">Delete</button>
-              <button class="btn ghost" @click="clearTicks">Clear</button>
+              <HButton variant="secondary" size="compact" @click="bulkArchive">Archive</HButton>
+              <HButton variant="secondary" size="compact" @click="bulkUnarchive">Unarchive</HButton>
+              <HButton variant="secondary" size="compact" @click="bulkImport">Import</HButton>
+              <HButton variant="secondary" size="compact" @click="bulkMove">Move</HButton>
+              <HButton variant="secondary" size="compact" @click="bulkExport">Export</HButton>
+              <HButton v-if="hub?.joined" variant="secondary" size="compact" @click="bulkPush">Push</HButton>
+              <HButton variant="danger" size="compact" @click="bulkDelete">Delete</HButton>
+              <HButton variant="ghost" size="compact" @click="clearTicks">Clear</HButton>
             </div>
           </div>
 
           <div v-if="bulkProblems" class="problems" role="status">
             <div class="problems-head">
               <strong>{{ bulkProblems.summary }}</strong>
-              <button class="btn ghost" @click="bulkProblems = null">Dismiss</button>
+              <HButton variant="ghost" size="compact" @click="bulkProblems = null">Dismiss</HButton>
             </div>
             <ul>
               <li v-for="(line, i) in bulkProblems.problems" :key="i">{{ line }}</li>
@@ -1157,17 +1161,19 @@ function pickProject(root) {
 
               <!-- One grid cell for both, so the row keeps its columns. -->
               <div class="pills">
-                <Tooltip :label="statusHint(s)">
-                  <span class="pill" :class="statusOf(s)">
-                    <span v-if="statusOf(s) === 'live'" class="dot" />
-                    {{ statusLabel(s) }}
-                  </span>
-                </Tooltip>
-                <Tooltip v-if="hubRow(s)" :label="hubRow(s).hint + (hub?.stale ? ' (last known)' : '')">
-                  <span class="pill hub" :class="[hubRow(s).state, { stale: hub?.stale }]">{{
-                    hubRow(s).label
-                  }}</span>
-                </Tooltip>
+                <HBadge
+                  :tone="statusOf(s) === 'live' ? 'success' : statusOf(s) === 'archived' ? 'accent' : 'neutral'"
+                  :dot="statusOf(s) === 'live'"
+                  :label="statusLabel(s)"
+                  :title="statusHint(s)"
+                />
+                <HBadge
+                  v-if="hubRow(s)"
+                  :tone="hubTone(hubRow(s).state)"
+                  :class="{ stale: hub?.stale }"
+                  :label="hubRow(s).label"
+                  :title="hubRow(s).hint + (hub?.stale ? ' (last known)' : '')"
+                />
               </div>
 
               <div class="actions" @click.stop>
@@ -1234,4 +1240,5 @@ function pickProject(root) {
       @close="selected = null"
     />
   </div>
+  </HTheme>
 </template>

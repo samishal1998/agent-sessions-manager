@@ -1,4 +1,5 @@
 <script setup>
+import { HButton } from '@hearth-ui/vue'
 import { computed, onBeforeUnmount, onMounted, nextTick, ref, watch } from 'vue'
 import {
   Brain,
@@ -267,9 +268,9 @@ watch(
     <div v-else-if="!ir" class="empty">Loading transcript…</div>
 
     <div v-else ref="body" class="drawer-body">
-      <button v-if="hidden" class="btn" style="width: 100%" @click="windowSize += 300">
+      <HButton v-if="hidden" variant="secondary" size="compact" style="width: 100%" @click="windowSize += 300">
         Show {{ hidden }} earlier message{{ hidden === 1 ? '' : 's' }}
-      </button>
+      </HButton>
 
       <div v-if="!matching.length" class="empty">No messages match that text.</div>
 
@@ -396,12 +397,12 @@ watch(
             {{ busy ? 'The agent is working — it can read and edit files in this project.'
                     : 'Enter sends · Shift+Enter for a new line' }}
           </span>
-          <button v-if="busy" type="button" class="btn danger" @click="stopSending">
+          <HButton v-if="busy" type="button" variant="danger" size="compact" @click="stopSending">
             <Square :size="14" /> Stop
-          </button>
-          <button v-else type="submit" class="btn" :disabled="!draft.trim()">
+          </HButton>
+          <HButton v-else type="submit" variant="secondary" size="compact" :disabled="!draft.trim()">
             <SendHorizontal :size="14" /> Send
-          </button>
+          </HButton>
         </div>
       </template>
     </form>

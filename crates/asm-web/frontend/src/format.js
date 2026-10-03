@@ -24,3 +24,9 @@ export function bytes(n) {
   }
   return u === 0 ? `${v} B` : `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[u]}`
 }
+
+/// The badge tone for a sync state: green when level, the accent when this
+/// machine has something to send or get, amber when it needs a decision, and
+/// blue for what only the hub has.
+export const hubTone = (state) =>
+  ({ in_sync: 'success', ahead: 'accent', local: 'accent', behind: 'accent', diverged: 'warning', untracked: 'warning', remote: 'info' })[state] || 'neutral'
