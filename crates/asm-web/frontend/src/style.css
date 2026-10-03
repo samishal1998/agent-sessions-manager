@@ -1702,3 +1702,32 @@ button:hover,
     max-width: none;
   }
 }
+
+/* Which machine this is, under the brand --------------------------------- */
+.side-machine {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  margin-top: calc(var(--space-2) - var(--space-5));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  min-width: 0;
+}
+.side-machine svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.side-machine-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.side-machine-tag {
+  margin-inline-start: auto;
+  font-size: var(--text-xs);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}

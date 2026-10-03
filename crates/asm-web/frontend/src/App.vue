@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Search,
   Trash2,
+  Monitor,
   TriangleAlert,
 } from 'lucide-vue-next'
 import api from './api.js'
@@ -346,7 +347,16 @@ const warnings = computed(() =>
 // Where home is, so paths can be shown as `~/…`. Asked once; until it
 // arrives paths render in full, which is correct if unlovely.
 const home = ref(null)
-api.meta().then((m) => (home.value = m.home)).catch(() => {})
+const hostname = ref(null)
+api
+  .meta()
+  .then((m) => {
+    home.value = m.home
+    hostname.value = m.hostname
+  })
+  .catch(() => {})
+// Which machine this is: its name on the hub when joined, else its hostname.
+const machineName = computed(() => hub.value?.machine || hostname.value)
 const shortDir = (root) => shortProject(root, home.value)
 
 /* Sidebar width ------------------------------------------------------- */
@@ -789,6 +799,12 @@ function pickProject(root) {
       <div class="brand">
         <Boxes :size="20" />
         <span>asm</span>
+      </div>
+
+      <div v-if="machineName" class="side-machine" title="The machine this asm is running on">
+        <Monitor :size="15" />
+        <span class="side-machine-name">{{ machineName }}</span>
+        <span class="side-machine-tag">this machine</span>
       </div>
 
       <nav v-if="hubJoined" class="side-views" aria-label="Views">

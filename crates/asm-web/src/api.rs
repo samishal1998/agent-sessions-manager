@@ -102,6 +102,7 @@ pub fn router() -> axum::Router {
 async fn meta() -> Json<serde_json::Value> {
     Json(json!({
         "home": asm_core::paths::home().map(|h| h.display().to_string()),
+        "hostname": asm_core::process::hostname(),
     }))
 }
 
