@@ -888,7 +888,7 @@ function pickProject(root) {
     />
 
     <main id="main" class="main" tabindex="-1">
-      <h1 class="sr-only">{{ view === 'hub' ? 'Hub' : 'Sessions' }}</h1>
+      <h1 v-if="view !== 'hub'" class="sr-only">Sessions</h1>
       <div v-show="view === 'sessions'" class="toolbar">
         <button class="icon-btn mobile-only" aria-label="Show projects" @click="sidebarOpen = true">
           <Menu :size="18" />

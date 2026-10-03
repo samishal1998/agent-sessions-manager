@@ -92,6 +92,8 @@ function toggleState(state) {
     : [...picked.value, state]
 }
 const rowKey = (r) => `${r.agent}:${r.id}`
+// An id the DOM and aria-controls can use whatever characters a session id has.
+const domId = (r) => 'hv-' + rowKey(r).replace(/[^A-Za-z0-9_-]/g, '_')
 function toggleRow(r) {
   const next = new Set(open.value)
   next.has(rowKey(r)) ? next.delete(rowKey(r)) : next.add(rowKey(r))
@@ -157,17 +159,31 @@ const when = (ts) => ago(ts, now.value)
       <button class="icon-btn mobile-only" aria-label="Show projects" @click="emit('menu')">
         <Menu :size="18" />
       </button>
-      <h2 id="hubview-title" class="hv-title">Hub</h2>
+      <h1 id="hubview-title" class="hv-title">Hub</h1>
       <span class="hv-spacer" />
       <button class="btn" :disabled="checking" @click="emit('check')">
         <RefreshCw :size="15" :class="{ spin: checking }" />
         <span>{{ fresh ? 'Check now' : 'Retry' }}</span>
       </button>
-      <button v-if="summary.to_push" class="btn" :disabled="!fresh" @click="emit('push-needed')">
+      <button
+        v-if="summary.to_push"
+        class="btn"
+        :aria-disabled="!fresh || null"
+        :aria-label="`Push ${summary.to_push}${fresh ? '' : ' (unavailable: the hub cannot be reached)'}`"
+        :title="fresh ? '' : 'The hub cannot be reached'"
+        @click="fresh && emit('push-needed')"
+      >
         <ArrowUp :size="15" />
         <span>Push {{ summary.to_push }}</span>
       </button>
-      <button v-if="summary.to_pull" class="btn" :disabled="!fresh" @click="emit('pull-all')">
+      <button
+        v-if="summary.to_pull"
+        class="btn"
+        :aria-disabled="!fresh || null"
+        :aria-label="`Pull ${summary.to_pull}${fresh ? '' : ' (unavailable: the hub cannot be reached)'}`"
+        :title="fresh ? '' : 'The hub cannot be reached'"
+        @click="fresh && emit('pull-all')"
+      >
         <ArrowDown :size="15" />
         <span>Pull {{ summary.to_pull }}</span>
       </button>
@@ -181,7 +197,7 @@ const when = (ts) => ago(ts, now.value)
       <div class="hv-cards">
         <!-- Connection -->
         <div class="hv-card">
-          <h3 class="hv-card-title">Connection</h3>
+          <h2 class="hv-card-title">Connection</h2>
           <p class="hv-state" :class="fresh ? 'ok' : checking ? 'wait' : 'bad'" role="status">
             <RefreshCw v-if="checking" :size="15" class="spin" />
             <Cloud v-else-if="fresh" :size="15" />
@@ -209,10 +225,11 @@ const when = (ts) => ago(ts, now.value)
 
         <!-- Daemon -->
         <div class="hv-card">
-          <h3 class="hv-card-title">Daemon</h3>
+          <h2 class="hv-card-title">Daemon</h2>
           <template v-if="daemon">
             <p
               class="hv-state"
+              role="status"
               :class="daemon.state === 'running' && !daemon.file?.last_error ? 'ok' : daemon.state === 'not_running' ? 'wait' : 'bad'"
             >
               <Radio :size="15" />
@@ -256,7 +273,7 @@ const when = (ts) => ago(ts, now.value)
 
         <!-- Machines -->
         <div class="hv-card">
-          <h3 class="hv-card-title">Machines <span class="faint">{{ machines.length }}</span></h3>
+          <h2 class="hv-card-title">Machines <span class="faint">{{ machines.length }}</span></h2>
           <ul v-if="machines.length" class="hv-machines">
             <li v-for="m in shownMachines" :key="m.id">
               <Monitor :size="15" />
@@ -291,6 +308,7 @@ const when = (ts) => ago(ts, now.value)
           :class="{ on: picked.includes(c.state) }"
           :aria-pressed="picked.includes(c.state)"
           :data-state="c.state"
+          :aria-label="`${c.label}, ${c.count}`"
           :title="c.hint"
           @click="toggleState(c.state)"
         >
@@ -323,7 +341,7 @@ const when = (ts) => ago(ts, now.value)
                 <button
                   class="icon-btn hv-twist"
                   :aria-expanded="open.has(rowKey(r))"
-                  :aria-controls="'hv-' + rowKey(r)"
+                  :aria-controls="open.has(rowKey(r)) ? domId(r) : null"
                   :aria-label="`Details for ${r.title || r.short_id}`"
                   @click="toggleRow(r)"
                 >
@@ -331,7 +349,7 @@ const when = (ts) => ago(ts, now.value)
                 </button>
               </td>
               <td>
-                <span class="pill hub" :class="r.state" :title="r.hint">
+                <span class="pill hub" :class="[r.state, { stale: hub.stale }]" :title="r.hint">
                   <component :is="iconOf(r)" :size="12" />
                   {{ r.label }}
                 </span>
@@ -340,7 +358,7 @@ const when = (ts) => ago(ts, now.value)
                 <div class="hv-session">
                   <AgentMark :agent="r.agent" :size="15" />
                   <span class="hv-stitle">
-                    <span class="truncate">{{ r.title || 'Untitled session' }}</span>
+                    <span class="truncate" :title="r.title || 'Untitled session'">{{ r.title || 'Untitled session' }}</span>
                     <span class="faint mono">{{ r.short_id }}</span>
                   </span>
                 </div>
@@ -352,10 +370,10 @@ const when = (ts) => ago(ts, now.value)
                 <template v-if="buttonOf(r)">
                   <button
                     class="btn"
-                    :disabled="!!buttonOf(r).off"
+                    :aria-disabled="buttonOf(r).off ? 'true' : null"
                     :title="buttonOf(r).off || r.hint"
-                    :aria-label="`${buttonOf(r).text} ${r.title || r.short_id}`"
-                    @click="press(r)"
+                    :aria-label="`${buttonOf(r).text} ${r.title || r.short_id}${buttonOf(r).off ? ' (unavailable: ' + buttonOf(r).off + ')' : ''}`"
+                    @click="!buttonOf(r).off && press(r)"
                   >
                     <ArrowUp v-if="r.action === 'push'" :size="14" />
                     <ArrowUpDown v-else-if="r.action === 'resolve'" :size="14" />
@@ -365,7 +383,7 @@ const when = (ts) => ago(ts, now.value)
                 </template>
               </td>
             </tr>
-            <tr v-if="open.has(rowKey(r))" :id="'hv-' + rowKey(r)" class="hv-detail">
+            <tr v-if="open.has(rowKey(r))" :id="domId(r)" class="hv-detail">
               <td />
               <td colspan="6">
                 <p class="hv-hint">{{ r.hint }}</p>
@@ -399,6 +417,7 @@ const when = (ts) => ago(ts, now.value)
                     <Check v-if="copied === command(r)" :size="14" />
                     <Copy v-else :size="14" />
                   </button>
+                  <span class="sr-only" role="status">{{ copied === command(r) ? 'Copied' : '' }}</span>
                 </p>
               </td>
             </tr>

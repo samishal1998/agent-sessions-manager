@@ -315,6 +315,16 @@ button:hover,
   outline-offset: 2px;
 }
 
+.btn:disabled,
+.btn[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.btn:disabled:hover,
+.btn[aria-disabled='true']:hover {
+  background: var(--bg-raised);
+  border-color: var(--field-border);
+}
 .btn {
   display: inline-flex;
   align-items: center;
@@ -582,7 +592,7 @@ button:hover,
   align-items: center;
   gap: 6px;
   padding: 5px var(--space-2);
-  border: 1px solid var(--border);
+  border: 1px solid var(--field-border);
   border-radius: 999px;
   background: var(--bg-alt);
   color: var(--fg-muted);
@@ -598,17 +608,40 @@ button:hover,
 }
 .chip[data-state='ahead'],
 .chip[data-state='local'],
-.chip[data-state='behind'],
-.chip[data-state='untracked'] {
+.chip[data-state='behind'] {
   color: var(--accent);
 }
-.chip[data-state='diverged'] {
+.chip[data-state='diverged'],
+.chip[data-state='untracked'] {
   color: var(--amber);
+}
+.chip[data-state='remote'] {
+  color: var(--violet);
 }
 .chip.on {
   color: var(--accent);
   background: var(--accent-soft);
   border-color: var(--accent);
+}
+.chip.on[data-state='in_sync'] {
+  background: var(--ok-bg);
+  border-color: var(--ok-border);
+}
+.chip.on[data-state='diverged'],
+.chip.on[data-state='untracked'] {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+}
+.chip.on[data-state='remote'] {
+  background: var(--violet-bg);
+  border-color: var(--violet-border);
+}
+@media (forced-colors: active) {
+  .chip.on {
+    background: Highlight;
+    color: HighlightText;
+    border-color: Highlight;
+  }
 }
 .chip.working {
   color: var(--amber);
@@ -673,6 +706,7 @@ button:hover,
 .pill.hub.behind {
   color: var(--accent);
   background: var(--accent-soft);
+  border-color: var(--accent-border);
 }
 .pill.hub.diverged,
 .pill.hub.untracked {
@@ -686,7 +720,9 @@ button:hover,
   border-color: var(--violet-border);
 }
 .pill.hub.stale {
-  opacity: 0.6;
+  /* Last known, not current: a dashed edge, not a dimmer colour, which would
+     cost the contrast the text needs. */
+  border-style: dashed;
 }
 .hubpanel {
   display: flex;
@@ -1529,6 +1565,7 @@ button:hover,
 }
 .hv-stitle .mono {
   font-size: var(--text-xs);
+  white-space: nowrap;
 }
 .hv-col-project {
   color: var(--fg-muted);
@@ -1555,6 +1592,11 @@ button:hover,
   padding-top: 0;
   background: var(--bg-alt);
 }
+.hv-hint,
+.hv-problem,
+.hv-recent li {
+  line-height: 1.45;
+}
 .hv-hint {
   margin-bottom: var(--space-3);
   color: var(--fg-muted);
@@ -1575,32 +1617,37 @@ button:hover,
 }
 /* Narrow: the table gives up the columns that repeat what the row says. */
 @container (max-width: 960px) {
-  .hv-col-project,
-  .hv-col-where {
+  .hv-table td.hv-col-where,
+  .hv-table th.hv-col-where {
     display: none;
   }
 }
+@container (max-width: 840px) {
+  .hv-cards .hv-card:last-child {
+    grid-column: 1 / -1;
+  }
+}
+/* Narrow: one block per session instead of columns, with the title on a
+   line of its own so it can be read. */
 @container (max-width: 760px) {
-  .hv-col-when {
+  .hv-table td.hv-col-project,
+  .hv-table td.hv-col-where,
+  .hv-table td.hv-col-when,
+  .hv-table th {
     display: none;
   }
-}
-/* Narrow: one block per session instead of columns. */
-@container (max-width: 640px) {
-  .hv-col-where {
-    display: none;
+  .hv-table thead,
+  .hv-table tbody,
+  .hv-table {
+    display: block;
   }
   .hv-table thead {
     display: none;
   }
-  .hv-table,
-  .hv-table tbody {
-    display: block;
-  }
   .hv-row {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: var(--space-1) var(--space-2);
+    gap: var(--space-2);
     align-items: center;
     padding: var(--space-3) 0;
     border-bottom: 1px solid var(--border);
@@ -1609,21 +1656,23 @@ button:hover,
     display: block;
     padding: 0;
     border: 0;
+    min-width: 0;
   }
   .hv-row td:nth-child(1) {
     grid-row: 1 / 3;
   }
   .hv-row td:nth-child(3) {
-    grid-column: 2;
+    grid-column: 2 / 4;
     grid-row: 1;
   }
   .hv-row td:nth-child(2) {
     grid-column: 2;
     grid-row: 2;
+    justify-self: start;
   }
   .hv-row td:nth-child(7) {
     grid-column: 3;
-    grid-row: 1 / 3;
+    grid-row: 2;
   }
   .hv-row:hover td {
     background: transparent;
@@ -1638,5 +1687,18 @@ button:hover,
   .hv-detail td {
     padding: var(--space-3);
     border-radius: var(--radius-sm);
+  }
+  .hv-twist {
+    width: 40px;
+    height: 40px;
+  }
+  .hv-chips .chip {
+    min-height: 36px;
+  }
+  .pill {
+    max-width: 100%;
+  }
+  .hv-stitle .truncate {
+    max-width: none;
   }
 }

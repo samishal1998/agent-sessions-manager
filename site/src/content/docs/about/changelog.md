@@ -5,9 +5,10 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
-## Unreleased
+## 0.6.2 — 2026-10-03
 
 - **A dedicated Hub view in the web UI.** The sidebar's **Hub** screen shows the connection, the daemon (with its recent events) and every machine on the hub, then a table of every session here and on the hub: its sync state, where it lives, when it changed, and a button for what it needs. Expand a row for the full id, project and branch, the hub revision, size, who pushed it and when, and the terminal command that does the same. The card above the session list is now a compact summary with a link to it.
+- **Hub view accessibility and layout**, from an audit of the new screen: it reflows to one block per session on narrow widths with the title readable, disabled buttons look disabled and stay focusable with their reason in the name, filter chips match the state colours and show pressed state in forced-colors mode, and the table's expand controls and live regions are properly wired.
 - **"Check sync" is now "Not compared".** The old name read as an action; the state means the hub and this machine both have the session but have never been compared. Its hint says what pulling it will do.
 
 ## 0.6.1 — 2026-10-03
