@@ -1,4 +1,7 @@
-# Session IR v1
+---
+title: Session IR v1
+description: The agent-neutral representation every session converts through.
+---
 
 The agent-neutral representation every session converts through. It is what
 `asm export` emits, what `asm import` consumes, and the only place where the

@@ -1,4 +1,7 @@
-# Agent store formats
+---
+title: Agent store formats
+description: What each agent keeps on disk, and the traps that cost real debugging.
+---
 
 What each agent keeps on disk, and the traps that cost real debugging. Anything
 here that is load-bearing is also encoded as a comment next to the code that
@@ -367,3 +370,18 @@ archive and delete can both be checked against jcode's own view:
 before archive → jcode resolves it       after archive → jcode does not
 after unarchive → jcode resolves it      after delete  → jcode does not
 ```
+
+## Codex
+
+- **Base:** `$CODEX_HOME`, else `~/.codex`. Sessions are **rollout** JSONL files under `sessions/`, with metadata in `state_5.sqlite`'s `threads` table.
+- **Listing:** the `threads` table drives it, and asm also sweeps `sessions/` for rollouts with no `threads` row — Codex hides those until you resume them by id.
+- **The working directory is inside the conversation** (turn context, environment messages), not only in metadata, so a rollout cannot be re-homed to another path by editing metadata: hub restore is same-path only.
+- **Locking:** Codex holds an `flock` on `thread-writer-locks/<id>.lock` while writing; a hub install takes the same lock, so a live session is refused and Codex is kept out meanwhile.
+- **Resume** finds a rollout placed under `sessions/` by id and writes the `threads` row itself; `migrate-rollouts --apply` is *not* an adoption path (it refuses a thread with no row).
+
+## Antigravity
+
+- **Base:** `~/.gemini/antigravity-cli` (a hard-coded root in agy; `ASM_ANTIGRAVITY_ROOT` overrides it for asm).
+- **One SQLite database per conversation**, `conversations/<id>.db`, with steps as protobuf blobs against an unpublished schema. asm does not decode them: it reads `brain/<id>/.system_generated/logs/`, the JSONL rendering agy writes alongside.
+- **No project directory is recorded.** `cache/last_conversations.json` maps a directory to its *most recent* conversation only.
+- **Restore** writes the database (a `VACUUM INTO` snapshot taken on a read-only connection) plus `brain/<id>/` and one metadata entry; it never writes `last_conversations.json`, which would clobber another conversation's binding.

@@ -1,0 +1,100 @@
+name: docs
+
+# The documentation site (site/, Astro Starlight) is published under /docs/
+# of the same GitHub Pages site as the landing page, which is served from the
+# root of the gh-pages branch. A push to main rebuilds it; a pull request only
+# builds it, so a broken link or page fails the check before it merges.
+#
+# The command reference is generated from the real binary's --help, so it is
+# built here from the same commit and cannot drift from the code.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - 'crates/asm-cli/**'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - 'site/**'
+      - 'crates/asm-cli/**'
+      - '.github/workflows/docs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Pages show "last updated" from git history.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The web assets are committed (rust-embed needs them to compile), so
+      # the binary builds without a frontend step.
+      - run: cargo build --locked --release -p asm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - run: npm ci
+        working-directory: site
+      - name: Build the site
+        # `npm run build` regenerates the CLI reference from ASM_BIN, then
+        # builds; starlight-links-validator fails it on any broken link.
+        run: npm run build
+        working-directory: site
+        env:
+          ASM_BIN: ${{ github.workspace }}/target/release/asm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docs
+          path: site/dist
+          retention-days: 7
+
+  publish:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # One publisher at a time, and never cancel one halfway through a push.
+    concurrency:
+      group: docs-publish
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docs
+          path: dist
+      - uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: pages
+      - name: Publish to gh-pages/docs
+        working-directory: pages
+        run: |
+          rsync -a --delete ../dist/ docs/
+          git add -A docs
+          if git diff --cached --quiet; then
+            echo "docs already up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "docs: ${GITHUB_SHA::7}"
+          # The landing page is edited on this branch too; take its newer
+          # commits rather than failing on a race.
+          for attempt in 1 2 3; do
+            git push origin HEAD:gh-pages && exit 0
+            git pull --rebase origin gh-pages
+          done
+          exit 1

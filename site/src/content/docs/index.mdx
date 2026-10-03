@@ -1,0 +1,40 @@
+---
+title: asm
+description: One place to browse, search, move and sync the coding-agent sessions on every machine you use.
+template: splash
+hero:
+  tagline: One inventory, one set of verbs, for the coding-agent sessions scattered across your machines — Claude Code, OpenCode, jcode, Codex and Antigravity.
+  actions:
+    - text: Install
+      link: /agent-sessions-manager/docs/start/install/
+      icon: right-arrow
+    - text: Five-minute tour
+      link: /agent-sessions-manager/docs/start/quickstart/
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+<CardGrid>
+  <Card title="One list, five agents" icon="open-book">
+    Every session from every agent's own store, in a table, a terminal UI or a local web UI. Rename, move, archive, delete and export through each agent's sanctioned path — never by guessing at its files.
+  </Card>
+  <Card title="Search everything" icon="magnifier">
+    Full-text search over every message of every session, including subagent transcripts, from an incremental index in asm's own directory.
+  </Card>
+  <Card title="Carry a conversation across agents" icon="random">
+    `asm import` converts through a documented IR into a native session the target agent resumes itself — with a loss report that says what could not cross.
+  </Card>
+  <Card title="Sync across machines" icon="laptop">
+    A hub archives sessions; machines push and pull them under their original ids. `claude --resume <id>` works on the second laptop. A background daemon keeps the hub current.
+  </Card>
+</CardGrid>
+
+## Start with what you need
+
+<CardGrid>
+  <LinkCard title="Install and first run" description="One line, checksum-verified, no runtime." href="/agent-sessions-manager/docs/start/install/" />
+  <LinkCard title="Set up a hub" description="Join a second machine in two commands." href="/agent-sessions-manager/docs/hub/setup/" />
+  <LinkCard title="Keep the hub current" description="The daemon: status, targeting, running as a service." href="/agent-sessions-manager/docs/hub/daemon/" />
+  <LinkCard title="Command reference" description="Every command and option, generated from the binary." href="/agent-sessions-manager/docs/reference/cli/overview/" />
+</CardGrid>

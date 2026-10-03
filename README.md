@@ -16,9 +16,12 @@ opencode     ses_32d1  OpenRPC monorepo tooling plan             ~/projects/node
 ```
 
 Three frontends over one core: a CLI, a terminal UI (`asm tui`), and a local web
-UI (`asm serve`). There is a [tour of it here][site].
+UI (`asm serve`). There is a [tour of it here][site], and [full documentation][docs].
 
 [site]: https://samishal1998.github.io/agent-sessions-manager/
+[docs]: https://samishal1998.github.io/agent-sessions-manager/docs/
+[ir]: https://samishal1998.github.io/agent-sessions-manager/docs/reference/ir-schema/
+[fmt]: https://samishal1998.github.io/agent-sessions-manager/docs/reference/agent-formats/
 
 [cc]: https://claude.com/claude-code
 [oc]: https://opencode.ai
@@ -193,7 +196,7 @@ division the single-session verb has always had.
 ## Importing across agents
 
 `asm import` converts through a documented intermediate representation (see
-[docs/ir-schema.md](docs/ir-schema.md)) and writes a **native** session in the
+[the IR schema][ir]) and writes a **native** session in the
 target agent, so the target's own picker lists it and its own resume works:
 
 ```
@@ -599,7 +602,7 @@ crates/asm        the single `asm` binary
 ```
 
 Architecture and the per-agent format details worth knowing before touching an
-adapter are in [docs/agent-formats.md](docs/agent-formats.md).
+adapter are in [the agent formats][fmt].
 
 ## Data asm writes
 
