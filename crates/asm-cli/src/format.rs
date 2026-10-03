@@ -35,14 +35,10 @@ pub fn remote_table(rows: &[asm_core::hub::actions::Row]) {
         .iter()
         .map(|r| {
             let state = match r.state {
-                RowState::InSync => "in sync",
-                RowState::Ahead => "ahead — push",
-                RowState::Behind => "behind — pull",
-                RowState::Diverged => "diverged",
-                RowState::Local => "only here",
-                RowState::Remote if r.restorable => "on hub — pull",
-                RowState::Remote => "on hub (backup)",
-                RowState::Untracked => "on both, untracked",
+                // A backup the agent cannot restore is the one case the
+                // shared wording does not cover: there is nothing to pull.
+                RowState::Remote if !r.restorable => "On hub (backup)",
+                _ => r.label,
             };
             vec![
                 truncate(&home_relative(&r.project), 40),

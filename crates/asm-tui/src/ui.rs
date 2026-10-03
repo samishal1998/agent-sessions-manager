@@ -13,6 +13,7 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap,
 };
 
+use asm_core::hub::actions::{RowState, SyncAction};
 use asm_core::model::SessionStatus;
 
 use crate::app::{App, Mode, PickerKind};
@@ -52,7 +53,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn draw_main(frame: &mut Frame, app: &App, area: Rect) {
-    if app.hits.is_some() {
+    if app.hub_view {
+        draw_hub_view(frame, app, area);
+    } else if app.hits.is_some() {
         draw_hits(frame, app, area);
     } else {
         draw_list(frame, app, area);
@@ -144,7 +147,7 @@ fn draw_doctor(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Every key, grouped. The footer shows the handful that fit; this is the
 /// rest, and it is why the footer does not have to list them all.
-const HELP: [(&str, &[(&str, &str)]); 4] = [
+const HELP: [(&str, &[(&str, &str)]); 5] = [
     (
         "moving around",
         &[
@@ -179,6 +182,16 @@ const HELP: [(&str, &[(&str, &str)]); 4] = [
             ("i", "import into the other agent"),
             ("p", "push to the hub"),
             ("c", "reply to the session"),
+        ],
+    ),
+    (
+        "the hub",
+        &[
+            ("H", "every session here and on the hub, and what each needs"),
+            ("⏎", "in the hub view: push it, pull it, or say why neither"),
+            ("p", "push the selected session (in the list or the hub view)"),
+            ("f", "in the hub view: only what needs doing"),
+            ("r", "in the hub view: ask the hub again"),
         ],
     ),
     (
@@ -391,7 +404,11 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     // Columns give way to the title, widest and least useful first: a row
     // with no title says nothing about the session it stands for.
     let inner = area.width.saturating_sub(2);
-    let project_width = inner.saturating_sub(75).clamp(0, 40);
+    // Only once the hub has been joined, and only where the title keeps
+    // its room: where a session stands with the hub is worth more than its
+    // size, less than its name.
+    let show_hub = app.has_sync_states() && inner >= 96;
+    let project_width = inner.saturating_sub(75 + if show_hub { 12 } else { 0 }).clamp(0, 40);
     let show_project = project_width >= 12;
     let show_id = inner >= 62;
     let show_size = inner >= 50;
@@ -435,6 +452,12 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
                     theme::dim(),
                 )));
             }
+            if show_hub {
+                cells.push(Cell::from(match app.sync_of(s) {
+                    Some(state) => sync_span(state, app.hub_stale),
+                    None => Span::styled("", theme::dim()),
+                }));
+            }
             cells.push(Cell::from(status));
             Row::new(cells)
         })
@@ -459,6 +482,10 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     if show_size {
         widths.push(Constraint::Length(8));
         header.push("size");
+    }
+    if show_hub {
+        widths.push(Constraint::Length(12));
+        header.push("sync");
     }
     widths.push(Constraint::Length(6));
     header.push("state");
@@ -679,6 +706,21 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, filters: &[String]) {
                 vec![("y", "do it"), ("any other key", "cancel")],
             )
         }
+        Mode::PullDir => (
+            prompt("put it in", &app.input),
+            vec![("⏎", "pull there"), ("esc", "cancel")],
+        ),
+        Mode::Normal if app.hub_view => (
+            status_line_of(app),
+            vec![
+                ("⏎", "do what it needs"),
+                ("p", "push"),
+                ("f", if app.hub_only_needing { "show all" } else { "only what needs doing" }),
+                ("r", "check again"),
+                ("esc", "back"),
+                ("?", "help"),
+            ],
+        ),
         Mode::Picker => (
             status_line_of(app),
             match app.picker.as_ref().map(|p| p.kind) {
@@ -703,22 +745,36 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, filters: &[String]) {
                 ("?", "help"),
             ],
         ),
-        Mode::Normal => (
-            status_line_of(app),
-            vec![
+        Mode::Normal => {
+            let mut keys = vec![
                 ("⏎", "resume"),
                 ("␣", "select"),
                 (if app.preview_open { "←" } else { "→" }, "transcript"),
                 ("A", "agents"),
                 ("P", "project"),
-                ("/", "filter"),
-                ("s", "search"),
-                ("c", "reply"),
-                ("?", "help"),
-            ],
-        ),
+            ];
+            // Only where there is a hub to look at.
+            if app.hub_joined() {
+                keys.push(("H", "hub"));
+            }
+            keys.extend([("/", "filter"), ("s", "search"), ("c", "reply"), ("?", "help")]);
+            (status_line_of(app), keys)
+        }
     };
-    frame.render_widget(Paragraph::new(status), status_line);
+    // The hub's state sits at the right of the status line, where a long
+    // message from the left cannot push it off screen.
+    match hub_chip(app) {
+        Some(chip) if status_line.width as usize > chip.width() + 12 => {
+            let [left, right] = Layout::horizontal([
+                Constraint::Min(0),
+                Constraint::Length(chip.width() as u16 + 1),
+            ])
+            .areas(status_line);
+            frame.render_widget(Paragraph::new(status), left);
+            frame.render_widget(Paragraph::new(chip), right);
+        }
+        _ => frame.render_widget(Paragraph::new(status), status_line),
+    }
     frame.render_widget(Paragraph::new(hints(&keys, hint_line.width)), hint_line);
 }
 
@@ -747,6 +803,162 @@ fn status_line_of(app: &App) -> Line<'static> {
         ));
     }
     Line::from(spans)
+}
+
+/// A session's place with the hub, as a glyph and the core's own words: the
+/// word carries it, the glyph and colour only help.
+fn sync_span(state: RowState, stale: bool) -> Span<'static> {
+    let (glyph, colour) = match state.action() {
+        None => ("✓", theme::GOOD),
+        Some(SyncAction::Push) => ("↑", theme::ACCENT),
+        Some(SyncAction::Pull) => ("↓", theme::ACCENT),
+        Some(SyncAction::Resolve) => ("⇅", theme::WARN),
+    };
+    let style = Style::default().fg(if state == RowState::InSync { theme::FAINT } else { colour });
+    // A picture the hub has stopped refreshing is dimmed, never dropped.
+    let style = if stale { style.add_modifier(Modifier::DIM) } else { style };
+    Span::styled(format!("{glyph} {}", state.label()), style)
+}
+
+/// How the hub is doing, in the corner of the status line: connection
+/// first, then what is out of step. Empty when there is no hub to speak of.
+fn hub_chip(app: &App) -> Option<Line<'static>> {
+    // Before the first answer there is no `hub` yet, and a slow or dead hub
+    // can take seconds to say so: this is the "it is loading" signal.
+    if app.hub_checking && !app.hub_stale && !app.hub.as_ref().is_some_and(|h| h.joined && h.connected) {
+        return Some(Line::styled("⟳ hub…", Style::default().fg(theme::ACCENT)));
+    }
+    let hub = app.hub.as_ref().filter(|h| h.joined)?;
+    if app.hub_checking && !app.hub_stale {
+        return Some(Line::styled("⟳ hub…", Style::default().fg(theme::ACCENT)));
+    }
+    if !hub.connected {
+        return Some(Line::styled(
+            "⚠ hub unreachable — H, then r retries",
+            Style::default().fg(theme::WARN),
+        ));
+    }
+    let s = hub.summary;
+    let parts: Vec<String> = [
+        (s.to_push, "to push"),
+        (s.to_pull, "to pull"),
+        (s.to_resolve, "diverged"),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, what)| format!("{n} {what}"))
+    .collect();
+    Some(if parts.is_empty() {
+        Line::styled("⇄ hub: in sync", Style::default().fg(theme::GOOD))
+    } else {
+        Line::styled(format!("⇄ hub: {}  (H)", parts.join(" · ")), Style::default().fg(theme::ACCENT))
+    })
+}
+
+/// Every session here and on the hub, most in need of attention first, each
+/// with what to do about it.
+fn draw_hub_view(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(hub) = &app.hub else {
+        let block = panel("hub  ·  asking…", true);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        frame.render_widget(
+            Paragraph::new(Line::styled(
+                "asking the hub… a hub that is down is given a few seconds to say so",
+                theme::dim(),
+            )),
+            Rect { x: inner.x + 1, y: inner.y + 1, width: inner.width.saturating_sub(2), height: 1 },
+        );
+        return;
+    };
+    let rows = app.hub_rows();
+    let host = hub.url.as_deref().unwrap_or("the hub");
+    let conn = if app.hub_checking {
+        "checking…".to_string()
+    } else if hub.connected {
+        "connected".to_string()
+    } else {
+        "UNREACHABLE".to_string()
+    };
+    let title = format!(
+        "hub  ·  {conn}  ·  {}{}  ·  {} shown",
+        host.split_once("://").map_or(host, |(_, r)| r),
+        hub.machine.as_deref().map(|m| format!(" as {m}")).unwrap_or_default(),
+        rows.len()
+    );
+    let block = panel(title, true);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // What is wrong, and what to try, above the table where it cannot be
+    // missed.
+    let problem = hub.error.as_deref().filter(|_| !app.hub_checking);
+    let [note, table_area] = Layout::vertical([
+        Constraint::Length(if problem.is_some() { 2 } else { 0 }),
+        Constraint::Min(0),
+    ])
+    .areas(inner);
+    if let Some(error) = problem {
+        let stale = if app.hub_stale { " Showing the last known state." } else { "" };
+        frame.render_widget(
+            Paragraph::new(format!("⚠ {error}{stale}"))
+                .style(Style::default().fg(theme::WARN))
+                .wrap(Wrap { trim: true }),
+            note,
+        );
+    }
+
+    let wide = table_area.width >= 90;
+    let body: Vec<Row> = rows
+        .iter()
+        .map(|r| {
+            let mut cells = vec![
+                Cell::from(sync_span(r.state, app.hub_stale)),
+                Cell::from(Span::styled(
+                    r.agent.to_string(),
+                    Style::default().fg(theme::agent(r.agent)),
+                )),
+                Cell::from(r.title.clone().unwrap_or_else(|| r.short_id.clone())),
+            ];
+            if wide {
+                // The portable `${HOME}` form is internal syntax.
+                let project = r.project.replacen("${HOME}", "~", 1);
+                cells.push(Cell::from(Span::styled(shorten(&project, 26), theme::label())));
+                cells.push(Cell::from(Span::styled(shorten(&r.machine, 12), theme::dim())));
+            }
+            cells.push(Cell::from(Span::styled(r.updated.map(ago).unwrap_or_default(), theme::dim())));
+            Row::new(cells)
+        })
+        .collect();
+    let mut widths = vec![Constraint::Length(12), Constraint::Length(11), Constraint::Fill(2)];
+    let mut header = vec!["sync", "agent", "title"];
+    if wide {
+        widths.push(Constraint::Length(26));
+        widths.push(Constraint::Length(12));
+        header.push("project");
+        header.push("machine");
+    }
+    widths.push(Constraint::Length(10));
+    header.push("updated");
+    let table = Table::new(body, widths)
+        .header(Row::new(header).style(theme::label().add_modifier(Modifier::BOLD)))
+        .row_highlight_style(theme::selected_row());
+    let mut state = TableState::default().with_selected(Some(app.hub_cursor));
+    frame.render_stateful_widget(table, table_area, &mut state);
+
+    if rows.is_empty() {
+        let line = if app.hub_checking {
+            "asking the hub…"
+        } else if app.hub_only_needing {
+            "everything is in sync — f shows it all"
+        } else {
+            "nothing on the hub, and nothing here to send"
+        };
+        frame.render_widget(
+            Paragraph::new(Line::styled(line, theme::dim())),
+            Rect { y: table_area.y + 2, height: 1, x: table_area.x + 2, width: table_area.width.saturating_sub(4) },
+        );
+    }
 }
 
 /// `~/…` for a path inside the home directory: the same shortening the web
@@ -1034,5 +1246,117 @@ mod tests {
         assert!(screen.contains("showing"), "{screen}");
         assert!(screen.contains("claude-code") && screen.contains("\"pool\""), "{screen}");
         assert!(screen.contains("esc clears"), "{screen}");
+    }
+
+    use asm_core::hub::actions::{HubStatus, Row as HubRow, summarize};
+
+    fn hub_row(app: &App, index: usize, state: RowState) -> HubRow {
+        let s = &app.sessions[index];
+        HubRow {
+            project: s.project_root.display().to_string(),
+            agent: s.handle.agent,
+            id: s.handle.native_id.clone(),
+            short_id: s.short_id().to_string(),
+            title: s.title.clone(),
+            machine: "machB".into(),
+            updated: None,
+            state,
+            action: state.action(),
+            label: state.label(),
+            hint: state.hint(),
+            restorable: true,
+        }
+    }
+
+    /// A hub that answers, with the three local sessions in three states.
+    fn joined(app: &mut App) {
+        let rows = vec![
+            hub_row(app, 0, RowState::Ahead),
+            hub_row(app, 1, RowState::InSync),
+            hub_row(app, 2, RowState::Local),
+        ];
+        let summary = summarize(&rows);
+        app.set_hub_for_test(HubStatus {
+            joined: true,
+            connected: true,
+            url: Some("http://hub.local:7434".into()),
+            machine: Some("laptop".into()),
+            rows,
+            summary,
+            ..Default::default()
+        });
+    }
+
+    /// Where each session stands is a column in the list, in the core's own
+    /// words, so it never rests on a colour.
+    #[test]
+    fn the_list_says_what_each_session_needs_from_the_hub() {
+        let mut app = app();
+        assert!(!render(&app, 130, 12).contains("hub"), "no hub, no column");
+        joined(&mut app);
+        let screen = render(&app, 130, 12);
+        for word in ["Needs push", "Synced", "Not on hub"] {
+            assert!(screen.contains(word), "{word} missing:\n{screen}");
+        }
+        // Too narrow for the column: the title still wins.
+        let narrow = render(&app, 70, 12);
+        assert!(!narrow.contains("Needs push") && narrow.contains("Trace the"), "{narrow}");
+    }
+
+    /// The corner of the status line: connected and level, connected and
+    /// out of step, asking, and unreachable — each in words.
+    #[test]
+    fn the_status_line_says_how_the_hub_is_doing() {
+        let mut app = app();
+        assert!(!render(&app, 120, 12).contains("hub:"), "nothing to say without a hub");
+
+        joined(&mut app);
+        let out_of_step = render(&app, 120, 12);
+        assert!(out_of_step.contains("hub: 2 to push"), "{out_of_step}");
+
+        app.hub_checking = true;
+        app.hub_stale = false;
+        assert!(render(&app, 120, 12).contains("hub…"));
+        app.hub_checking = false;
+
+        app.set_hub_for_test(HubStatus {
+            joined: true,
+            connected: false,
+            error: Some("Could not connect to hub.local:7434.".into()),
+            ..Default::default()
+        });
+        let down = render(&app, 120, 12);
+        assert!(down.contains("hub unreachable"), "{down}");
+        // The last picture survives the hub going quiet, marked as old.
+        assert!(app.hub_stale && render(&app, 130, 12).contains("Needs push"));
+    }
+
+    /// The hub view lists everything, the things that need a decision first,
+    /// and names the problem and the way out when the hub is down.
+    #[test]
+    fn the_hub_view_puts_what_needs_doing_first() {
+        let mut app = app();
+        joined(&mut app);
+        app.hub_view = true;
+        let screen = render(&app, 120, 14);
+        assert!(screen.contains("connected") && screen.contains("hub.local:7434 as laptop"), "{screen}");
+        let positions: Vec<usize> = ["Needs push", "Not on hub", "Synced"]
+            .iter()
+            .map(|w| screen.find(w).unwrap_or(usize::MAX))
+            .collect();
+        assert!(positions[0] < positions[1] && positions[1] < positions[2], "{screen}");
+
+        app.hub_only_needing = true;
+        assert!(!render(&app, 120, 14).contains("Synced"), "f hides what is level");
+
+        app.set_hub_for_test(HubStatus {
+            joined: true,
+            connected: false,
+            error: Some("Could not connect to hub.local:7434. Is `asm hub serve` running there?".into()),
+            ..Default::default()
+        });
+        let down = render(&app, 120, 14);
+        assert!(down.contains("UNREACHABLE") && down.contains("asm hub serve"), "{down}");
+        assert!(down.contains("Showing the last known state"), "{down}");
     }
 }

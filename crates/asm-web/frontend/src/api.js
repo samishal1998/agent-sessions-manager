@@ -86,6 +86,7 @@ const api = {
   // side; {joined:false} when there is none.
   hub: () => request('/api/hub'),
   push: (sessions) => api.bulk(sessions, { action: 'push' }),
+  pullAll: () => post('/api/hub/pull-all', {}),
   pull: (agent, id, projectDir) =>
     post('/api/hub/pull', { agent, id, project_dir: projectDir || null }),
   rename: (s, title) => post(sessionPath(s, 'rename'), { title }),

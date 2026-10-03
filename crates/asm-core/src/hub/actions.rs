@@ -580,7 +580,64 @@ pub enum RowState {
     Untracked,
 }
 
-#[derive(Debug, Serialize)]
+/// What a person should do about a session to bring it level with the hub.
+/// One definition, read by the CLI table and both UIs: they had three, and
+/// they disagreed about what to call each state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncAction {
+    Push,
+    Pull,
+    /// Both sides moved; neither push nor pull is safe without a choice.
+    Resolve,
+}
+
+impl RowState {
+    pub fn action(self) -> Option<SyncAction> {
+        match self {
+            RowState::InSync => None,
+            RowState::Ahead | RowState::Local => Some(SyncAction::Push),
+            // Untracked is "pull" because pulling is what finds out: it
+            // says in sync, ahead, newer or diverged, and records the base.
+            RowState::Behind | RowState::Remote | RowState::Untracked => Some(SyncAction::Pull),
+            RowState::Diverged => Some(SyncAction::Resolve),
+        }
+    }
+
+    /// A few words, for a column or a pill.
+    pub fn label(self) -> &'static str {
+        match self {
+            RowState::InSync => "Synced",
+            RowState::Ahead => "Needs push",
+            RowState::Local => "Not on hub",
+            RowState::Behind => "Needs pull",
+            RowState::Remote => "New on hub",
+            RowState::Diverged => "Diverged",
+            RowState::Untracked => "Check sync",
+        }
+    }
+
+    /// A sentence, for a tooltip or a status line.
+    pub fn hint(self) -> &'static str {
+        match self {
+            RowState::InSync => "The hub has exactly this copy.",
+            RowState::Ahead => "Changed here since the last sync. Push it.",
+            RowState::Local => "The hub does not have this session yet. Push it.",
+            RowState::Behind => "Another machine pushed a newer copy. Pull it.",
+            RowState::Remote => "On the hub, not on this machine. Pull it.",
+            RowState::Diverged => {
+                "Continued both here and on another machine. `asm push --force` makes this copy \
+                 the head; `asm pull <id>` says more."
+            }
+            RowState::Untracked => {
+                "The hub has this session, but this machine has no record of syncing it. Pull it to \
+                 compare."
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct Row {
     /// The project both machines agree on: the git origin, else the path.
     pub project: String,
@@ -593,6 +650,9 @@ pub struct Row {
     pub machine: String,
     pub updated: Option<Timestamp>,
     pub state: RowState,
+    pub action: Option<SyncAction>,
+    pub label: &'static str,
+    pub hint: &'static str,
     /// Whether `asm pull` can bring it here.
     pub restorable: bool,
 }
@@ -635,6 +695,9 @@ pub fn remote_list(remote: &Remote, local: &[Session]) -> Result<Vec<Row>, CoreE
             machine: m.machine.as_ref().map(|x| x.name.clone()).unwrap_or_default(),
             updated: m.updated,
             state: row_state,
+            action: row_state.action(),
+            label: row_state.label(),
+            hint: row_state.hint(),
             restorable: bundle::restorable(m.agent),
         });
     }
@@ -652,11 +715,111 @@ pub fn remote_list(remote: &Remote, local: &[Session]) -> Result<Vec<Row>, CoreE
             machine: remote.machine.name.clone(),
             updated: s.updated,
             state: RowState::Local,
+            action: RowState::Local.action(),
+            label: RowState::Local.label(),
+            hint: RowState::Local.hint(),
             restorable: bundle::restorable(s.handle.agent),
         });
     }
     rows.sort_by(|a, b| a.project.cmp(&b.project).then(b.updated.cmp(&a.updated)));
     Ok(rows)
+}
+
+/// How many sessions want each kind of attention: what a status line says.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Summary {
+    pub synced: usize,
+    pub to_push: usize,
+    pub to_pull: usize,
+    pub to_resolve: usize,
+    /// On the hub and nowhere on this machine (a subset of `to_pull`).
+    pub new_on_hub: usize,
+}
+
+pub fn summarize(rows: &[Row]) -> Summary {
+    let mut s = Summary::default();
+    for row in rows {
+        match row.action {
+            None => s.synced += 1,
+            Some(SyncAction::Push) => s.to_push += 1,
+            Some(SyncAction::Pull) => s.to_pull += 1,
+            Some(SyncAction::Resolve) => s.to_resolve += 1,
+        }
+        if row.state == RowState::Remote {
+            s.new_on_hub += 1;
+        }
+    }
+    s
+}
+
+/// Everything a UI needs to say how this machine stands with the hub, in
+/// one call: whether there is a hub, whether it answered, and what is out
+/// of step. An unreachable hub is a status, not an error — the UI shows it
+/// and offers a retry.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct HubStatus {
+    pub joined: bool,
+    pub connected: bool,
+    pub url: Option<String>,
+    /// This machine's name on the hub.
+    pub machine: Option<String>,
+    /// Why it is not connected, and what to try — not curl's stderr.
+    pub error: Option<String>,
+    /// What actually went wrong, for a tooltip or a bug report.
+    pub detail: Option<String>,
+    pub rows: Vec<Row>,
+    pub summary: Summary,
+}
+
+pub fn hub_status(local: &[Session]) -> HubStatus {
+    if !super::client::is_joined() {
+        return HubStatus::default();
+    }
+    let remote = match super::client::load() {
+        Ok(mut remote) => {
+            remote.quick = true;
+            remote
+        }
+        Err(e) => {
+            let raw = e.to_string();
+            return HubStatus { joined: true, error: Some(raw.clone()), detail: Some(raw), ..Default::default() };
+        }
+    };
+    let mut status = HubStatus {
+        joined: true,
+        url: Some(remote.url.clone()),
+        machine: Some(remote.machine.name.clone()),
+        ..Default::default()
+    };
+    match remote_list(&remote, local) {
+        Ok(rows) => {
+            status.connected = true;
+            status.summary = summarize(&rows);
+            status.rows = rows;
+        }
+        Err(e) => {
+            let raw = e.to_string();
+            // A refusal already says what to do (`asm join` again). A
+            // connection failure says only what curl saw, so say the rest.
+            status.error = Some(if raw.starts_with("could not reach the hub") {
+                format!(
+                    "Could not connect to {}. Is `asm hub serve` running there, and can this \
+                     machine reach it?",
+                    host_of(&remote.url)
+                )
+            } else {
+                raw.clone()
+            });
+            status.detail = Some(raw);
+        }
+    }
+    status
+}
+
+/// `host:port` out of a URL, for a sentence.
+fn host_of(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.split('/').next().unwrap_or(rest)
 }
 
 #[cfg(test)]
@@ -747,5 +910,78 @@ mod tests {
         assert!(cloned.manifest.git_origin.is_some(), "git is available to this test");
         assert!(head_matches(&cloned, None, Some(&mine)), "same origin, different path");
         assert!(!head_matches(&at_tls, None, Some(&clone)), "no origin, no match");
+    }
+
+    const STATES: [RowState; 7] = [
+        RowState::InSync,
+        RowState::Ahead,
+        RowState::Behind,
+        RowState::Diverged,
+        RowState::Local,
+        RowState::Remote,
+        RowState::Untracked,
+    ];
+
+    /// Every state says what to do about it, in words; two states never
+    /// share a label, or a pill could not tell them apart.
+    #[test]
+    fn every_sync_state_has_a_distinct_label_and_a_next_step() {
+        let mut labels: Vec<&str> = STATES.iter().map(|s| s.label()).collect();
+        labels.sort();
+        labels.dedup();
+        assert_eq!(labels.len(), STATES.len());
+        assert!(STATES.iter().all(|s| !s.hint().is_empty()));
+        // Not on the hub, and changed since the last push: both want a push.
+        assert_eq!(RowState::Local.action(), Some(SyncAction::Push));
+        assert_eq!(RowState::Ahead.action(), Some(SyncAction::Push));
+        assert_eq!(RowState::Behind.action(), Some(SyncAction::Pull));
+        assert_eq!(RowState::Remote.action(), Some(SyncAction::Pull));
+        assert_eq!(RowState::Diverged.action(), Some(SyncAction::Resolve));
+        assert_eq!(RowState::InSync.action(), None);
+    }
+
+    fn row(state: RowState) -> Row {
+        Row {
+            project: String::new(),
+            agent: AgentKind::ClaudeCode,
+            id: "x".into(),
+            short_id: "x".into(),
+            title: None,
+            machine: String::new(),
+            updated: None,
+            state,
+            action: state.action(),
+            label: state.label(),
+            hint: state.hint(),
+            restorable: true,
+        }
+    }
+
+    #[test]
+    fn the_summary_counts_what_wants_attention() {
+        let rows: Vec<Row> = [
+            RowState::InSync,
+            RowState::InSync,
+            RowState::Ahead,
+            RowState::Local,
+            RowState::Behind,
+            RowState::Remote,
+            RowState::Remote,
+            RowState::Diverged,
+        ]
+        .into_iter()
+        .map(row)
+        .collect();
+        assert_eq!(
+            summarize(&rows),
+            Summary { synced: 2, to_push: 2, to_pull: 3, to_resolve: 1, new_on_hub: 2 }
+        );
+    }
+
+    #[test]
+    fn a_hub_address_reads_as_host_and_port() {
+        assert_eq!(host_of("http://127.0.0.1:7450"), "127.0.0.1:7450");
+        assert_eq!(host_of("https://hub.example.ts.net/"), "hub.example.ts.net");
+        assert_eq!(host_of("hub.local"), "hub.local");
     }
 }

@@ -26,6 +26,7 @@ import { shortId, shortProject } from './ids.js'
 import { uniqueTails } from './paths.js'
 import TranscriptView from './TranscriptView.vue'
 import AgentMark from './components/AgentMark.vue'
+import HubPanel from './components/HubPanel.vue'
 import IconButton from './components/IconButton.vue'
 import Tooltip from './components/Tooltip.vue'
 
@@ -36,6 +37,7 @@ const fullText = ref('')
 const hits = ref(null)
 const searchedFor = ref('')
 const selectedAgents = ref([])
+const selectedSync = ref([])
 const projectFilter = ref('')
 const projectSearch = ref('')
 const showArchived = ref(true)
@@ -81,6 +83,7 @@ const anyFilter = computed(
   () =>
     filter.value !== '' ||
     selectedAgents.value.length > 0 ||
+    selectedSync.value.length > 0 ||
     projectFilter.value !== '' ||
     !showArchived.value ||
     hits.value !== null,
@@ -88,6 +91,7 @@ const anyFilter = computed(
 function clearFilters() {
   filter.value = ''
   selectedAgents.value = []
+  selectedSync.value = []
   projectFilter.value = ''
   projectSearch.value = ''
   showArchived.value = true
@@ -153,35 +157,37 @@ async function pollIndex() {
 }
 
 // The hub is another machine, so it is asked less often than the local
-// stores: on load, every minute, and after a push or pull.
+// stores: on load, every minute, on demand, and after a push or pull. A hub
+// that stops answering keeps the last known sync states on screen, marked as
+// stale, rather than wiping every pill the moment the network blips.
 const hub = ref(null)
+const hubChecking = ref(false)
+const hubCheckedAt = ref(0)
 async function loadHub() {
+  hubChecking.value = true
   try {
-    hub.value = await api.hub()
+    const next = await api.hub()
+    if (next.connected) hubCheckedAt.value = Date.now()
+    else if (hub.value?.rows?.length) {
+      next.rows = hub.value.rows
+      next.summary = hub.value.summary
+      next.stale = true
+    }
+    hub.value = next
   } catch (e) {
-    hub.value = { joined: true, error: e.message, rows: [] }
+    // This machine's own server did not answer: not the hub's fault, but
+    // the same remedy.
+    hub.value = { ...(hub.value || {}), joined: true, connected: false, stale: true, error: e.message }
+  } finally {
+    hubChecking.value = false
   }
 }
 const hubRows = computed(() =>
   Object.fromEntries((hub.value?.rows || []).map((r) => [`${r.agent}:${r.id}`, r])),
 )
 const hubRow = (s) => hubRows.value[`${s.ref.agent}:${s.ref.native_id}`]
-const hubOnly = computed(() => (hub.value?.rows || []).filter((r) => r.state === 'remote'))
-const HUB_LABELS = {
-  in_sync: 'Synced',
-  ahead: 'Ahead of hub',
-  behind: 'Behind hub',
-  diverged: 'Diverged',
-  untracked: 'On hub, untracked',
-}
-const HUB_HINTS = {
-  in_sync: 'The hub has exactly this copy.',
-  ahead: 'Changed here since the last sync: push it.',
-  behind: 'Another machine pushed a newer copy: pull it.',
-  diverged: 'Continued both here and elsewhere. `asm push --force` picks this copy.',
-  untracked: 'The hub has this session, but this machine has no record of syncing it.',
-}
-
+// Where this session stands with the hub, as the core words it: the label,
+// the hint and the next step all come from `RowState` in asm-core.
 async function loadDoctor() {
   try {
     doctor.value = await api.doctor()
@@ -242,6 +248,7 @@ function inProject(session, project) {
 
 function matches(s, { ignoreAgents = false } = {}) {
   const needle = filter.value.trim().toLowerCase()
+  if (selectedSync.value.length && !selectedSync.value.includes(hubRow(s)?.state)) return false
   if (!ignoreAgents && selectedAgents.value.length && !selectedAgents.value.includes(s.ref.agent))
     return false
   if (selectedProject.value && !inProject(s, selectedProject.value)) return false
@@ -590,6 +597,46 @@ function doArchive(s) {
   else act('Archive', () => api.archive(s))
 }
 
+// What a row's push button can do, and the reason when it cannot: pushing a
+// session the hub already has, or has a newer copy of, only fails.
+function pushState(s) {
+  if (hub.value && !hub.value.connected) return { ok: false, label: 'The hub cannot be reached' }
+  const r = hubRow(s)
+  if (!r) return { ok: true, label: 'Push to hub' }
+  if (r.state === 'in_sync') return { ok: false, label: 'Already on the hub' }
+  if (r.action === 'pull') return { ok: false, label: 'Pull first: the hub has a newer copy' }
+  if (r.state === 'diverged') return { ok: false, label: 'Diverged: resolve with `asm push --force`' }
+  return { ok: true, label: r.state === 'local' ? 'Push: not on the hub yet' : 'Push: changed since the last sync' }
+}
+
+// Everything that is new or changed here, in one go.
+async function pushNeeded() {
+  const batch = sessions.value.filter((s) => hubRow(s)?.action === 'push')
+  if (!batch.length) return
+  status.value = `Pushing ${batch.length}…`
+  try {
+    const report = await api.push(batch)
+    status.value = report.summary
+    if (report.problems?.length) bulkProblems.value = report
+  } catch (e) {
+    status.value = `Push failed: ${e.message}`
+  }
+  await loadHub()
+}
+
+// Everything new or newer on the hub; what cannot land is listed.
+async function pullAll() {
+  status.value = 'Pulling from the hub…'
+  try {
+    const report = await api.pullAll()
+    status.value = report.summary
+    if (report.problems?.length) bulkProblems.value = report
+  } catch (e) {
+    status.value = `Pull failed: ${e.message}`
+  }
+  await Promise.all([refresh(), loadHub()])
+}
+
 function doPush(s) {
   act('Push', async () => {
     const report = await api.push([s])
@@ -783,38 +830,6 @@ function pickProject(root) {
         </div>
       </div>
 
-      <div v-if="hub?.joined">
-        <div class="side-heading">Hub</div>
-        <div class="side-empty faint" :title="hub.url">
-          This machine is {{ hub.machine?.name }} on {{ hub.url }}
-        </div>
-        <div v-if="hub.error" class="warning">
-          <TriangleAlert :size="15" />
-          <span>{{ hub.error }}</span>
-        </div>
-        <div v-else-if="!hubOnly.length" class="side-empty faint">Nothing on the hub that is not here.</div>
-        <div class="side-list">
-          <button
-            v-for="r in hubOnly"
-            :key="r.agent + r.id"
-            class="side-item"
-            :disabled="!r.restorable"
-            :title="
-              r.restorable
-                ? `Pull ${r.short_id} from ${r.machine}`
-                : `${r.agent} sessions are backed up, but cannot be restored here yet`
-            "
-            @click="doPull(r)"
-          >
-            <span class="ico"><CloudDownload :size="13" class="faint" /></span>
-            <span class="stack">
-              <span class="label">{{ r.title || r.short_id }}</span>
-              <span class="sublabel">{{ r.machine }} · {{ r.agent }}</span>
-            </span>
-          </button>
-        </div>
-      </div>
-
       <div v-if="warnings.length" class="warnings">
         <div v-for="w in warnings" :key="w" class="warning">
           <TriangleAlert :size="15" />
@@ -963,6 +978,17 @@ function pickProject(root) {
 
         <!-- Session list -->
         <template v-else>
+          <HubPanel
+            v-model="selectedSync"
+            :hub="hub"
+            :checking="hubChecking"
+            :checked-at="hubCheckedAt"
+            @check="loadHub"
+            @push-needed="pushNeeded"
+            @pull-all="pullAll"
+            @pull="doPull"
+          />
+
           <div v-if="!visible.length" class="empty">
             <template v-if="scanning">
               <span class="spin">⟳</span> Reading your agent stores… {{ sessions.length }} found so far.
@@ -1059,17 +1085,26 @@ function pickProject(root) {
                     {{ statusLabel(s) }}
                   </span>
                 </Tooltip>
-                <Tooltip v-if="hubRow(s) && HUB_LABELS[hubRow(s).state]" :label="HUB_HINTS[hubRow(s).state]">
-                  <span class="pill hub" :class="hubRow(s).state">{{ HUB_LABELS[hubRow(s).state] }}</span>
+                <Tooltip v-if="hubRow(s)" :label="hubRow(s).hint + (hub?.stale ? ' (last known)' : '')">
+                  <span class="pill hub" :class="[hubRow(s).state, { stale: hub?.stale }]">{{
+                    hubRow(s).label
+                  }}</span>
                 </Tooltip>
               </div>
 
               <div class="actions" @click.stop>
                 <IconButton label="Copy resume command" :icon="Play" @click="copyResume(s)" />
-                <IconButton v-if="hub?.joined" label="Push to hub" :icon="CloudUpload" @click="doPush(s)" />
                 <IconButton
-                  v-if="hubRow(s)?.state === 'behind' && hubRow(s).restorable"
-                  label="Pull the hub's newer copy"
+                  v-if="hub?.joined"
+                  :label="pushState(s).label"
+                  :icon="CloudUpload"
+                  :disabled="!pushState(s).ok"
+                  @click="doPush(s)"
+                />
+                <IconButton
+                  v-if="hubRow(s)?.action === 'pull' && hubRow(s).restorable"
+                  :label="hub?.connected ? 'Pull from the hub' : 'The hub cannot be reached'"
+                  :disabled="!hub?.connected"
                   :icon="CloudDownload"
                   @click="doPull(hubRow(s))"
                 />

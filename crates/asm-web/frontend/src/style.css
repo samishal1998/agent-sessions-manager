@@ -616,6 +616,7 @@ button:hover,
   background: var(--bg-hover);
 }
 .pill.hub.ahead,
+.pill.hub.local,
 .pill.hub.behind {
   color: var(--accent);
   background: var(--accent-soft);
@@ -625,6 +626,100 @@ button:hover,
   color: var(--amber);
   background: rgba(232, 195, 122, 0.12);
   border-color: rgba(232, 195, 122, 0.3);
+}
+.pill.hub.stale {
+  opacity: 0.6;
+}
+.hubpanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.hub-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.hub-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+.hub-state.ok {
+  color: var(--green);
+}
+.hub-state.bad {
+  color: var(--amber);
+}
+.hub-state.wait {
+  color: var(--fg-muted);
+}
+.hub-detail {
+  font-size: 12px;
+}
+.hub-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+.hub-problem {
+  display: flex;
+  gap: var(--space-2);
+  align-items: flex-start;
+  color: var(--amber);
+  font-size: 12px;
+}
+.hub-new-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+.hub-new ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.hub-new li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+}
+.hub-new-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Narrow, whether the window is or the transcript drawer is open beside it:
+   the title is what says which session this is, so it gets a line of its
+   own and may wrap rather than being cut to a few letters. */
+@container (max-width: 560px) {
+  .hub-new li {
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-3);
+  }
+  .hub-new-title {
+    flex: 1 1 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .hub-new-meta {
+    flex: 1;
+  }
 }
 .side-empty {
   padding: var(--space-1) var(--space-2);

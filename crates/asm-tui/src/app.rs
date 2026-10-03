@@ -9,6 +9,7 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 
 use asm_core::bulk::{BulkAction, BulkReport};
+use asm_core::hub::actions::{HubStatus, Row, RowState, SyncAction};
 use asm_core::model::{AgentKind, Session, SessionStatus};
 use asm_core::ops;
 
@@ -42,6 +43,8 @@ pub enum Mode {
     Send,
     /// Choosing agents or a project to narrow the list to.
     Picker,
+    /// Where to put a pulled session whose own directory is not here.
+    PullDir,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -140,6 +143,20 @@ pub struct App {
     status_sticky: bool,
     /// How far the background index has got, while it is running.
     pub indexing: Option<asm_core::index::RefreshProgress>,
+    /// How this machine stood with the hub at the last check. `None` until
+    /// the first one answers; `joined: false` when there is no hub at all.
+    pub hub: Option<HubStatus>,
+    pub hub_checking: bool,
+    /// The hub stopped answering, so `hub` is the last picture it gave.
+    pub hub_stale: bool,
+    pub hub_checked: Option<std::time::Instant>,
+    /// The hub view: every session here and there, with what to do about it.
+    pub hub_view: bool,
+    pub hub_cursor: usize,
+    /// Hide what is already in sync, to see only what wants doing.
+    pub hub_only_needing: bool,
+    hub_states: HashMap<(AgentKind, String), RowState>,
+    pending_pull: Option<(AgentKind, String)>,
     /// The filter as it was when `/` was pressed, so esc can restore it.
     filter_before: String,
     /// Projects as the CLI and the web UI mean them: a repository and its
@@ -195,6 +212,15 @@ impl App {
             rescan_pending: false,
             status_sticky: false,
             indexing: None,
+            hub: None,
+            hub_checking: false,
+            hub_stale: false,
+            hub_checked: None,
+            hub_view: false,
+            hub_cursor: 0,
+            hub_only_needing: false,
+            hub_states: HashMap::new(),
+            pending_pull: None,
             filter_before: String::new(),
             projects: Vec::new(),
         }
@@ -226,6 +252,184 @@ impl App {
             self.filtered.iter().position(|&i| Self::key_of(&self.sessions[i]) == key)
         {
             self.selected = position;
+        }
+    }
+
+    /// Ask the hub how things stand. One question at a time: a hub that is
+    /// slow to answer must not queue a second behind the first.
+    pub fn request_hub(&mut self) {
+        if self.hub_checking {
+            return;
+        }
+        self.hub_checking = true;
+        let _ = self.worker.tx.send(Request::Hub(self.sessions.clone()));
+    }
+
+    pub fn hub_joined(&self) -> bool {
+        self.hub.as_ref().is_some_and(|h| h.joined)
+    }
+
+    /// Whether the hub has said anything about any session yet.
+    pub fn has_sync_states(&self) -> bool {
+        !self.hub_states.is_empty()
+    }
+
+    /// Where a session stands with the hub, if the hub has said.
+    pub fn sync_of(&self, session: &Session) -> Option<RowState> {
+        self.hub_states.get(&Self::key_of(session)).copied()
+    }
+
+    fn take_hub(&mut self, status: HubStatus) {
+        self.hub_checking = false;
+        if !status.joined && self.hub_view {
+            self.hub_view = false;
+            self.status =
+                "this machine has not joined a hub: ASM_JOIN_TOKEN=<token> asm join <url>".to_string();
+            self.status_sticky = true;
+        }
+        let had_rows = self.hub.as_ref().is_some_and(|h| !h.rows.is_empty());
+        if status.joined && !status.connected && had_rows {
+            // A hub that stops answering must not wipe what was known: keep
+            // the last picture and say it is old.
+            let prev = self.hub.take().unwrap_or_default();
+            self.hub = Some(HubStatus { connected: false, error: status.error, detail: status.detail, ..prev });
+            self.hub_stale = true;
+            return;
+        }
+        self.hub_stale = false;
+        if status.connected {
+            self.hub_checked = Some(std::time::Instant::now());
+        }
+        self.hub_states = status
+            .rows
+            .iter()
+            .map(|r| ((r.agent, r.id.clone()), r.state))
+            .collect();
+        self.hub = Some(status);
+        let rows = self.hub_rows().len();
+        self.hub_cursor = self.hub_cursor.min(rows.saturating_sub(1));
+    }
+
+    /// The hub view's rows: what most needs a decision first, what is already
+    /// level last.
+    pub fn hub_rows(&self) -> Vec<&Row> {
+        let priority = |s: RowState| match s {
+            RowState::Diverged => 0,
+            RowState::Behind => 1,
+            RowState::Remote => 2,
+            RowState::Untracked => 3,
+            RowState::Ahead => 4,
+            RowState::Local => 5,
+            RowState::InSync => 6,
+        };
+        let mut rows: Vec<&Row> = self
+            .hub
+            .iter()
+            .flat_map(|h| h.rows.iter())
+            .filter(|r| !self.hub_only_needing || r.action.is_some())
+            .collect();
+        rows.sort_by_key(|r| priority(r.state));
+        rows
+    }
+
+    fn open_hub_view(&mut self) {
+        // Before the first answer there is nothing to refuse yet: open the
+        // view and let it say it is asking, rather than send the next key to
+        // the list (where `r` is rename).
+        let asking = self.hub.is_none() && self.hub_checking;
+        if !self.hub_joined() && !asking {
+            self.status =
+                "this machine has not joined a hub: ASM_JOIN_TOKEN=<token> asm join <url>".to_string();
+            self.status_sticky = true;
+            return;
+        }
+        self.hub_view = true;
+        self.hub_cursor = 0;
+        self.request_hub();
+    }
+
+    /// Do what the highlighted hub row needs. `only` restricts it to one
+    /// action (`p` pushes, and only pushes).
+    fn hub_act(&mut self, only: Option<SyncAction>) {
+        let Some(row) = self.hub_rows().get(self.hub_cursor).map(|r| (*r).clone()) else { return };
+        self.status_sticky = true;
+        if self.hub.as_ref().is_some_and(|h| !h.connected) {
+            self.status = "the hub cannot be reached — r tries again".to_string();
+            return;
+        }
+        if let Some(only) = only
+            && row.action != Some(only)
+        {
+            self.status = format!("{}: {}", row.label, row.hint);
+            return;
+        }
+        match row.action {
+            None => self.status = "already in sync with the hub".to_string(),
+            Some(SyncAction::Resolve) => self.status = row.hint.to_string(),
+            Some(SyncAction::Push) => {
+                let key = (row.agent, row.id.clone());
+                match self.sessions.iter().find(|s| Self::key_of(s) == key).cloned() {
+                    Some(session) => {
+                        self.status = format!("pushing {}…", row.short_id);
+                        let _ = self.worker.tx.send(Request::Bulk(vec![session], BulkAction::Push));
+                    }
+                    None => self.status = "that session is not on this machine".to_string(),
+                }
+            }
+            Some(SyncAction::Pull) if !row.restorable => {
+                self.status = format!("{} sessions are backed up on the hub but cannot be restored yet", row.agent);
+            }
+            Some(SyncAction::Pull) => {
+                self.status = format!("pulling {}…", row.short_id);
+                let _ = self.worker.tx.send(Request::Pull(row.agent, row.id, None));
+            }
+        }
+    }
+
+    fn on_hub_view_key(&mut self, key: KeyEvent) -> Option<LoopOutcome> {
+        let len = self.hub_rows().len();
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return Some(LoopOutcome::Quit);
+            }
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('H') => self.hub_view = false,
+            KeyCode::Down | KeyCode::Char('j') => self.hub_cursor = (self.hub_cursor + 1).min(len.saturating_sub(1)),
+            KeyCode::Up | KeyCode::Char('k') => self.hub_cursor = self.hub_cursor.saturating_sub(1),
+            KeyCode::Char('g') | KeyCode::Home => self.hub_cursor = 0,
+            KeyCode::Char('G') | KeyCode::End => self.hub_cursor = len.saturating_sub(1),
+            KeyCode::Char('f') => {
+                self.hub_only_needing = !self.hub_only_needing;
+                self.hub_cursor = 0;
+            }
+            KeyCode::Char('r') => self.request_hub(),
+            KeyCode::Enter => self.hub_act(None),
+            KeyCode::Char('p') => self.hub_act(Some(SyncAction::Push)),
+            _ => {}
+        }
+        None
+    }
+
+    fn on_pull_dir_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.pending_pull = None;
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter => {
+                self.mode = Mode::Normal;
+                let dir = self.input.trim().to_string();
+                if let Some((agent, id)) = self.pending_pull.take()
+                    && !dir.is_empty()
+                {
+                    self.status = "pulling…".to_string();
+                    let _ = self.worker.tx.send(Request::Pull(agent, id, Some(dir.into())));
+                }
+            }
+            KeyCode::Backspace => {
+                self.input.pop();
+            }
+            KeyCode::Char(c) => self.input.push(c),
+            _ => {}
         }
     }
 
@@ -512,6 +716,11 @@ impl App {
     #[cfg(test)]
     pub fn set_projects_for_test(&mut self, projects: Vec<asm_core::model::Project>) {
         self.projects = projects;
+    }
+
+    #[cfg(test)]
+    pub fn set_hub_for_test(&mut self, status: HubStatus) {
+        self.take_hub(status);
     }
 
     #[cfg(test)]
@@ -806,8 +1015,10 @@ impl App {
                     if !self.status_sticky {
                         self.status = format!("{} sessions", self.sessions.len());
                     }
-                    // Now that the list is up, keep the index current.
+                    // Now that the list is up, keep the index current and ask
+                    // the hub how it compares.
                     let _ = self.worker.index_tx.send(());
+                    self.request_hub();
                     if std::mem::take(&mut self.rescan_pending) {
                         self.request_scan();
                     }
@@ -835,6 +1046,19 @@ impl App {
                 Response::Preview(id, lines) => {
                     if self.preview_for.as_deref() == Some(id.as_str()) {
                         self.preview = lines;
+                    }
+                }
+                Response::Hub(status) => self.take_hub(*status),
+                Response::PullFailed { agent, id, message, needs_dir } => {
+                    self.status = format!("pull failed: {message}");
+                    self.status_sticky = true;
+                    if needs_dir {
+                        // Its own directory is not here: ask where to put it.
+                        self.input = std::env::current_dir()
+                            .map(|d| d.display().to_string())
+                            .unwrap_or_default();
+                        self.pending_pull = Some((agent, id));
+                        self.mode = Mode::PullDir;
                     }
                 }
                 Response::Projects(projects) => {
@@ -914,6 +1138,7 @@ impl App {
                 Mode::BulkInput => self.on_bulk_input_key(key),
                 Mode::Send => self.on_send_key(key),
                 Mode::Picker => self.on_picker_key(key),
+                Mode::PullDir => self.on_pull_dir_key(key),
             }
         }
     }
@@ -996,6 +1221,9 @@ impl App {
         if key.code == KeyCode::Char('D') {
             self.show_doctor = true;
             return None;
+        }
+        if self.hub_view {
+            return self.on_hub_view_key(key);
         }
         // While results are showing, the list keys drive the results.
         if self.hits.is_some() {
@@ -1088,6 +1316,7 @@ impl App {
                 self.preview_open = false;
                 self.preview_focus = false;
             }
+            KeyCode::Char('H') => self.open_hub_view(),
             KeyCode::Char('A') => self.open_picker(PickerKind::Agent),
             KeyCode::Char('P') => self.open_picker(PickerKind::Project),
             KeyCode::Char(' ') => {
@@ -1729,5 +1958,80 @@ mod tests {
         assert!(app.on_normal_key(KeyEvent::from(KeyCode::Esc)).is_none());
         assert!(app.agents.is_empty(), "then the filters");
         assert!(matches!(app.on_normal_key(KeyEvent::from(KeyCode::Esc)), Some(LoopOutcome::Quit)));
+    }
+
+    fn joined_with(app: &mut App, connected: bool) {
+        let rows: Vec<Row> = [("aaa", RowState::Local), ("bbb", RowState::Diverged)]
+            .into_iter()
+            .enumerate()
+            .map(|(i, (_, state))| {
+                let s = &app.sessions[i];
+                Row {
+                    project: String::new(),
+                    agent: s.handle.agent,
+                    id: s.handle.native_id.clone(),
+                    short_id: s.short_id().to_string(),
+                    title: None,
+                    machine: String::new(),
+                    updated: None,
+                    state,
+                    action: state.action(),
+                    label: state.label(),
+                    hint: state.hint(),
+                    restorable: true,
+                }
+            })
+            .collect();
+        app.set_hub_for_test(HubStatus { joined: true, connected, rows, ..Default::default() });
+    }
+
+    /// Nothing is sent to a hub that is not answering, and a diverged
+    /// session is explained rather than pushed over.
+    #[test]
+    fn the_hub_view_acts_only_when_it_can_and_explains_when_it_cannot() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (_tx, resp) = std::sync::mpsc::channel();
+        let worker = crate::worker::Worker {
+            tx,
+            index_tx: std::sync::mpsc::channel().0,
+            rx: resp,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let mut app = App::new(worker);
+        app.sessions = super::tests::app().sessions;
+        app.filtered = (0..app.sessions.len()).collect();
+
+        // Not joined: H says how, and opens nothing.
+        app.on_normal_key(KeyEvent::from(KeyCode::Char('H')));
+        assert!(!app.hub_view);
+
+        joined_with(&mut app, true);
+        app.on_normal_key(KeyEvent::from(KeyCode::Char('H')));
+        assert!(app.hub_view);
+        while rx.try_recv().is_ok() {} // the refresh H asks for
+
+        // The diverged session sorts first, and is explained, not pushed.
+        press_hub(&mut app, KeyCode::Enter);
+        assert!(app.status.contains("push --force"), "{}", app.status);
+        assert!(rx.try_recv().is_err(), "nothing was sent for a diverged session");
+
+        // Then the local one: Enter pushes it.
+        press_hub(&mut app, KeyCode::Down);
+        press_hub(&mut app, KeyCode::Enter);
+        assert!(matches!(rx.try_recv(), Ok(Request::Bulk(_, BulkAction::Push))));
+
+        // The hub stops answering: the same key sends nothing, and says why.
+        joined_with(&mut app, false);
+        press_hub(&mut app, KeyCode::Enter);
+        assert!(rx.try_recv().is_err());
+        assert!(app.status.contains("cannot be reached"), "{}", app.status);
+
+        // Esc leaves the view.
+        press_hub(&mut app, KeyCode::Esc);
+        assert!(!app.hub_view);
+    }
+
+    fn press_hub(app: &mut App, code: KeyCode) {
+        app.on_hub_view_key(KeyEvent::from(code));
     }
 }

@@ -23,6 +23,10 @@ pub enum Request {
     /// The projects the list can be narrowed to — repositories with their
     /// worktrees, the same grouping the CLI and the web UI show.
     Projects,
+    /// How this machine stands with the hub, given the sessions it has.
+    Hub(Vec<Session>),
+    /// Pull one session from the hub, into a directory if one was given.
+    Pull(asm_core::model::AgentKind, String, Option<std::path::PathBuf>),
     Doctor,
     /// One verb over a selected set. Sessions are resolved by the caller at
     /// the moment the action is confirmed, never by index.
@@ -48,6 +52,10 @@ pub enum Response {
     /// (query, hits)
     Hits(String, Vec<asm_core::index::SearchHit>),
     Projects(Vec<asm_core::model::Project>),
+    Hub(Box<asm_core::hub::actions::HubStatus>),
+    /// A pull that did not land. `needs_dir` when the session's directory
+    /// does not exist here, so the TUI can ask for one rather than give up.
+    PullFailed { agent: asm_core::model::AgentKind, id: String, message: String, needs_dir: bool },
     /// (report lines, number of warnings among them)
     Doctor(Vec<String>, usize),
     Done(String),
@@ -175,6 +183,10 @@ fn handle(request: Request) -> Response {
             let verb = action.verb().to_string();
             Response::Bulk(verb, asm_core::bulk::run(&sessions, &action))
         }
+        Request::Hub(sessions) => {
+            Response::Hub(Box::new(asm_core::hub::actions::hub_status(&sessions)))
+        }
+        Request::Pull(agent, id, dir) => pull_one(agent, id, dir.as_deref()),
         Request::Projects => match ops::list_projects() {
             Ok(projects) => Response::Projects(projects),
             Err(e) => Response::Error(e.to_string()),
@@ -384,4 +396,35 @@ fn clip(s: &str, max: usize) -> String {
     }
     let cut: String = s.chars().take(max).collect();
     format!("{cut}…")
+}
+
+fn pull_one(agent: asm_core::model::AgentKind, id: String, dir: Option<&std::path::Path>) -> Response {
+    use asm_core::hub::{actions, bundle::InstallOutcome, client};
+    let pulled = client::load().and_then(|remote| actions::pull(&remote, &format!("{agent}:{id}"), dir));
+    match pulled {
+        Ok(p) => Response::Done(match p.installed.outcome {
+            InstallOutcome::Diverged => format!(
+                "{} was continued both here and on {}; nothing changed",
+                p.id,
+                p.from.as_deref().unwrap_or("the hub")
+            ),
+            InstallOutcome::InSync => format!("{} is already in sync with the hub", p.id),
+            outcome => format!(
+                "pulled {} into {} ({})",
+                p.id,
+                p.installed.project_root.display(),
+                match outcome {
+                    InstallOutcome::New => "new",
+                    InstallOutcome::FastForward { .. } => "updated",
+                    InstallOutcome::Replaced => "replaced, backed up",
+                    _ => "ahead",
+                }
+            ),
+        }),
+        Err(e) => {
+            let message = e.to_string();
+            let needs_dir = message.contains("--project-dir");
+            Response::PullFailed { agent, id, message, needs_dir }
+        }
+    }
 }

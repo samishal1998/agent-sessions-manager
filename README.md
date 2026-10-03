@@ -172,6 +172,7 @@ view of the CLI:
 | `m` `i` `e` | move to another project · import into the other agent · export IR |
 | `␣` `*` | tick this session · tick everything the filter shows |
 | `p` `c` | push to the hub · reply to the session |
+| `H` | the hub view: every session here and on the hub, what each needs (`⏎` does it, `p` pushes, `f` hides what is level, `r` asks again) |
 | `D` `R` `q` | store health (the same report as `asm doctor`) · rescan · quit |
 | `esc` | back out one layer: the overlay, the selection, the transcript, then the filters — and with nothing left, quit |
 
@@ -346,9 +347,30 @@ machine, not a copy with a new name. A pull lands at the same place relative to
 your home directory, or wherever `--project-dir` says; a session that lives
 somewhere else on the second machine is told so rather than duplicated.
 
-The TUI pushes the selected (or ticked) sessions with `p`. The web UI marks
-each session as synced, ahead or behind the hub, pushes and pulls from the
-row, and lists what is only on the hub in the sidebar, one click to pull.
+**Seeing where you stand.** Both UIs say whether the hub answered, and mark
+every session with what it needs, in the same words everywhere (`asm remote
+list` uses them too):
+
+| | |
+|---|---|
+| **Synced** | the hub has exactly this copy |
+| **Needs push** | changed here since the last sync |
+| **Not on hub** | the hub does not have it yet — push it |
+| **Needs pull** | another machine pushed a newer copy |
+| **New on hub** | on the hub, not on this machine — pull it |
+| **Check sync** | on both, but this machine has no record of syncing it; pull to compare |
+| **Diverged** | continued on both sides; `asm push --force` picks this copy |
+
+A hub that stops answering is a status, not an error: the UIs say so with the
+reason and what to try, keep the last known states on screen marked as old,
+and refuse to push or pull until it is back. A status check makes one short
+attempt rather than retrying like a transfer, so a dead hub is reported in
+about a second.
+
+In the web UI this is the panel above the list: connection state, a filter chip
+per sync state, **Push n** and **Pull n** for everything that needs it, and the
+sessions that are new on the hub with a Pull button each. In the TUI it is the
+`sync` column, the hub's state at the right of the status line, and `H`.
 
 **Moving** a session is `asm push <id> --move` on the first machine — it is
 archived there once the hub holds it (`asm unarchive` undoes that) — then

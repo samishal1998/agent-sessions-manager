@@ -36,6 +36,9 @@ pub struct Remote {
     pub url: String,
     pub machine: Machine,
     credential: String,
+    /// Ask quickly and do not retry: for checking on the hub, not for
+    /// moving data through it.
+    pub quick: bool,
 }
 
 pub struct Response {
@@ -59,6 +62,9 @@ enum Profile {
     /// Not safe to repeat: a join that succeeded but lost its response would
     /// otherwise register the machine twice.
     Once,
+    /// "Is the hub there?" — one short attempt. A status line that waits
+    /// out `Control`'s retries takes seconds to say a hub is down.
+    Probe,
 }
 
 pub enum PutOutcome {
@@ -176,6 +182,9 @@ fn run_curl(
         }
         Profile::Transfer => {
             cmd.args(["--speed-limit", "1024", "--speed-time", "60", "--retry", "2"]);
+        }
+        Profile::Probe => {
+            cmd.args(["--max-time", "8"]);
         }
         Profile::Once => {
             cmd.args(["--max-time", "60"]);
@@ -304,9 +313,15 @@ pub fn join(url: &str, token: &str, name: &str, insecure_http: bool) -> Result<R
     }
     let response = expect(response, &[201], "joining the hub")?;
     let joined: Joined = parse(&response, "joining the hub")?;
-    let remote = Remote { url, machine: joined.machine, credential: joined.credential };
+    let remote = Remote { url, machine: joined.machine, credential: joined.credential, quick: false };
     remote.save()?;
     Ok(remote)
+}
+
+/// Whether this machine has joined a hub at all, apart from whether the
+/// hub can be reached or the saved credential read.
+pub fn is_joined() -> bool {
+    config_path().is_ok_and(|p| p.is_file())
 }
 
 pub fn load() -> Result<Remote, CoreError> {
@@ -320,7 +335,7 @@ pub fn load() -> Result<Remote, CoreError> {
     };
     let file: RemoteFile = serde_json::from_slice(&bytes)
         .map_err(|e| invalid(format!("{} is unreadable: {e}", path.display())))?;
-    Ok(Remote { url: file.url, machine: file.machine, credential: file.credential })
+    Ok(Remote { url: file.url, machine: file.machine, credential: file.credential, quick: false })
 }
 
 impl Remote {
@@ -346,7 +361,8 @@ impl Remote {
     }
 
     pub fn heads(&self) -> Result<Vec<Head>, CoreError> {
-        let r = expect(self.call("GET", "/hub/v1/sessions", Body::None, Profile::Control)?, &[200], "listing sessions")?;
+        let profile = if self.quick { Profile::Probe } else { Profile::Control };
+        let r = expect(self.call("GET", "/hub/v1/sessions", Body::None, profile)?, &[200], "listing sessions")?;
         parse(&r, "listing sessions")
     }
 

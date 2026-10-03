@@ -92,6 +92,7 @@ pub fn router() -> axum::Router {
         .route("/api/bulk", post(bulk))
         .route("/api/hub", get(hub))
         .route("/api/hub/pull", post(hub_pull))
+        .route("/api/hub/pull-all", post(hub_pull_all))
         .layer(axum::middleware::from_fn(guard_mutations))
 }
 
@@ -104,18 +105,36 @@ async fn meta() -> Json<serde_json::Value> {
     }))
 }
 
-/// The hub this machine joined, and every session here and there side by
-/// side (`asm remote list`). `joined: false` when it has not joined one —
-/// the UI then shows nothing hub-related.
+/// How this machine stands with the hub (`asm_core::hub::actions::hub_status`):
+/// whether there is one, whether it answered, and every session with what to
+/// do about it. Unreachable is a status here, not an error, so the UI can say
+/// so and offer a retry rather than lose the page.
 async fn hub() -> ApiResult<Value> {
     blocking(|| {
-        let Ok(remote) = asm_core::hub::client::load() else {
-            return Ok(json!({ "joined": false }));
-        };
         let local = ops::list_sessions(&SessionFilter::default()).map_err(internal)?;
-        let rows = asm_core::hub::actions::remote_list(&remote, &local)
+        serde_json::to_value(asm_core::hub::actions::hub_status(&local)).map_err(internal)
+    })
+    .await
+    .map(Json)
+}
+
+/// Pull everything on the hub (`asm pull --all` with no filters), reporting
+/// like a bulk action so the UI can reuse its list of what could not land.
+async fn hub_pull_all() -> ApiResult<Value> {
+    blocking(|| {
+        let remote = asm_core::hub::client::load().map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+        let report = asm_core::hub::actions::pull_all(&remote, None, None)
             .map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
-        Ok(json!({ "joined": true, "url": remote.url, "machine": remote.machine, "rows": rows }))
+        serde_json::to_value(json!({
+            "verb": "Pull",
+            "summary": report.summary("Pull"),
+            "problems": report.problems(),
+            "ok": report.ok(),
+            "skipped": report.skipped(),
+            "failed": report.failed(),
+            "items": report.items,
+        }))
+        .map_err(internal)
     })
     .await
     .map(Json)
