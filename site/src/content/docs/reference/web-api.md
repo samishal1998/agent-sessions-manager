@@ -63,6 +63,7 @@ Only present once `asm hub admin-token` has minted a token, and only for that to
 | `POST /hub/v1/admin/join-token/rotate` | Replace the join token; returns the new one. |
 | `GET /hub/v1/admin/sessions` | Every session: project, pusher, revisions, size, pushed time. |
 | `GET /hub/v1/admin/sessions/{agent}/{id}` | One session's head and revision list. |
+| `GET /hub/v1/admin/sessions/{agent}/{id}/transcript` | The conversation as Session IR: `{ available: true, truncated, ir }` (last 2000 messages), or `{ available: false, reason }` when the session has no transcript on the hub or is over 64 MiB. Rendered for every agent (Claude Code, jcode, Codex, Antigravity, OpenCode) in a scratch directory that is removed afterwards. 404 for a missing session. |
 | `DELETE /hub/v1/admin/sessions/{agent}/{id}` | Delete every revision of a session. |
 | `POST /hub/v1/admin/collect?dry_run=true` | Remove (or preview removing) files no revision uses. |
 | `GET /hub/v1/admin/log` | The last 50 administrative actions. |

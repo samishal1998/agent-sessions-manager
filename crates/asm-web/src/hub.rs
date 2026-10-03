@@ -140,6 +140,7 @@ pub fn router(state: Shared) -> axum::Router {
         .route("/hub/v1/admin/join-token/rotate", post(admin_rotate_join))
         .route("/hub/v1/admin/sessions", get(admin_sessions))
         .route("/hub/v1/admin/sessions/{agent}/{id}", get(history).delete(admin_delete_session))
+        .route("/hub/v1/admin/sessions/{agent}/{id}/transcript", get(admin_transcript))
         .route("/hub/v1/admin/collect", post(admin_collect))
         .route("/hub/v1/admin/log", get(admin_log))
         .route("/admin", get(admin_page))
@@ -269,6 +270,16 @@ async fn sessions(State(state): State<Shared>) -> Response {
 async fn history(State(state): State<Shared>, Path((agent, id)): Path<(String, String)>) -> Response {
     match blocking(move || state.hub.history(&agent, &id)).await {
         Ok(h) => Json(h).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+/// Most recent messages the transcript endpoint returns.
+const TRANSCRIPT_MESSAGES: usize = 2000;
+
+async fn admin_transcript(State(state): State<Shared>, Path((agent, id)): Path<(String, String)>) -> Response {
+    match blocking(move || asm_core::hub::transcript::render(&state.hub, &agent, &id, TRANSCRIPT_MESSAGES)).await {
+        Ok(view) => Json(view).into_response(),
         Err(e) => hub_error(e),
     }
 }
@@ -491,6 +502,47 @@ mod tests {
         let (status, v) = send(app, "POST", "/hub/v1/join", None, Body::from(body)).await;
         assert_eq!(status, StatusCode::CREATED);
         v["credential"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn the_admin_transcript_renders_a_stored_session() {
+        let (_d, state, app) = app();
+        let cred = credential(&app, &state).await;
+        let admin = state.hub.rotate_admin_token().unwrap();
+        let id = "7f3a1c88-2d4e-4b91-9a05-6c7e8f201b43";
+        let uri = format!("/hub/v1/admin/sessions/claude-code/{id}/transcript");
+
+        let (status, _) = send(&app, "GET", &uri, Some(&cred), Body::empty()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "a machine credential is not admin");
+        let (status, _) = send(&app, "GET", &uri, Some(&admin), Body::empty()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let line = |kind: &str, i: u8, text: &str| {
+            let content = if kind == "user" { json!(text) } else { json!([{ "type": "text", "text": text }]) };
+            format!(
+                "{}\n",
+                json!({ "type": kind, "cwd": "/home/a/x", "sessionId": id, "uuid": format!("u{i}"),
+                        "parentUuid": i.checked_sub(1).map(|p| format!("u{p}")),
+                        "timestamp": format!("2026-09-22T10:00:0{i}Z"),
+                        "message": { "role": kind, "content": content } })
+            )
+        };
+        let text = line("user", 0, "hello hub") + &line("assistant", 1, "hello back");
+        let sha = asm_core::fsutil::sha256_hex(text.as_bytes());
+        state.hub.put_blob(&sha, text.as_bytes(), 1 << 20).unwrap();
+        let manifest = json!({
+            "schema": 1, "agent": "claude-code", "id": id, "project_root": "/home/a/x",
+            "project_root_portable": "${HOME}/x", "canonical": sha, "parent_rev": null,
+            "files": [{ "path": "transcript.jsonl", "sha256": sha, "size": text.len() }],
+        });
+        let (status, _) = send(&app, "PUT", &format!("/hub/v1/sessions/claude-code/{id}"), Some(&cred), Body::from(manifest.to_string())).await;
+        assert!(status.is_success(), "{status}");
+
+        let (status, v) = send(&app, "GET", &uri, Some(&admin), Body::empty()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!((v["available"].as_bool(), v["truncated"].as_bool()), (Some(true), Some(false)));
+        assert_eq!(v["ir"]["messages"].as_array().unwrap().len(), 2, "{v}");
+        assert!(v.to_string().contains("hello hub"));
     }
 
     /// The admin API is its own door: shut until an admin token exists,

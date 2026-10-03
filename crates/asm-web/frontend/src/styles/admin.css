@@ -1,7 +1,7 @@
 .admin { max-width: 72rem; margin: 0 auto; padding: var(--h-space-4, 1rem); display: grid; gap: var(--h-space-4, 1rem); }
-.admin-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: var(--h-space-3, 0.75rem); }
+.admin-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 16px; }
 .admin-login { max-width: 28rem; margin: 2rem auto; width: 100%; }
-.admin-form, .admin-stack { display: grid; gap: var(--h-space-3, 0.75rem); }
+.admin-form, .admin-stack { display: grid; gap: 16px; }
 .admin-actions { display: flex; flex-wrap: wrap; gap: var(--h-space-2, 0.5rem); align-items: center; }
 .admin-title { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
 .admin-session { display: flex; gap: 8px; align-items: center; min-width: 0; }
@@ -20,3 +20,23 @@
 .admin-mono { font-family: var(--h-font-mono, ui-monospace, monospace); }
 .admin-table td, .admin-table th { white-space: nowrap; }
 .admin-session .admin-mono { flex: none; }
+.admin-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
+.admin-stamp { font-size: 12px; color: var(--h-muted); }
+.admin-link { all: unset; box-sizing: border-box; cursor: pointer; font-weight: 600; color: var(--h-accent-text, inherit); min-height: 24px; line-height: 24px; display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.admin-link:hover { text-decoration: underline; }
+.admin-link:focus-visible { outline: 2px solid var(--h-focus, currentColor); outline-offset: 2px; border-radius: 4px; }
+.admin-table td:last-child .admin-actions { flex-wrap: nowrap; }
+@media (max-width: 880px) { .admin-bar { justify-content: flex-start; } }
+@media (prefers-reduced-motion: reduce) { .admin * { transition: none !important; animation: none !important; } }
+/* Five tabs do not fit a phone: wrap them instead of clipping the last one. */
+@media (max-width: 640px) {
+  .admin .h-tablist { flex-wrap: wrap; overflow: visible; }
+  .admin-card .admin-link { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 20px; padding-block: 2px; }
+  .admin-bar { gap: 8px; }
+}
+.admin-stat { margin: 0; display: grid; gap: 4px; }
+.admin-stat dt { font-size: 14px; color: var(--h-muted); }
+.admin-stat dd { margin: 0; }
+.admin-stat-value { font-size: 28px; line-height: 36px; font-weight: 700; overflow-wrap: anywhere; }
+.admin-stat-detail { font-size: 14px; color: var(--h-muted); }

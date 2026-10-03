@@ -31,7 +31,7 @@ fn scratch_dir(prefix: &str) -> Result<PathBuf, CoreError> {
 }
 
 /// Removes a scratch directory however the operation using it ends.
-struct Scratch(PathBuf);
+pub(crate) struct Scratch(pub(crate) PathBuf);
 impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);

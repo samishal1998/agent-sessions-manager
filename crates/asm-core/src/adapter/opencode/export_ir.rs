@@ -31,7 +31,6 @@ pub(super) fn export_ir(
     let mut parts_stmt = conn
         .prepare("SELECT data FROM part WHERE message_id = ?1 ORDER BY id")
         .map_err(sql_err)?;
-
     let rows = messages_stmt
         .query_map([&session.handle.native_id], |row| {
             Ok((
@@ -41,10 +40,73 @@ pub(super) fn export_ir(
             ))
         })
         .map_err(sql_err)?;
-
-    let mut messages = Vec::new();
+    let mut raw = Vec::new();
     for row in rows {
         let (message_id, time_created, data_json) = row.map_err(sql_err)?;
+        let part_rows = parts_stmt
+            .query_map([&message_id], |row| row.get::<_, Option<String>>(0))
+            .map_err(sql_err)?;
+        let mut parts = Vec::new();
+        for part_json in part_rows {
+            parts.push(part_json.map_err(sql_err)?);
+        }
+        raw.push((message_id, time_created, data_json, parts));
+    }
+    Ok(build(session, raw))
+}
+
+/// A message row as stored: id, time_created, data JSON, and its parts' data JSON in order.
+type RawMessage = (String, Option<i64>, Option<String>, Vec<Option<String>>);
+
+/// The IR of a session's root from its row and its tree's dump as bundled
+/// by a push (`rows.json`), without a database or an `opencode` process.
+pub(crate) fn from_dump(id: &str, dump: &Value) -> IrSession {
+    use std::path::PathBuf;
+    let rows = |table: &str| dump.get(table).and_then(Value::as_array).cloned().unwrap_or_default();
+    let session_row = rows("session").into_iter().next().unwrap_or(Value::Null);
+    let text = |k: &str| session_row.get(k).and_then(Value::as_str).map(str::to_string);
+    let int = |row: &Value, k: &str| row.get(k).and_then(Value::as_i64);
+    let ts = |k: &str| int(&session_row, k).and_then(|ms| Timestamp::from_millisecond(ms).ok());
+    let session = Session {
+        handle: crate::model::SessionRef {
+            agent: crate::model::AgentKind::OpenCode,
+            native_id: id.to_string(),
+            location: crate::model::SessionLocation::SqliteRow { db: PathBuf::new(), table: "session".into() },
+        },
+        title: text("title"),
+        slug: text("slug"),
+        project_root: PathBuf::from(text("directory").unwrap_or_default()),
+        git_branch: None,
+        created: ts("time_created"),
+        updated: ts("time_updated"),
+        model: text("model")
+            .and_then(|m| serde_json::from_str::<Value>(&m).ok())
+            .and_then(|m| m.get("id").and_then(Value::as_str).map(str::to_string)),
+        usage: Default::default(),
+        status: crate::model::SessionStatus::Idle,
+        parent: None,
+        agent_version: text("version"),
+        size_bytes: None,
+    };
+    let mut messages: Vec<Value> = rows("message");
+    messages.sort_by_key(|m| (int(m, "time_created"), m["id"].as_str().map(str::to_string)));
+    let parts = rows("part");
+    let raw = messages
+        .iter()
+        .map(|m| {
+            let mid = m["id"].as_str().unwrap_or_default().to_string();
+            let mut mine: Vec<&Value> = parts.iter().filter(|p| p["message_id"].as_str() == Some(&mid)).collect();
+            mine.sort_by_key(|p| p["id"].as_str().map(str::to_string));
+            let data = |v: &Value| v.get("data").and_then(Value::as_str).map(str::to_string);
+            (mid, int(m, "time_created"), data(m), mine.into_iter().map(data).collect())
+        })
+        .collect();
+    build(&session, raw)
+}
+
+fn build(session: &Session, raw: Vec<RawMessage>) -> IrSession {
+    let mut messages = Vec::new();
+    for (message_id, time_created, data_json, part_rows) in raw {
         let data: Value = data_json
             .as_deref()
             .and_then(|d| serde_json::from_str(d).ok())
@@ -62,14 +124,9 @@ pub(super) fn export_ir(
             .or(time_created)
             .and_then(|ms| Timestamp::from_millisecond(ms).ok());
 
-        let part_rows = parts_stmt
-            .query_map([&message_id], |row| row.get::<_, Option<String>>(0))
-            .map_err(sql_err)?;
-
         let mut parts = Vec::new();
         let mut raw_extras = Vec::new();
         for part_json in part_rows {
-            let part_json = part_json.map_err(sql_err)?;
             let Some(part) = part_json.as_deref().and_then(|p| serde_json::from_str::<Value>(p).ok())
             else {
                 continue;
@@ -90,7 +147,7 @@ pub(super) fn export_ir(
         messages.push(IrMessage { role, timestamp, parts, source_id: Some(message_id), extensions });
     }
 
-    Ok(IrSession {
+    IrSession {
         ir_version: IR_VERSION,
         source: IrProvenance {
             agent: session.handle.agent,
@@ -108,7 +165,7 @@ pub(super) fn export_ir(
         usage: session.usage,
         messages,
         extensions: ExtBag::new(),
-    })
+    }
 }
 
 enum Converted {

@@ -5,6 +5,11 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
+## Unreleased
+
+- **Read transcripts on the hub admin page.** Open a stored session from the admin Sessions tab and read its conversation for every agent (Claude Code, OpenCode, jcode, Codex and Antigravity); the hub rebuilds it from its own copy in a throwaway directory. The Sessions tab gained search, agent and machine filters and sorting, and the page was refined (aligned header, a last-updated time, stat cards, tabs that wrap on phones, narrow-screen lists).
+- **The colour-mode switcher is three icon buttons** (sun, moon, monitor) with names and tooltips.
+
 ## 0.8.1 — 2026-10-04
 
 - **Light and dark modes.** A colour-mode switcher (Light, Dark, System) sits at the bottom of the sidebar (in the page header on phones, and on the hub admin page) and is remembered per browser. The purple-and-rose palette now comes in both modes, each checked for contrast.

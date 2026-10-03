@@ -1,10 +1,12 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import {
-  HAlert, HBadge, HButton, HCard, HCopyField, HDataTable, HEmptyState, HInput, HPageHeader, HStatCard, HTabs, HTheme, HThemeSwitcher, HTimeline,
+  HAlert, HBadge, HButton, HCard, HCopyField, HDataTable, HInput, HPageHeader, HSkeleton, HTabs, HTheme, HTimeline,
   HToaster, tableCellSlot,
 } from '@hearth-ui/vue'
-import AgentMark from './components/AgentMark.vue'
+import ColorModeSwitch from './components/ColorModeSwitch.vue'
+import SessionsPanel from './components/admin/SessionsPanel.vue'
+import TranscriptSheet from './components/admin/TranscriptSheet.vue'
 import DialogHost from './components/DialogHost.vue'
 import { confirmDialog } from './dialogs.js'
 import { dismiss, notify, toasts } from './toasts.js'
@@ -17,7 +19,7 @@ import './styles/admin.css'
 
 // The hub's own page: who has joined, what is stored, and the few actions an
 // owner needs. It controls the hub, never a machine's agents.
-const { preference, resolved, tokens, setPreference } = useTheme()
+const { resolved, tokens } = useTheme()
 const token = ref(savedToken())
 const input = ref('')
 const signedIn = ref(false)
@@ -30,7 +32,8 @@ const overview = ref(null)
 const machines = ref([])
 const sessions = ref([])
 const log = ref([])
-const query = ref('')
+const opened = ref(null)
+const refreshed = ref(null)
 const preview = ref(null)
 
 const api = computed(() => admin(token.value))
@@ -47,6 +50,7 @@ async function load() {
     sessions.value = s
     log.value = l
     signedIn.value = true
+    refreshed.value = new Date()
   } catch (e) {
     signedIn.value = false
     if (e instanceof AdminError && e.status === 401) {
@@ -101,7 +105,7 @@ async function rotateJoin() {
 async function remove(s) {
   const name = s.title || s.id
   if (await confirmDialog({ title: `Delete ${name} from the hub?`, description: `All ${s.revisions} revision(s) go. Machines that have it keep their copy. Files nothing else uses stay until you collect them.`, confirmLabel: 'Delete', danger: true }))
-    run(`Deleted ${name}.`, () => api.value.remove(s.agent, s.id))
+    run(`Deleted ${name}.`, () => api.value.remove(s.agent, s.id)).then((r) => r && (opened.value = null))
 }
 async function previewCollect() {
   preview.value = null
@@ -120,11 +124,14 @@ async function collect() {
 
 const joinCommand = computed(() => (overview.value ? `ASM_JOIN_TOKEN=${overview.value.join_token} asm join ${location.protocol}//${location.host}` : ''))
 
-const shown = computed(() => {
-  const q = query.value.trim().toLowerCase()
-  return sessions.value.filter((s) => !q || [s.title, s.id, s.project, s.machine, s.agent].filter(Boolean).some((x) => String(x).toLowerCase().includes(q)))
+const stats = computed(() => {
+  const o = overview.value.stats
+  return [
+    { label: 'Machines', value: o.machines },
+    { label: 'Sessions', value: o.sessions, detail: `${o.revisions} revisions stored` },
+    { label: 'Stored files', value: bytes(o.blob_bytes), detail: `${o.blobs} files, up to ${bytes(overview.value.max_blob_bytes)} each` },
+  ]
 })
-
 const tabs = computed(() => [
   { value: 'overview', label: 'Overview' },
   { value: 'machines', label: `Machines (${machines.value.length})` },
@@ -138,14 +145,6 @@ const machineCols = [
   { key: 'seen', label: 'Last seen' }, { key: 'actions', label: 'Actions' },
 ]
 const machineRows = computed(() => machines.value.map((m) => ({ id: m.id, name: m.name, sessions: m.sessions, joined: ago(m.joined), seen: m.last_seen ? ago(m.last_seen) : 'never', actions: '' })))
-const sessionCols = [
-  { key: 'title', label: 'Session', width: '34%' }, { key: 'project', label: 'Project', width: '18%' }, { key: 'machine', label: 'From' },
-  { key: 'revisions', label: 'Revisions' }, { key: 'size', label: 'Size' }, { key: 'pushed', label: 'Pushed' }, { key: 'actions', label: 'Actions' },
-]
-const sessionRows = computed(() =>
-  shown.value.map((s) => ({ id: `${s.agent}/${s.id}`, title: s.title || 'Untitled session', project: (s.project || '').split('/').filter(Boolean).pop() || '—', machine: s.machine || '—', revisions: s.revisions, size: bytes(s.size), pushed: ago(s.pushed_at), actions: '' })),
-)
-const byKey = computed(() => Object.fromEntries(sessions.value.map((s) => [`${s.agent}/${s.id}`, s])))
 const byMachine = computed(() => Object.fromEntries(machines.value.map((m) => [m.id, m])))
 const events = computed(() => log.value.slice(0, 20).map((e, i) => ({ id: String(i), title: e.action, description: e.target, timestamp: ago(e.at) })))
 
@@ -156,11 +155,14 @@ onMounted(() => token.value && load())
   <HTheme class="asm-root" theme="dusk" :mode="resolved" :data-asm-mode="resolved" :tokens="tokens">
     <main class="admin">
       <HPageHeader title="asm hub administration" :description="`Machines, the join token and stored sessions on ${host}.`">
-        <HThemeSwitcher :model-value="preference" label="Color mode" @update:model-value="setPreference" />
-        <template v-if="signedIn">
-          <HButton size="compact" :loading="busy" label="Refresh" @click="load" />
-          <HButton size="compact" variant="ghost" label="Sign out" @click="signOut" />
-        </template>
+        <div class="admin-bar">
+          <span v-if="signedIn && refreshed" class="admin-stamp">Updated {{ refreshed.toLocaleTimeString() }}</span>
+          <ColorModeSwitch />
+          <template v-if="signedIn">
+            <HButton size="compact" :loading="busy" label="Refresh" @click="load" />
+            <HButton size="compact" variant="ghost" label="Sign out" @click="signOut" />
+          </template>
+        </div>
       </HPageHeader>
 
       <HAlert v-if="error" tone="warning" :description="error" />
@@ -173,13 +175,15 @@ onMounted(() => token.value && load())
         <p>This page controls the hub itself: machines, the join token, stored sessions. It cannot act on anyone's agents. Use it over HTTPS or on a trusted network, because the token is sent with each request.</p>
       </HCard>
 
-      <HTabs v-else-if="overview" v-model="tab" :items="tabs" label="Hub sections" variant="underline">
+      <HSkeleton v-else-if="!overview" :lines="5" label="Loading the hub" />
+
+      <HTabs v-else v-model="tab" :items="tabs" label="Hub sections" variant="underline">
         <template #overview>
           <div class="admin-stack">
             <div class="admin-stats">
-              <HStatCard label="Machines" :value="overview.stats.machines" icon="server" />
-              <HStatCard label="Sessions" :value="overview.stats.sessions" :detail="`/ ${overview.stats.revisions} revisions`" icon="layout" />
-              <HStatCard label="Stored files" :value="bytes(overview.stats.blob_bytes)" :detail="`/ ${overview.stats.blobs} files, up to ${bytes(overview.max_blob_bytes)} each`" icon="providers" />
+              <HCard v-for="c in stats" :key="c.label">
+                <dl class="admin-stat"><dt>{{ c.label }}</dt><dd class="admin-stat-value">{{ c.value }}</dd><dd v-if="c.detail" class="admin-stat-detail">{{ c.detail }}</dd></dl>
+              </HCard>
             </div>
             <HCard title="Join another machine" description="Anyone with this token can add a machine that can read every session on the hub.">
               <div class="admin-stack">
@@ -207,26 +211,7 @@ onMounted(() => token.value && load())
         </template>
 
         <template #sessions>
-          <div class="admin-stack">
-            <HInput v-model="query" type="search" label="Filter sessions" placeholder="Title, id, project, machine…" />
-            <ul class="admin-cards" aria-label="Sessions stored on this hub">
-              <li v-for="s in shown" :key="s.agent + s.id" class="admin-card">
-                <span class="admin-session"><AgentMark :agent="s.agent" :size="15" /> <strong class="admin-clip" :title="s.title">{{ s.title || 'Untitled session' }}</strong></span>
-                <span class="admin-meta"><span class="admin-mono">{{ sid(s) }}</span> · <span class="admin-clip" :title="s.project">{{ (s.project || '').split('/').filter(Boolean).pop() || '—' }}</span> · from {{ s.machine || '—' }}</span>
-                <span class="admin-meta">{{ bytes(s.size) }} · {{ s.revisions }} {{ s.revisions === 1 ? "revision" : "revisions" }} · {{ ago(s.pushed_at) }}</span>
-                <HButton size="compact" variant="danger" label="Delete" :aria-label="`Delete ${s.title || s.id}`" @click="remove(s)" />
-              </li>
-              <li v-if="!shown.length" class="admin-meta">{{ sessions.length ? 'Nothing matches.' : 'Nothing has been pushed yet.' }}</li>
-            </ul>
-            <HDataTable class="admin-table" label="Sessions stored on this hub" :rows="sessionRows" :columns="sessionCols" :empty-text="sessions.length ? 'Nothing matches.' : 'Nothing has been pushed yet.'">
-              <template v-for="r in sessionRows" :key="r.id" #[tableCellSlot(r.id,'title')]>
-                <span class="admin-session"><AgentMark :agent="byKey[r.id].agent" :size="15" /> <span class="admin-clip" :title="r.title">{{ r.title }}</span> <span class="admin-mono">{{ sid(byKey[r.id]) }}</span></span>
-              </template>
-              <template v-for="r in sessionRows" :key="r.id + 'a'" #[tableCellSlot(r.id,'actions')]>
-                <HButton size="compact" variant="danger" label="Delete" :aria-label="`Delete ${r.title}`" @click="remove(byKey[r.id])" />
-              </template>
-            </HDataTable>
-          </div>
+          <SessionsPanel :sessions="sessions" :sid="sid" @open="opened = $event" @remove="remove" />
         </template>
 
         <template #storage>
@@ -244,6 +229,7 @@ onMounted(() => token.value && load())
         </template>
       </HTabs>
     </main>
+    <TranscriptSheet v-if="signedIn" :session="opened" :api="api" :sid="opened ? sid(opened) : ''" @close="opened = null" @remove="remove" @expired="opened = null; load()" />
     <DialogHost />
     <HToaster :items="toasts" @dismiss="dismiss" />
   </HTheme>

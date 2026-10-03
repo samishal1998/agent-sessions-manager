@@ -1,10 +1,8 @@
 <script setup>
 import { computed } from 'vue'
-import { HBadge, HButton, HChipGroup, HCombobox, HInput, HPageHeader, HSwitch, HThemeSwitcher } from '@hearth-ui/vue'
-import { useTheme } from '../useTheme.js'
+import { HBadge, HButton, HChipGroup, HCombobox, HInput, HPageHeader, HSwitch } from '@hearth-ui/vue'
+import ColorModeSwitch from './ColorModeSwitch.vue'
 import { FilterX, GitBranch, RefreshCw } from 'lucide-vue-next'
-
-const { preference, setPreference } = useTheme()
 
 // The Sessions page head and its filters. The filter values belong to the
 // screen (they decide what the list shows); this only edits them.
@@ -38,7 +36,7 @@ const chipOptions = computed(() =>
   <div class="s-toolbar">
     <HPageHeader class="s-head" title="Sessions">
       <!-- The shell's mobile drawer has no footer, so on phones the colour mode lives here. -->
-      <HThemeSwitcher class="s-theme-mobile" :model-value="preference" label="Color mode" @update:model-value="setPreference" />
+      <ColorModeSwitch class="s-theme-mobile" />
       <HSwitch v-model="archived" label="Archived" />
       <HButton variant="secondary" size="compact" @click="emit('refresh')">
         <RefreshCw :size="15" aria-hidden="true" />

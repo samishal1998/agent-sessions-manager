@@ -460,23 +460,3 @@
     display: inline-flex;
   }
 }
-/* The switcher has to fit the 232px sidebar on one line. */
-.s-theme {
-  max-width: 100%;
-  min-width: 0;
-}
-.s-theme .h-radio-options {
-  flex-wrap: nowrap;
-  gap: 2px;
-  padding: 2px;
-}
-.s-theme .h-radio-option {
-  min-height: 32px;
-  min-width: 0;
-  padding: 4px 4px;
-  flex: 1 1 0;
-  justify-content: center;
-}
-.s-theme .h-radio-option strong {
-  font-size: 12px;
-}

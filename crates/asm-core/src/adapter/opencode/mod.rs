@@ -15,7 +15,7 @@
 
 pub(crate) mod hub;
 mod live;
-mod export_ir;
+pub(crate) mod export_ir;
 mod import_ir;
 mod store;
 mod write;

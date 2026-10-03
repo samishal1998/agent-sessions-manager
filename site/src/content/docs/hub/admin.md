@@ -28,7 +28,7 @@ The hub keeps only a hash of it, so this is the one time it is shown; running th
 - **Overview** — machines, sessions, revisions, stored files and their size, and the per-file upload cap.
 - **Join another machine** — the join command with a copy button, and **Replace the join token** (machines that already joined keep their access).
 - **Machines** — each machine's name and id, how many sessions it pushed, when it joined and was last seen, and **Revoke**: its credential stops working at once; its sessions stay on the hub.
-- **Sessions on the hub** — every session with its project, who pushed it, revisions, size and when, filterable, and **Delete**: every revision goes from the hub. Machines that have the session keep their copy and will show it as not on the hub.
+- **Sessions on the hub** — every session with its project, who pushed it, revisions, size and when. Search by title, id, project, machine or agent, filter by agent and machine, and sort by newest, oldest, size, revisions or title. **View transcript** opens the stored conversation in a side panel (messages with their roles and times, reasoning and tool calls collapsible, search inside the conversation); the hub renders it from its own copy, in a scratch directory, without touching any agent store. **Delete** removes every revision from the hub. Machines that have the session keep their copy and will show it as not on the hub.
 - **Storage** — **Preview** what *collecting* would remove, then remove it. Files stay on disk after a session is deleted or a push fails; collecting deletes the ones no revision names, and never one uploaded in the last hour (a push uploads before it commits).
 - **Recent activity** — the hub's own record of what an administrator did.
 

@@ -35,6 +35,7 @@ export const admin = (token) => ({
   overview: () => call(token, 'GET', '/overview'),
   machines: () => call(token, 'GET', '/machines'),
   sessions: () => call(token, 'GET', '/sessions'),
+  transcript: (agent, id) => call(token, 'GET', `/sessions/${encodeURIComponent(agent)}/${encodeURIComponent(id)}/transcript`),
   log: () => call(token, 'GET', '/log'),
   revoke: (id) => call(token, 'POST', `/machines/${encodeURIComponent(id)}/revoke`),
   rotateJoin: () => call(token, 'POST', '/join-token/rotate'),

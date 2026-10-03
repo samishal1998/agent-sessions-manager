@@ -23,3 +23,4 @@ pub mod daemon;
 pub mod manifest;
 pub mod state;
 pub mod store;
+pub mod transcript;
