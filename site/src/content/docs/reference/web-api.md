@@ -50,3 +50,20 @@ All routes are under `asm serve` (default `http://127.0.0.1:7433`). Mutating (`P
 | `GET /hub/v1/sessions/{agent}/{id}/revisions/{rev}` | One revision's manifest. |
 | `POST /hub/v1/missing` | Which of these blob hashes does the hub lack? |
 | `GET` / `PUT /hub/v1/blobs/{sha}` | A blob; `PUT` is hash-verified and size-capped. |
+
+## The hub admin API
+
+Only present once `asm hub admin-token` has minted a token, and only for that token (`Authorization: Bearer asma_…`); a machine credential or the join token gets `401`. Responses are `Cache-Control: no-store`. See [Administering the hub](/hub/admin/).
+
+| Route | |
+|---|---|
+| `GET /hub/v1/admin/overview` | Stats, the join token, version, store path, file cap. |
+| `GET /hub/v1/admin/machines` | Machines with the number of sessions each pushed. |
+| `POST /hub/v1/admin/machines/{id}/revoke` | Remove a machine's access. |
+| `POST /hub/v1/admin/join-token/rotate` | Replace the join token; returns the new one. |
+| `GET /hub/v1/admin/sessions` | Every session: project, pusher, revisions, size, pushed time. |
+| `GET /hub/v1/admin/sessions/{agent}/{id}` | One session's head and revision list. |
+| `DELETE /hub/v1/admin/sessions/{agent}/{id}` | Delete every revision of a session. |
+| `POST /hub/v1/admin/collect?dry_run=true` | Remove (or preview removing) files no revision uses. |
+| `GET /hub/v1/admin/log` | The last 50 administrative actions. |
+| `GET /admin` | The admin page itself (and its `/assets/*`), served only while an admin token exists. |

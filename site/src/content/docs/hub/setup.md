@@ -85,7 +85,7 @@ asm hub token               # reprint the join command
 asm hub token --rotate      # retire the join token; joined machines keep access
 ```
 
-The hub keeps only a hash of each credential, so `revoke` removes one laptop without rotating the rest.
+The hub keeps only a hash of each credential, so `revoke` removes one laptop without rotating the rest. For a web page that does the same and more, see [Administering the hub](/hub/admin/).
 
 ## Limits
 

@@ -12,6 +12,7 @@ The hub speaks HTTP and **you** provide TLS: run it on a tailnet or LAN you trus
 - The **join token** buys a machine its **own** credential. The hub keeps only a hash of each credential; the join token is compared in constant time and a wrong token writes nothing.
 - `asm hub revoke <machine>` shuts one laptop out without touching the rest; `asm hub token --rotate` retires the join token without disconnecting machines that already joined.
 - Every route except the join is behind a bearer check, so an unknown path returns 401, not 404.
+- The hub's admin page and API use a **separate admin token** (`asm hub admin-token`) that no machine credential can stand in for, and that opens none of the machine routes. See [Administering the hub](/hub/admin/).
 
 ## Keeping secrets out of the process list
 

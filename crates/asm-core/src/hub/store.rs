@@ -46,6 +46,10 @@ pub struct Hub {
 struct HubFile {
     join_token: String,
     created: Timestamp,
+    /// Hash of the admin token, if one was ever minted. The admin API and
+    /// UI exist only once it is: a hub with none answers 401 to both.
+    #[serde(default)]
+    admin_token_sha256: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -193,6 +197,7 @@ impl Hub {
             hub.write_hub_file(&HubFile {
                 join_token: format!("asmj_{}", random_hex(24)?),
                 created: Timestamp::now(),
+                admin_token_sha256: None,
             })?;
         }
         // Uploads a previous run was killed in the middle of. They are
@@ -542,6 +547,243 @@ impl Hub {
     }
 }
 
+/// What an administrator sees of the hub as a whole.
+#[derive(Debug, Clone, Serialize)]
+pub struct Stats {
+    pub machines: usize,
+    pub sessions: usize,
+    pub revisions: usize,
+    pub blobs: usize,
+    pub blob_bytes: u64,
+}
+
+/// One session on the hub, as the admin list shows it.
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminSession {
+    pub agent: AgentKind,
+    pub id: String,
+    pub title: Option<String>,
+    pub project: String,
+    pub machine: Option<String>,
+    pub rev: String,
+    pub revisions: usize,
+    pub size: u64,
+    pub pushed_at: Option<Timestamp>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AdminMachine {
+    #[serde(flatten)]
+    pub machine: Machine,
+    /// Sessions whose current copy this machine pushed.
+    pub sessions: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GcReport {
+    pub removed: usize,
+    pub freed_bytes: u64,
+    /// True when nothing was deleted: a preview.
+    pub dry_run: bool,
+}
+
+/// A blob uploaded this recently may belong to a push that has not committed
+/// its revision yet, so it is never collected.
+const GC_GRACE_SECS: u64 = 3600;
+
+/// One line of the administrator's own history on this hub.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditEntry {
+    pub at: Timestamp,
+    pub action: String,
+    pub target: String,
+}
+
+impl Hub {
+    pub fn admin_enabled(&self) -> bool {
+        self.read_hub_file().is_ok_and(|f| f.admin_token_sha256.is_some())
+    }
+
+    /// Mint an admin token (replacing any earlier one) and return it. Only
+    /// its hash is kept, so this is the one time it can be shown.
+    pub fn rotate_admin_token(&self) -> Result<String, CoreError> {
+        let _guard = self.lock.lock().unwrap();
+        let mut file = self.read_hub_file()?;
+        let token = format!("asma_{}", random_hex(32)?);
+        file.admin_token_sha256 = Some(hex(&sha256(&token)));
+        self.write_hub_file(&file)?;
+        Ok(token)
+    }
+
+    /// `Ok` only for the admin token. A hub that never minted one refuses
+    /// everything, as does a machine credential.
+    pub fn check_admin(&self, token: &str) -> Result<(), HubError> {
+        let stored = self.read_hub_file()?.admin_token_sha256.ok_or(HubError::Unauthorized)?;
+        if ct_eq(&sha256(token), &decode_hex(&stored)) { Ok(()) } else { Err(HubError::Unauthorized) }
+    }
+
+    fn audit(&self, action: &str, target: &str) {
+        let entry = AuditEntry { at: Timestamp::now(), action: action.into(), target: target.into() };
+        if let Ok(line) = serde_json::to_string(&entry) {
+            let path = self.root.join("admin.log");
+            if let Ok(mut file) = fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let _ = writeln!(file, "{line}");
+                restrict(&path, 0o600);
+            }
+        }
+    }
+
+    /// The most recent administrative actions, newest first.
+    pub fn audit_log(&self, limit: usize) -> Vec<AuditEntry> {
+        let text = fs::read_to_string(self.root.join("admin.log")).unwrap_or_default();
+        let mut entries: Vec<AuditEntry> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+        entries.reverse();
+        entries.truncate(limit);
+        entries
+    }
+
+    pub fn stats(&self) -> Result<Stats, CoreError> {
+        let (mut blobs, mut blob_bytes) = (0, 0);
+        for shard in read_dirs(&self.root.join("blobs")) {
+            if let Ok(entries) = fs::read_dir(&shard) {
+                for e in entries.flatten() {
+                    if let Ok(m) = e.metadata()
+                        && m.is_file()
+                    {
+                        blobs += 1;
+                        blob_bytes += m.len();
+                    }
+                }
+            }
+        }
+        let (mut sessions, mut revisions) = (0, 0);
+        for agent_dir in read_dirs(&self.root.join("sessions")) {
+            for session_dir in read_dirs(&agent_dir) {
+                sessions += 1;
+                revisions += fs::read_dir(session_dir.join("revisions")).map(|d| d.flatten().count()).unwrap_or(0);
+            }
+        }
+        Ok(Stats { machines: self.read_machines()?.len(), sessions, revisions, blobs, blob_bytes })
+    }
+
+    pub fn admin_sessions(&self) -> Result<Vec<AdminSession>, CoreError> {
+        let mut out = Vec::new();
+        for head in self.heads()? {
+            let m = head.manifest;
+            let revisions = fs::read_dir(self.session_dir(m.agent, &m.id).join("revisions"))
+                .map(|d| d.flatten().count())
+                .unwrap_or(0);
+            out.push(AdminSession {
+                agent: m.agent,
+                id: m.id,
+                title: m.title,
+                project: m.git_origin.unwrap_or(m.project_root_portable),
+                machine: m.machine.map(|x| x.name),
+                rev: head.rev,
+                revisions,
+                size: head.total_size,
+                pushed_at: m.pushed_at,
+            });
+        }
+        Ok(out)
+    }
+
+    pub fn admin_machines(&self) -> Result<Vec<AdminMachine>, CoreError> {
+        let heads = self.heads()?;
+        Ok(self
+            .machines()?
+            .into_iter()
+            .map(|machine| {
+                let sessions = heads
+                    .iter()
+                    .filter(|h| h.manifest.machine.as_ref().is_some_and(|m| m.id == machine.id))
+                    .count();
+                AdminMachine { machine, sessions }
+            })
+            .collect())
+    }
+
+    /// Remove a machine (see `revoke`), on the record.
+    pub fn admin_revoke(&self, who: &str) -> Result<Machine, HubError> {
+        let removed = self.revoke(who)?;
+        self.audit("revoke machine", &format!("{} ({})", removed.name, removed.id));
+        Ok(removed)
+    }
+
+    pub fn admin_rotate_join_token(&self) -> Result<String, CoreError> {
+        let token = self.rotate_join_token()?;
+        self.audit("rotate join token", "");
+        Ok(token)
+    }
+
+    /// Delete a session and every revision of it from the hub. Machines that
+    /// still have it keep it, and will see it as not on the hub. Its files
+    /// stay on disk until a collection removes the ones nothing else uses.
+    pub fn delete_session(&self, agent: &str, id: &str) -> Result<usize, HubError> {
+        let agent = AgentKind::parse(agent).ok_or(HubError::NotFound)?;
+        if !valid_id(id) {
+            return Err(HubError::NotFound);
+        }
+        let _guard = self.lock.lock().unwrap();
+        let dir = self.session_dir(agent, id);
+        if !dir.is_dir() {
+            return Err(HubError::NotFound);
+        }
+        let revisions = fs::read_dir(dir.join("revisions")).map(|d| d.flatten().count()).unwrap_or(0);
+        fsutil::remove_recursive(&dir)?;
+        self.audit("delete session", &format!("{agent}:{id} ({revisions} revisions)"));
+        Ok(revisions)
+    }
+
+    /// Remove the blobs no revision names (left by deleted sessions or failed
+    /// pushes). `dry_run` only counts. Recent blobs are spared: a push
+    /// uploads before it commits.
+    pub fn gc(&self, dry_run: bool) -> Result<GcReport, CoreError> {
+        // Hold the lock so no revision is committed while the references are
+        // gathered; a blob a commit would need is either already referenced
+        // or too new to touch.
+        let _guard = self.lock.lock().unwrap();
+        let mut referenced = std::collections::HashSet::new();
+        for agent_dir in read_dirs(&self.root.join("sessions")) {
+            for session_dir in read_dirs(&agent_dir) {
+                let revisions = session_dir.join("revisions");
+                let Ok(entries) = fs::read_dir(&revisions) else { continue };
+                for e in entries.flatten() {
+                    let Ok(bytes) = fs::read(e.path()) else { continue };
+                    if let Ok(m) = serde_json::from_slice::<Manifest>(&bytes) {
+                        referenced.extend(m.blob_shas().map(String::from));
+                    }
+                }
+            }
+        }
+        let (mut removed, mut freed) = (0, 0);
+        let now = std::time::SystemTime::now();
+        for shard in read_dirs(&self.root.join("blobs")) {
+            let Ok(entries) = fs::read_dir(&shard) else { continue };
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if referenced.contains(&name) || !valid_sha(&name) {
+                    continue;
+                }
+                let Ok(meta) = e.metadata() else { continue };
+                let age = meta.modified().ok().and_then(|t| now.duration_since(t).ok()).map_or(0, |d| d.as_secs());
+                if age < GC_GRACE_SECS {
+                    continue;
+                }
+                removed += 1;
+                freed += meta.len();
+                if !dry_run {
+                    let _ = fs::remove_file(e.path());
+                }
+            }
+        }
+        if !dry_run {
+            self.audit("collect unused files", &format!("{removed} files, {freed} bytes"));
+        }
+        Ok(GcReport { removed, freed_bytes: freed, dry_run })
+    }
+}
+
 fn read_dirs(dir: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = fs::read_dir(dir)
         .map(|e| e.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect())
@@ -602,6 +844,96 @@ mod tests {
     }
 
     const ID: &str = "7f3a1c88-2d4e-4b91-9a05-6c7e8f201b43";
+
+    fn sha_of(text: &str) -> String {
+        hex(&sha256(text))
+    }
+
+    fn put(hub: &Hub, text: &str) -> String {
+        let sha = sha_of(text);
+        hub.put_blob(&sha, text.as_bytes(), 1 << 20).unwrap();
+        sha
+    }
+
+    fn age(hub: &Hub, sha: &str, secs: u64) {
+        let path = hub.blob_path(sha);
+        let when = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+        fs::File::options().write(true).open(path).unwrap().set_modified(when).unwrap();
+    }
+
+    /// Nothing is administrable until an admin token exists, and only that
+    /// token opens it — not a machine's credential, not the join token.
+    #[test]
+    fn only_the_admin_token_opens_the_admin_api() {
+        let (_d, hub) = hub();
+        let joined = hub.join(&hub.join_token().unwrap(), "laptop").unwrap();
+        assert!(!hub.admin_enabled());
+        assert!(matches!(hub.check_admin("anything"), Err(HubError::Unauthorized)));
+
+        let token = hub.rotate_admin_token().unwrap();
+        assert!(hub.admin_enabled() && token.starts_with("asma_"));
+        assert!(hub.check_admin(&token).is_ok());
+        for wrong in [joined.credential.as_str(), hub.join_token().unwrap().as_str(), "", "asma_nope"] {
+            assert!(matches!(hub.check_admin(wrong), Err(HubError::Unauthorized)), "{wrong:?}");
+        }
+        // Only the hash is stored, and a new token retires the old one.
+        assert!(!fs::read_to_string(hub.hub_file()).unwrap().contains(&token));
+        let newer = hub.rotate_admin_token().unwrap();
+        assert!(matches!(hub.check_admin(&token), Err(HubError::Unauthorized)));
+        assert!(hub.check_admin(&newer).is_ok());
+        // The admin token is not a machine credential either.
+        assert!(matches!(hub.authenticate(&newer), Err(HubError::Unauthorized)));
+    }
+
+    /// Deleting a session leaves its files; a collection removes the ones
+    /// nothing else names, and only once they are old enough to be safe.
+    #[test]
+    fn collecting_removes_only_old_unreferenced_files() {
+        let (_d, hub) = hub();
+        let joined = hub.join(&hub.join_token().unwrap(), "laptop").unwrap();
+        let machine = hub.authenticate(&joined.credential).unwrap();
+        let kept = put(&hub, "kept");
+        let orphan_old = put(&hub, "orphan-old");
+        let orphan_new = put(&hub, "orphan-new");
+        hub.put_revision("claude-code", ID, &manifest(None, &[&kept]), &machine).unwrap();
+        age(&hub, &kept, 7200);
+        age(&hub, &orphan_old, 7200);
+
+        let preview = hub.gc(true).unwrap();
+        assert_eq!((preview.removed, preview.dry_run), (1, true));
+        assert!(hub.blob_path(&orphan_old).is_file(), "a preview deletes nothing");
+
+        let done = hub.gc(false).unwrap();
+        assert_eq!(done.removed, 1);
+        assert!(!hub.blob_path(&orphan_old).is_file());
+        assert!(hub.blob_path(&kept).is_file(), "referenced files stay");
+        assert!(hub.blob_path(&orphan_new).is_file(), "a fresh upload may belong to a push in flight");
+
+        // Delete the session: its file becomes collectable.
+        assert_eq!(hub.delete_session("claude-code", ID).unwrap(), 1);
+        assert!(hub.heads().unwrap().is_empty());
+        assert_eq!(hub.gc(false).unwrap().removed, 1);
+        assert!(!hub.blob_path(&kept).is_file());
+        assert!(hub.audit_log(10).iter().any(|e| e.action == "delete session"));
+        assert!(matches!(hub.delete_session("claude-code", ID), Err(HubError::NotFound)));
+        assert!(matches!(hub.delete_session("claude-code", "../etc"), Err(HubError::NotFound)));
+    }
+
+    #[test]
+    fn stats_and_the_admin_lists_count_what_is_there() {
+        let (_d, hub) = hub();
+        let joined = hub.join(&hub.join_token().unwrap(), "laptop").unwrap();
+        let machine = hub.authenticate(&joined.credential).unwrap();
+        let a = put(&hub, "a");
+        hub.put_revision("claude-code", ID, &manifest(None, &[&a]), &machine).unwrap();
+        let st = hub.stats().unwrap();
+        assert_eq!((st.machines, st.sessions, st.revisions, st.blobs), (1, 1, 1, 1));
+        let machines = hub.admin_machines().unwrap();
+        assert_eq!((machines[0].machine.name.as_str(), machines[0].sessions), ("laptop", 1));
+        let sessions = hub.admin_sessions().unwrap();
+        assert_eq!((sessions[0].id.as_str(), sessions[0].revisions), (ID, 1));
+        assert_eq!(sessions[0].machine.as_deref(), Some("laptop"));
+    }
 
     #[test]
     fn a_wrong_join_token_mints_nothing() {

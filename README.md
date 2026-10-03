@@ -424,6 +424,12 @@ TimeoutStartSec=60
 WantedBy=sleep.target
 ```
 
+**Administering the hub.** `asm hub admin-token` turns on a small admin page at
+`/admin` on the hub: machines (revoke), the join token, every stored session
+(delete), collecting unused files, and a log of what was done. It uses its own
+token, which no machine credential can stand in for, and it manages the hub only —
+the hub cannot make a machine run anything.
+
 **Nothing is merged, and nothing is guessed.** Every push names the hub
 revision it started from, and the hub refuses one that would replace another
 machine's newer copy. When both machines continued the same session, both are

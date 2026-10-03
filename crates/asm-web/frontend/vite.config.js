@@ -6,5 +6,10 @@ export default defineConfig({
   server: {
     proxy: { '/api': 'http://127.0.0.1:7433' },
   },
-  build: { outDir: 'dist' },
+  // Two pages: the session manager (`asm serve`) and the hub's admin page
+  // (`asm hub serve`, at /admin).
+  build: {
+    outDir: 'dist',
+    rollupOptions: { input: { main: 'index.html', hub: 'hub.html' } },
+  },
 })

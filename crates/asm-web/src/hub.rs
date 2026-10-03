@@ -75,8 +75,38 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
     (!token.is_empty()).then(|| token.to_string())
 }
 
+/// The admin page and its assets (a public bundle with no data in it), served
+/// only while the hub has an admin token: without one the hub answers 401 to
+/// them like to everything else.
+fn is_admin_page(request: &Request) -> bool {
+    let path = request.uri().path();
+    request.method() == Method::GET
+        && (matches!(path, "/admin" | "/admin/") || path.starts_with("/assets/"))
+}
+
 async fn authenticate(State(state): State<Shared>, mut request: Request, next: Next) -> Response {
     if request.method() == Method::POST && request.uri().path() == "/hub/v1/join" {
+        return next.run(request).await;
+    }
+    // The admin API has its own credential. A machine's does not open it and
+    // the admin token does not open the machine routes below.
+    if request.uri().path().starts_with("/hub/v1/admin/") {
+        let Some(token) = bearer(request.headers()) else {
+            return error(StatusCode::UNAUTHORIZED, "the admin token is required");
+        };
+        let st = state.clone();
+        return match blocking(move || st.hub.check_admin(&token)).await {
+            Ok(()) => {
+                let mut response = next.run(request).await;
+                response
+                    .headers_mut()
+                    .insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+                response
+            }
+            Err(e) => hub_error(e),
+        };
+    }
+    if is_admin_page(&request) && state.hub.admin_enabled() {
         return next.run(request).await;
     }
     let Some(credential) = bearer(request.headers()) else {
@@ -104,6 +134,17 @@ pub fn router(state: Shared) -> axum::Router {
         .route("/hub/v1/sessions/{agent}/{id}/revisions/{rev}", get(revision))
         .route("/hub/v1/missing", post(missing))
         .route("/hub/v1/blobs/{sha}", get(get_blob).put(put_blob))
+        .route("/hub/v1/admin/overview", get(admin_overview))
+        .route("/hub/v1/admin/machines", get(admin_machines))
+        .route("/hub/v1/admin/machines/{id}/revoke", post(admin_revoke))
+        .route("/hub/v1/admin/join-token/rotate", post(admin_rotate_join))
+        .route("/hub/v1/admin/sessions", get(admin_sessions))
+        .route("/hub/v1/admin/sessions/{agent}/{id}", get(history).delete(admin_delete_session))
+        .route("/hub/v1/admin/collect", post(admin_collect))
+        .route("/hub/v1/admin/log", get(admin_log))
+        .route("/admin", get(admin_page))
+        .route("/admin/", get(admin_page))
+        .route("/assets/{*file}", get(admin_asset))
         .fallback(|| async { error(StatusCode::NOT_FOUND, "not found") })
         // Manifests of large sessions list thousands of files. Blob bodies
         // are read as raw `Body`, which this limit does not govern; they
@@ -111,6 +152,91 @@ pub fn router(state: Shared) -> axum::Router {
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .layer(axum::middleware::from_fn_with_state(state.clone(), authenticate))
         .with_state(state)
+}
+
+async fn admin_page() -> Response {
+    crate::statics::embedded("hub.html").unwrap_or_else(|| error(StatusCode::NOT_FOUND, "not found"))
+}
+
+async fn admin_asset(Path(file): Path<String>) -> Response {
+    // Only files directly under assets/; the embedded set has no other layout.
+    if file.contains("..") || file.contains('\\') {
+        return error(StatusCode::NOT_FOUND, "not found");
+    }
+    crate::statics::embedded(&format!("assets/{file}")).unwrap_or_else(|| error(StatusCode::NOT_FOUND, "not found"))
+}
+
+async fn admin_overview(State(state): State<Shared>) -> Response {
+    let st = state.clone();
+    match blocking(move || {
+        Ok(json!({
+            "stats": st.hub.stats()?,
+            "join_token": st.hub.join_token()?,
+            "version": env!("CARGO_PKG_VERSION"),
+            "root": st.hub.root().display().to_string(),
+            "max_blob_bytes": st.max_blob,
+        }))
+    })
+    .await
+    {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn admin_machines(State(state): State<Shared>) -> Response {
+    match blocking(move || state.hub.admin_machines().map_err(HubError::from)).await {
+        Ok(m) => Json(m).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn admin_revoke(State(state): State<Shared>, Path(id): Path<String>) -> Response {
+    match blocking(move || state.hub.admin_revoke(&id)).await {
+        Ok(m) => Json(m).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn admin_rotate_join(State(state): State<Shared>) -> Response {
+    match blocking(move || state.hub.admin_rotate_join_token().map_err(HubError::from)).await {
+        Ok(token) => Json(json!({ "token": token })).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn admin_sessions(State(state): State<Shared>) -> Response {
+    match blocking(move || state.hub.admin_sessions().map_err(HubError::from)).await {
+        Ok(s) => Json(s).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn admin_delete_session(State(state): State<Shared>, Path((agent, id)): Path<(String, String)>) -> Response {
+    match blocking(move || state.hub.delete_session(&agent, &id)).await {
+        Ok(revisions) => Json(json!({ "deleted_revisions": revisions })).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct CollectQuery {
+    #[serde(default)]
+    dry_run: bool,
+}
+
+async fn admin_collect(State(state): State<Shared>, axum::extract::Query(q): axum::extract::Query<CollectQuery>) -> Response {
+    match blocking(move || state.hub.gc(q.dry_run).map_err(HubError::from)).await {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn admin_log(State(state): State<Shared>) -> Response {
+    match blocking(move || Ok(state.hub.audit_log(50))).await {
+        Ok(entries) => Json(entries).into_response(),
+        Err(e) => hub_error(e),
+    }
 }
 
 #[derive(Deserialize)]
@@ -289,6 +415,7 @@ pub fn run(host: &str, port: u16, max_blob: u64) -> anyhow::Result<()> {
     let root = Hub::default_root().context("cannot determine asm's data directory")?;
     let hub = Hub::open(&root).with_context(|| format!("cannot open the hub store at {}", root.display()))?;
     let token = hub.join_token()?;
+    let admin = hub.admin_enabled();
     let addr = crate::resolve_bind(host, port)?;
     let state = Arc::new(HubState { hub, max_blob });
 
@@ -305,6 +432,11 @@ pub fn run(host: &str, port: u16, max_blob: u64) -> anyhow::Result<()> {
         eprintln!("asm hub on http://{}/  (ctrl-c to stop)", crate::display_addr(&addr));
         eprintln!("  store      {}", root.display());
         eprintln!("  join with  ASM_JOIN_TOKEN={token} asm join http://{advertise}:{}", addr.port());
+        if admin {
+            eprintln!("  admin      http://{}/admin  (token: `asm hub admin-token`)", crate::display_addr(&addr));
+        } else {
+            eprintln!("  admin      off — `asm hub admin-token` turns on the admin page");
+        }
         if addr.ip().is_loopback() {
             eprintln!(
                 "\n  Bound to loopback: only this machine can reach it. Publish it through \
@@ -359,6 +491,85 @@ mod tests {
         let (status, v) = send(app, "POST", "/hub/v1/join", None, Body::from(body)).await;
         assert_eq!(status, StatusCode::CREATED);
         v["credential"].as_str().unwrap().to_string()
+    }
+
+    /// The admin API is its own door: shut until an admin token exists,
+    /// then opened only by that token — never by a machine's credential or
+    /// the join token — and it opens none of the machine routes.
+    #[tokio::test]
+    async fn the_admin_api_answers_only_to_the_admin_token() {
+        let (_d, state, app) = app();
+        let cred = credential(&app, &state).await;
+        let join = state.hub.join_token().unwrap();
+        let routes = [
+            ("GET", "/hub/v1/admin/overview"),
+            ("GET", "/hub/v1/admin/machines"),
+            ("GET", "/hub/v1/admin/sessions"),
+            ("GET", "/hub/v1/admin/log"),
+            ("POST", "/hub/v1/admin/collect"),
+            ("POST", "/hub/v1/admin/join-token/rotate"),
+            ("POST", "/hub/v1/admin/machines/x/revoke"),
+            ("DELETE", "/hub/v1/admin/sessions/claude-code/x"),
+        ];
+        // No admin token minted: nothing opens it, and neither does a
+        // credential.
+        for (method, uri) in routes {
+            for who in [None, Some(cred.as_str()), Some(join.as_str()), Some("asma_guess")] {
+                let (status, _) = send(&app, method, uri, who, Body::empty()).await;
+                assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri} {who:?}");
+            }
+        }
+        let (status, _) = send(&app, "GET", "/admin", None, Body::empty()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "no admin page without a token");
+
+        let admin = state.hub.rotate_admin_token().unwrap();
+        for (method, uri) in routes {
+            for who in [None, Some(cred.as_str()), Some(join.as_str())] {
+                let (status, _) = send(&app, method, uri, who, Body::empty()).await;
+                assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri} {who:?} once enabled");
+            }
+        }
+        let (status, v) = send(&app, "GET", "/hub/v1/admin/overview", Some(&admin), Body::empty()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v["stats"]["machines"], 1);
+        assert!(v["join_token"].as_str().unwrap().starts_with("asmj_"));
+        // The admin token is no machine credential.
+        let (status, _) = send(&app, "GET", "/hub/v1/machines", Some(&admin), Body::empty()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, _) = send(&app, "GET", "/admin", None, Body::empty()).await;
+        assert_eq!(status, StatusCode::OK, "the page is served once an admin token exists");
+    }
+
+    #[tokio::test]
+    async fn an_admin_can_revoke_rotate_collect_and_it_is_recorded() {
+        let (_d, state, app) = app();
+        let cred = credential(&app, &state).await;
+        let admin = state.hub.rotate_admin_token().unwrap();
+
+        let (status, v) = send(&app, "GET", "/hub/v1/admin/machines", Some(&admin), Body::empty()).await;
+        assert_eq!((status, v[0]["name"].as_str()), (StatusCode::OK, Some("laptop")));
+        assert!(v[0].get("credential_sha256").is_none());
+        let id = v[0]["id"].as_str().unwrap().to_string();
+
+        let (status, v) = send(&app, "POST", "/hub/v1/admin/collect?dry_run=true", Some(&admin), Body::empty()).await;
+        assert_eq!((status, v["dry_run"].as_bool()), (StatusCode::OK, Some(true)));
+
+        let old = state.hub.join_token().unwrap();
+        let (status, v) =
+            send(&app, "POST", "/hub/v1/admin/join-token/rotate", Some(&admin), Body::empty()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_ne!(v["token"].as_str().unwrap(), old);
+
+        let (status, _) =
+            send(&app, "POST", &format!("/hub/v1/admin/machines/{id}/revoke"), Some(&admin), Body::empty()).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = send(&app, "GET", "/hub/v1/machines", Some(&cred), Body::empty()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "a revoked machine is out");
+
+        let (status, v) = send(&app, "GET", "/hub/v1/admin/log", Some(&admin), Body::empty()).await;
+        assert_eq!(status, StatusCode::OK);
+        let actions: Vec<&str> = v.as_array().unwrap().iter().filter_map(|e| e["action"].as_str()).collect();
+        assert!(actions.contains(&"revoke machine") && actions.contains(&"rotate join token"), "{actions:?}");
     }
 
     /// Nothing but join answers without a credential — including paths that

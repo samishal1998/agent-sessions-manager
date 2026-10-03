@@ -9,6 +9,8 @@ Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-m
 
 - **Shallow compare.** Sessions both sides have but this machine never compared are now compared without a pull: identical copies become **Synced** on their own, and a difference says **Hub looks newer**, **Looks ahead** or **Differs**. The web Hub view's **Compare** button does one on demand.
 - The web UI says which machine this is at the top of the sidebar.
+- **A new look.** The web UI is built on Hearth UI with a night-sky purple and rose theme, with buttons, badges, cards, alerts and tooltips from the library.
+- **A hub admin page.** `asm hub admin-token` turns on `/admin` on the hub: machines (revoke), the join token, every stored session (delete), storage collection and an activity log, behind a separate admin token. The hub still cannot control a machine's sessions.
 
 ## 0.6.2 — 2026-10-03
 

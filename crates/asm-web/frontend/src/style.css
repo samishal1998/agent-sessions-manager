@@ -1707,3 +1707,98 @@ button:hover,
     color: CanvasText;
   }
 }
+
+/* The hub's admin page ------------------------------------------------- */
+.admin {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--space-5) var(--space-4) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.admin-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.admin-head svg {
+  color: var(--accent);
+}
+.admin-title {
+  font-size: var(--text-lg);
+  font-weight: 650;
+}
+.admin-title span {
+  background: linear-gradient(135deg, #c792ea, #f472b6);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.admin-login {
+  max-width: 520px;
+}
+.admin-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+.admin-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-weight: 550;
+}
+.admin-num {
+  font-size: 28px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.admin-filter {
+  margin-bottom: var(--space-3);
+}
+.admin-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.admin-log {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+.admin .h-card .h-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+@media (forced-colors: active) {
+  .admin-title span {
+    background: none;
+    color: CanvasText;
+  }
+}
+.admin-filter {
+  flex: 0 0 auto;
+}
+.admin-scroll {
+  position: relative; /* contains the table's sr-only cells, which would otherwise widen the page */
+  overflow-x: auto;
+  max-width: 100%;
+}
+.admin .hv-cmd {
+  max-width: 100%;
+}
+.admin .hv-cmd code {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.admin .h-card {
+  min-width: 0;
+}

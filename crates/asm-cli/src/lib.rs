@@ -330,6 +330,10 @@ enum HubCommand {
         #[arg(long)]
         rotate: bool,
     },
+    /// Mint the token for the hub's admin page and API (`/admin`), replacing
+    /// any earlier one. It is shown once: only its hash is kept. Until one
+    /// exists, the hub serves no admin page or API at all.
+    AdminToken,
     /// Machines that have joined this hub.
     Machines,
     /// Remove a machine's access, by id or unique name.
@@ -1099,6 +1103,15 @@ fn hub(command: HubCommand, json: bool) -> anyhow::Result<()> {
                 return print_json(&serde_json::json!({ "token": token }));
             }
             println!("ASM_JOIN_TOKEN={token} asm join <hub-url>");
+        }
+        HubCommand::AdminToken => {
+            let token = store.rotate_admin_token()?;
+            if json {
+                return print_json(&serde_json::json!({ "token": token }));
+            }
+            println!("Admin token (shown once; running this again replaces it):\n\n  {token}\n");
+            println!("Open /admin on this hub and paste it. It controls the hub itself: machines,");
+            println!("the join token, deleting sessions. It does not touch anyone's agents.");
         }
         HubCommand::Machines => {
             let machines = store.machines()?;
