@@ -5,6 +5,11 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
+## 0.6.1 — 2026-10-03
+
+- **Web UI accessibility and polish.** Keyboard focus is a real 2px outline that survives forced-colors mode; the mobile drawer respects reduced motion; session metadata wraps instead of clipping on phones; faint text and field borders meet contrast; there is a skip link and a heading outline.
+- **Colour and type.** Synced, Delete and the hub filter chips carry their colour; one type scale and shared status tint tokens replace scattered sizes and `rgba()` values; the hub panel groups with space.
+
 ## 0.6.0 — 2026-10-03
 
 - **Hub status in both UIs.** The TUI and web UI say whether the hub answered, mark every session with what it needs (Synced / Needs push / Not on hub / Needs pull / New on hub / Check sync / Diverged), list what is new on the hub, and push or pull from the list. A hub that is down is a status with a reason, not an error.
