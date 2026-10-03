@@ -677,13 +677,138 @@ pub struct RowDetail {
     /// The project directory on the machine the copy came from.
     pub project_root: String,
     pub agent_version: Option<String>,
+    /// The state's own name, whatever this row's label says: what a filter
+    /// chip for the state is called.
+    pub state_label: &'static str,
+    /// What a shallow comparison found, for a session the two sides have but
+    /// this machine never compared.
+    pub compare: Option<Compare>,
+}
+
+/// How a session here relates to the hub's copy, found without downloading
+/// or installing anything: this machine reads and hashes its own copy and
+/// compares the conversation's identity with what the hub recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Shallow {
+    /// Same conversation: nothing to push or pull.
+    Identical,
+    /// Different, and this copy is the bigger one.
+    LocalLarger,
+    /// Different, and the hub's copy is the bigger one.
+    HubLarger,
+    /// Different at the same size.
+    SameSizeDiffers,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Compare {
+    pub verdict: Shallow,
+    pub local_size: u64,
+    pub hub_size: u64,
+}
+
+/// Sessions compared per listing. Each is read and hashed once, then
+/// remembered, so a machine with thousands of uncompared sessions settles
+/// over a few listings instead of stalling the first.
+const COMPARE_BUDGET: usize = 25;
+
+/// Results already worked out: not equal today means not equal until either
+/// side changes, so the key is both sides' state.
+fn compare_cache() -> &'static std::sync::Mutex<HashMap<String, Compare>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Compare>>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// The shallow verdict from what both sides recorded. Only equal identities
+/// prove anything; the sizes only say which side has more to give.
+pub(crate) fn verdict_of(local: &str, hub: &str, local_size: u64, hub_size: u64) -> Shallow {
+    if local == hub {
+        Shallow::Identical
+    } else if local_size > hub_size {
+        Shallow::LocalLarger
+    } else if local_size < hub_size {
+        Shallow::HubLarger
+    } else {
+        Shallow::SameSizeDiffers
+    }
+}
+
+/// What an uncompared session is called once it has been looked at: what the
+/// sizes suggest, said as a suggestion.
+fn compared_label(state: RowState, compare: Option<Compare>) -> &'static str {
+    match (state, compare.map(|c| c.verdict)) {
+        (RowState::Untracked, Some(Shallow::HubLarger)) => "Hub looks newer",
+        (RowState::Untracked, Some(Shallow::LocalLarger)) => "Looks ahead",
+        (RowState::Untracked, Some(Shallow::SameSizeDiffers)) => "Differs",
+        _ => state.label(),
+    }
+}
+
+fn compared_hint(state: RowState, compare: Option<Compare>) -> &'static str {
+    match (state, compare.map(|c| c.verdict)) {
+        (RowState::Untracked, Some(Shallow::HubLarger)) => {
+            "The copies differ and the hub's is the bigger one, so it is probably newer. Pull it to confirm: a hub copy that extends yours is applied."
+        }
+        (RowState::Untracked, Some(Shallow::LocalLarger)) => {
+            "The copies differ and yours is the bigger one, so it is probably ahead. Pull it to confirm; if it is ahead you can then push it."
+        }
+        (RowState::Untracked, Some(Shallow::SameSizeDiffers)) => {
+            "The copies differ at the same size. Pull it to see which way: one that moved on both sides is reported as diverged."
+        }
+        _ => state.hint(),
+    }
+}
+
+/// A result worked out before, if neither side has changed since.
+fn cached_compare(session: &Session, head: &Head) -> Option<Compare> {
+    let k = key(session.handle.agent, &session.handle.native_id);
+    let cache_key = format!("{k}|{}|{}", bundle::fingerprint(session), head.rev);
+    compare_cache().lock().ok().and_then(|c| c.get(&cache_key).copied())
+}
+
+/// Read this machine's copy and compare it with the hub's head. Identical
+/// copies are recorded as synced, exactly as a push or pull would have.
+/// A size is a hint, never a verdict: only `Identical` is a proof.
+pub fn compare_session(state: &mut SyncState, session: &Session, head: &Head) -> Result<Compare, CoreError> {
+    if let Some(found) = cached_compare(session, head) {
+        return Ok(found);
+    }
+    let k = key(session.handle.agent, &session.handle.native_id);
+    let fingerprint = bundle::fingerprint(session);
+    let cache_key = format!("{k}|{fingerprint}|{}", head.rev);
+    let bundle = bundle::collect(session)?;
+    let local_size: u64 = bundle.files.iter().map(|f| f.entry.size).sum();
+    let hub_size = head.total_size;
+    let verdict = verdict_of(&bundle.canonical, &head.manifest.canonical, local_size, hub_size);
+    if verdict == Shallow::Identical {
+        state.record(
+            &k,
+            Tracked {
+                hub_rev: head.rev.clone(),
+                canonical: bundle.canonical.clone(),
+                fingerprint,
+                files: files_hash(bundle.files.iter().map(|f| &f.entry)),
+            },
+        )?;
+    }
+    let found = Compare { verdict, local_size, hub_size };
+    // Only a difference is worth remembering: an identical pair is recorded
+    // as synced and never asked about again.
+    if verdict != Shallow::Identical
+        && let Ok(mut c) = compare_cache().lock()
+    {
+        c.insert(cache_key, found);
+    }
+    Ok(found)
 }
 
 /// Every session on this machine and on the hub, grouped by project. The
 /// same session on both is one row, with how the two copies relate.
 pub fn remote_list(remote: &Remote, local: &[Session]) -> Result<Vec<Row>, CoreError> {
     let heads = remote.heads()?;
-    let state = SyncState::load(remote)?;
+    let mut state = SyncState::load(remote)?;
+    let mut budget = COMPARE_BUDGET;
     let mut origins = HashMap::new();
     let by_key: HashMap<String, &Session> =
         local.iter().map(|s| (key(s.handle.agent, &s.handle.native_id), s)).collect();
@@ -694,9 +819,25 @@ pub fn remote_list(remote: &Remote, local: &[Session]) -> Result<Vec<Row>, CoreE
         let m = &head.manifest;
         let k = key(m.agent, &m.id);
         seen.insert(k.clone());
-        let row_state = match (by_key.get(&k), state.get(&k)) {
+        let mut compare = None;
+        let row_state = match (by_key.get(&k), state.get(&k).cloned()) {
             (None, _) => RowState::Remote,
-            (Some(_), None) => RowState::Untracked,
+            (Some(s), None) => {
+                // Both sides have it and this machine never compared them:
+                // look, rather than leave the question to a pull. Anything
+                // already worked out is free; new reads are budgeted.
+                let found = cached_compare(s, head).or_else(|| {
+                    (budget > 0).then(|| {
+                        budget -= 1;
+                        compare_session(&mut state, s, head).ok()
+                    })?
+                });
+                compare = found;
+                match found {
+                    Some(c) if c.verdict == Shallow::Identical => RowState::InSync,
+                    _ => RowState::Untracked,
+                }
+            }
             (Some(s), Some(t)) => {
                 let changed_here = bundle::fingerprint(s) != t.fingerprint;
                 let moved_there = head.rev != t.hub_rev;
@@ -718,8 +859,8 @@ pub fn remote_list(remote: &Remote, local: &[Session]) -> Result<Vec<Row>, CoreE
             updated: m.updated,
             state: row_state,
             action: row_state.action(),
-            label: row_state.label(),
-            hint: row_state.hint(),
+            label: compared_label(row_state, compare),
+            hint: compared_hint(row_state, compare),
             restorable: bundle::restorable(m.agent),
             detail: RowDetail {
                 here: by_key.contains_key(&k),
@@ -730,6 +871,8 @@ pub fn remote_list(remote: &Remote, local: &[Session]) -> Result<Vec<Row>, CoreE
                 branch: m.git_branch.clone(),
                 project_root: m.project_root.clone(),
                 agent_version: m.agent_version.clone(),
+                compare,
+                state_label: row_state.label(),
             },
         });
     }
@@ -760,6 +903,8 @@ pub fn remote_list(remote: &Remote, local: &[Session]) -> Result<Vec<Row>, CoreE
                 branch: s.git_branch.clone(),
                 project_root: s.project_root.display().to_string(),
                 agent_version: s.agent_version.clone(),
+                compare: None,
+                state_label: RowState::Local.label(),
             },
         });
     }
@@ -968,6 +1113,21 @@ mod tests {
         RowState::Remote,
         RowState::Untracked,
     ];
+
+    /// Equal identity is the only proof; otherwise the bigger side has more
+    /// to give, and the same size says nothing about direction.
+    #[test]
+    fn a_shallow_compare_proves_only_equality() {
+        assert_eq!(verdict_of("a", "a", 10, 99), Shallow::Identical);
+        assert_eq!(verdict_of("a", "b", 20, 10), Shallow::LocalLarger);
+        assert_eq!(verdict_of("a", "b", 10, 20), Shallow::HubLarger);
+        assert_eq!(verdict_of("a", "b", 10, 10), Shallow::SameSizeDiffers);
+        // Once compared, a different pair is no longer just "not compared".
+        let looked = |v| Some(Compare { verdict: v, local_size: 1, hub_size: 2 });
+        assert_eq!(compared_label(RowState::Untracked, looked(Shallow::HubLarger)), "Hub looks newer");
+        assert_eq!(compared_label(RowState::Untracked, None), "Not compared");
+        assert_eq!(compared_label(RowState::Behind, looked(Shallow::HubLarger)), "Needs pull");
+    }
 
     /// Every state says what to do about it, in words; two states never
     /// share a label, or a pill could not tell them apart.

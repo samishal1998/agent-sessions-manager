@@ -5,6 +5,11 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
+## Unreleased
+
+- **Shallow compare.** Sessions both sides have but this machine never compared are now compared without a pull: identical copies become **Synced** on their own, and a difference says **Hub looks newer**, **Looks ahead** or **Differs**. The web Hub view's **Compare** button does one on demand.
+- The web UI says which machine this is at the top of the sidebar.
+
 ## 0.6.2 — 2026-10-03
 
 - **A dedicated Hub view in the web UI.** The sidebar's **Hub** screen shows the connection, the daemon (with its recent events) and every machine on the hub, then a table of every session here and on the hub: its sync state, where it lives, when it changed, and a button for what it needs. Expand a row for the full id, project and branch, the hub revision, size, who pushed it and when, and the terminal command that does the same. The card above the session list is now a compact summary with a link to it.

@@ -87,6 +87,8 @@ const api = {
   hub: () => request('/api/hub'),
   push: (sessions) => api.bulk(sessions, { action: 'push' }),
   pullAll: () => post('/api/hub/pull-all', {}),
+  // Compare a session with the hub's copy, installing nothing.
+  compare: (agent, id) => post('/api/hub/compare', { agent, id }),
   pull: (agent, id, projectDir) =>
     post('/api/hub/pull', { agent, id, project_dir: projectDir || null }),
   rename: (s, title) => post(sessionPath(s, 'rename'), { title }),

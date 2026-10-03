@@ -13,6 +13,7 @@ import {
   Monitor,
   Radio,
   RefreshCw,
+  Scale,
   Search,
   TriangleAlert,
 } from 'lucide-vue-next'
@@ -30,7 +31,7 @@ const props = defineProps({
   checkedAt: { type: Number, default: 0 },
   home: { type: String, default: null },
 })
-const emit = defineEmits(['check', 'push', 'pull', 'push-needed', 'pull-all', 'menu'])
+const emit = defineEmits(['check', 'push', 'pull', 'compare', 'push-needed', 'pull-all', 'menu'])
 
 const now = ref(Date.now())
 let clock = null
@@ -61,7 +62,7 @@ const open = ref(new Set())
 const stateChips = computed(() =>
   ORDER.map((state) => {
     const of = rows.value.filter((r) => r.state === state)
-    return of.length ? { state, label: of[0].label, hint: of[0].hint, count: of.length } : null
+    return of.length ? { state, label: of[0].state_label, hint: of[0].hint, count: of.length } : null
   }).filter(Boolean),
 )
 
@@ -110,11 +111,15 @@ function buttonOf(r) {
   if (r.action === 'resolve') return { text: 'Resolve', off: null, resolve: true }
   if (r.action === 'pull' && !r.restorable)
     return { text: 'Pull', off: `${r.agent} sessions are backed up on the hub but cannot be restored here yet` }
-  return { text: r.state === 'untracked' ? 'Compare' : r.action === 'push' ? 'Push' : 'Pull', off: null }
+  // Not yet looked at: compare first (nothing is installed). Once compared,
+  // a difference is pulled to confirm which way it goes.
+  if (r.state === 'untracked' && !r.compare) return { text: 'Compare', off: null, compare: true }
+  return { text: r.action === 'push' ? 'Push' : 'Pull', off: null }
 }
 function press(r) {
   const b = buttonOf(r)
   if (b?.resolve) return toggleRow(r)
+  if (b?.compare) return emit('compare', r)
   emit(r.action === 'push' ? 'push' : 'pull', r)
 }
 
@@ -377,7 +382,8 @@ const when = (ts) => ago(ts, now.value)
                   >
                     <ArrowUp v-if="r.action === 'push'" :size="14" />
                     <ArrowUpDown v-else-if="r.action === 'resolve'" :size="14" />
-                    <ArrowDown v-else :size="14" />
+                    <ArrowDown v-else-if="!buttonOf(r).compare" :size="14" />
+                    <Scale v-else :size="14" />
                     <span>{{ buttonOf(r).text }}</span>
                   </button>
                 </template>
@@ -408,6 +414,13 @@ const when = (ts) => ago(ts, now.value)
                   </template>
                   <dt v-if="r.agent_version">Agent version</dt>
                   <dd v-if="r.agent_version">{{ r.agent_version }}</dd>
+                  <template v-if="r.compare">
+                    <dt>Compared</dt>
+                    <dd>
+                      {{ bytes(r.compare.local_size) }} here, {{ bytes(r.compare.hub_size) }} on the hub
+                      <span class="faint"> — sizes only hint at direction; pulling confirms</span>
+                    </dd>
+                  </template>
                   <dt>Restorable here</dt>
                   <dd>{{ r.restorable ? 'yes' : 'no — backed up only' }}</dd>
                 </dl>

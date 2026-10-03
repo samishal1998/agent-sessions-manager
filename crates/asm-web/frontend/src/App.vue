@@ -698,6 +698,21 @@ async function doPull(row, projectDir) {
   }
 }
 
+// Look at one session against the hub's copy; nothing is installed.
+async function doCompare(row) {
+  status.value = `Comparing ${row.short_id}…`
+  try {
+    const c = await api.compare(row.agent, row.id)
+    status.value =
+      c.verdict === 'identical'
+        ? `${row.short_id} is identical on the hub: now synced.`
+        : `${row.short_id} differs from the hub (${c.verdict.replace('_', ' ')}); pull it to see which way.`
+  } catch (e) {
+    status.value = `Compare failed: ${e.message}`
+  }
+  await loadHub()
+}
+
 function doDelete(s) {
   if (confirm(`Delete ${shortId(s)} "${s.title || 'untitled'}"?\n\nA backup is written first.`))
     act('Delete', () => api.remove(s))
@@ -984,6 +999,7 @@ function pickProject(root) {
           @check="loadHub"
           @push="pushRow"
           @pull="doPull"
+          @compare="doCompare"
           @push-needed="pushNeeded"
           @pull-all="pullAll"
           @menu="sidebarOpen = true"

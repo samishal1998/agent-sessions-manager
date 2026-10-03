@@ -92,6 +92,7 @@ pub fn router() -> axum::Router {
         .route("/api/bulk", post(bulk))
         .route("/api/hub", get(hub))
         .route("/api/hub/pull", post(hub_pull))
+        .route("/api/hub/compare", post(hub_compare))
         .route("/api/hub/pull-all", post(hub_pull_all))
         .layer(axum::middleware::from_fn(guard_mutations))
 }
@@ -162,6 +163,31 @@ async fn hub_pull(Json(body): Json<PullBody>) -> ApiResult<Value> {
         )
         .map_err(|e| err(StatusCode::CONFLICT, e))?;
         serde_json::to_value(pulled).map_err(internal)
+    })
+    .await
+    .map(Json)
+}
+
+/// Compare one session here with the hub's copy without installing anything:
+/// identical copies are recorded as synced, and a difference says which side
+/// is bigger. This is the "Compare" button.
+async fn hub_compare(Json(body): Json<PullBody>) -> ApiResult<Value> {
+    blocking(move || {
+        use asm_core::hub::{actions, state::SyncState};
+        let remote = asm_core::hub::client::load().map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+        let heads = remote.heads().map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
+        let head = heads
+            .iter()
+            .find(|h| h.manifest.agent.as_str() == body.agent && h.manifest.id == body.id)
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "the hub does not have that session"))?;
+        let session = ops::list_sessions(&SessionFilter::default())
+            .map_err(internal)?
+            .into_iter()
+            .find(|s| s.handle.agent.as_str() == body.agent && s.handle.native_id == body.id)
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "this machine does not have that session"))?;
+        let mut state = SyncState::load(&remote).map_err(internal)?;
+        let found = actions::compare_session(&mut state, &session, head).map_err(internal)?;
+        serde_json::to_value(found).map_err(internal)
     })
     .await
     .map(Json)

@@ -40,6 +40,15 @@ Each machine remembers, per session, the **last revision it agreed on with the h
 | changed | moved | **Diverged** |
 | no record | exists | **Not compared** (pull to compare) |
 
+## Comparing without pulling
+
+A session both sides have, but that this machine has never compared, starts as **Not compared**. asm then looks at it for you, without downloading or installing anything: it reads and hashes *this* machine's copy and compares the conversation's identity with the one the hub recorded when it was pushed.
+
+- **Identical** — the session is recorded as synced and shows **Synced**. This is the usual outcome for a session another machine pushed and this one already had.
+- **Different** — sizes can only hint at the direction, so the row says **Hub looks newer**, **Looks ahead** or **Differs**, and *pulling it confirms*: a hub copy that extends yours is applied, one that moved on both sides is reported as diverged.
+
+Each listing compares at most 25 sessions, and remembers what it found, so a machine with thousands of uncompared sessions settles over a few refreshes instead of stalling the first. In the web UI's [Hub view](/guides/web-ui/#the-hub-view) a row's **Compare** button does one immediately.
+
 ## Diverged
 
 Both machines continued the same session. Nothing is merged, and a pull of a diverged session installs nothing — it reports that it diverged. You choose which side wins:
