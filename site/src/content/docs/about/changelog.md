@@ -5,7 +5,7 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
-## Unreleased
+## 0.7.0 — 2026-10-03
 
 - **Shallow compare.** Sessions both sides have but this machine never compared are now compared without a pull: identical copies become **Synced** on their own, and a difference says ****Differs**. The web Hub view's **Compare** button does one on demand.
 - The web UI says which machine this is at the top of the sidebar.

@@ -51,6 +51,8 @@ Once this machine has joined a hub, the sidebar gains a **Hub** entry (with a co
 - **Details** on each row (the arrow at its start): the full explanation of the state, the full session id, the project path and branch, the hub's revision, its size, who pushed it and when, the agent version, and the terminal command that does the same, with a copy button.
 - **Filters** by state (the chips), a text filter over title, id, project, machine and branch, and *Only what needs doing*.
 
+![The Hub view: connection, daemon and machines, then every session with its state and details](../../../assets/shots/hub-view.png)
+
 ## Security
 
 :::caution

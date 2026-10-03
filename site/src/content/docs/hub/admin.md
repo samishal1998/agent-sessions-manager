@@ -21,6 +21,8 @@ Admin token (shown once; running this again replaces it):
 
 The hub keeps only a hash of it, so this is the one time it is shown; running the command again replaces it. Until one has been minted, `/admin` and `/hub/v1/admin/*` answer `401` exactly like every other path a stranger might try. Then open `http://<hub>/admin`, paste the token, and sign in. `asm hub serve` prints the admin line in its banner (`admin off` or the URL).
 
+![The hub admin page: stats, the join command, and machines](../../../assets/shots/hub-admin.png)
+
 ## What it shows and does
 
 - **Overview** — machines, sessions, revisions, stored files and their size, and the per-file upload cap.

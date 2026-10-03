@@ -1643,8 +1643,12 @@ button:hover,
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.side-machine-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
 .side-machine-tag {
-  margin-inline-start: auto;
   font-size: var(--text-xs);
   color: var(--fg-muted);
   white-space: nowrap;

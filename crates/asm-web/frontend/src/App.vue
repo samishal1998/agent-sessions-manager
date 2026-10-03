@@ -821,9 +821,11 @@ function pickProject(root) {
       </div>
 
       <div v-if="machineName" class="side-machine" title="The machine this asm is running on">
-        <Monitor :size="15" />
-        <span class="side-machine-name">{{ machineName }}</span>
-        <span class="side-machine-tag">this machine</span>
+        <Monitor :size="16" />
+        <span class="side-machine-text">
+          <span class="side-machine-name">{{ machineName }}</span>
+          <span class="side-machine-tag">this machine</span>
+        </span>
       </div>
 
       <nav v-if="hubJoined" class="side-views" aria-label="Views">
