@@ -5,6 +5,10 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
+## Unreleased
+
+- **Light and dark modes.** A colour-mode switcher (Light, Dark, System) sits at the bottom of the sidebar (in the page header on phones, and on the hub admin page) and is remembered per browser. The purple-and-rose palette now comes in both modes, each checked for contrast.
+
 ## 0.8.0 — 2026-10-04
 
 - **The web UI is rebuilt on Hearth UI's structure**, not just recoloured: the app frame is a Hearth dashboard shell with a mobile navigation drawer, filters are Hearth inputs, chips and a project combobox, the Hub screen and the hub admin page use Hearth stat cards, data tables, details sheets and tabs, and confirmations are dialogs instead of browser prompts. The Sessions screen starts higher (about seven rows above the fold at 1440×900), row actions line up and collapse into a menu on narrow screens, and the active screen is in the URL.

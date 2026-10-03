@@ -69,7 +69,7 @@
   --bg: var(--h-bg);
   --bg-alt: var(--h-surface);
   --bg-raised: var(--h-raised);
-  --bg-hover: color-mix(in srgb, var(--h-raised), white 9%);
+  --bg-hover: color-mix(in srgb, var(--h-raised), var(--h-text) 9%);
   --fg: var(--h-text);
   --fg-muted: var(--h-muted);
   --fg-faint: var(--h-faint);
@@ -94,19 +94,33 @@
   --border: var(--h-border);
   --border-strong: color-mix(in srgb, var(--h-border-strong) 55%, transparent);
   --field-border: var(--h-border-strong);
-  --shadow: 0 6px 24px rgba(8, 3, 16, 0.55);
+  --shadow: var(--h-shadow);
   --font: var(--h-font);
   color: var(--fg);
   min-height: 100vh;
 }
 
+/* The page behind the app, per colour mode (set by useTheme on <html>). */
 html,
 body {
   background:
-    radial-gradient(1100px 560px at 8% -8%, rgba(199, 146, 234, 0.2), transparent 60%),
-    radial-gradient(900px 520px at 100% 0%, rgba(244, 114, 182, 0.14), transparent 55%),
-    #130b1f;
+    radial-gradient(1100px 560px at 8% -8%, rgba(166, 137, 245, 0.2), transparent 60%),
+    radial-gradient(900px 520px at 100% 0%, rgba(255, 130, 144, 0.1), transparent 55%),
+    #1c1726;
   background-attachment: fixed;
+}
+html[data-asm-mode='light'],
+html[data-asm-mode='light'] body {
+  background:
+    radial-gradient(1100px 560px at 8% -8%, rgba(109, 63, 200, 0.1), transparent 60%),
+    radial-gradient(900px 520px at 100% 0%, rgba(179, 40, 63, 0.06), transparent 55%),
+    #f6f3fb;
+  background-attachment: fixed;
+}
+/* Agent colours that are tints of a light colour need a darker text colour on
+   a light page. */
+.asm-root[data-asm-mode='light'] {
+  --claude: #a8480f;
 }
 
 *,
@@ -303,7 +317,7 @@ button:hover,
 .row:hover {
   background: var(--bg-raised);
   border-color: var(--border-strong);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--h-shadow-soft);
 }
 .row.selected {
   border-color: var(--accent-border-strong);
@@ -403,7 +417,7 @@ button:hover,
 }
 .agent-mark.codex {
   color: var(--fg);
-  background: rgba(221, 227, 238, 0.1);
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
 }
 .agent-mark.antigravity {
   color: var(--violet);
@@ -534,7 +548,7 @@ button:hover,
    never clip it. */
 .tt {
   position: fixed;
-  background: #05070b;
+  background: color-mix(in srgb, var(--bg) 70%, black);
   color: var(--fg);
   border: 1px solid var(--border-strong);
   padding: 4px var(--space-2);
@@ -869,7 +883,7 @@ button:hover,
 
 /* Where you are, and the brand, in the rose-to-purple accent. */
 .brand span {
-  background: linear-gradient(135deg, #c792ea, #f472b6);
+  background: linear-gradient(135deg, var(--h-accent-text), var(--h-danger));
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;

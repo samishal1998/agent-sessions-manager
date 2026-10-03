@@ -1,27 +1,92 @@
-// The app's palette, as Hearth tokens: a deep night-sky purple with a rose
-// accent (a Night Owl feel, tuned for contrast — every text pair here is at
-// least 4.5:1 on every surface). `HTheme` applies these on the app's root;
-// style.css reads them through its own short names.
-export const NIGHT_OWL = {
-  '--h-bg': '#130b1f',
-  '--h-surface': '#1b1230',
-  '--h-raised': '#241a3b',
-  '--h-panel': 'rgba(27, 18, 48, 0.88)',
-  '--h-border': 'rgba(214, 180, 255, 0.14)',
-  '--h-border-strong': '#7a6a99',
-  '--h-text': '#f3eefc',
-  '--h-muted': '#c0b4d9',
-  '--h-faint': '#a398bf',
-  '--h-accent': '#d58ae8',
-  '--h-accent-hover': '#e8a8f2',
-  '--h-accent-text': '#eab4f5',
-  '--h-on-accent': '#2a0f33',
-  '--h-success': '#6ee7a8',
-  '--h-warning': '#f2c96b',
-  '--h-danger': '#ff8aa1',
-  '--h-info': '#8fb4ff',
+// The app's theme: a purple-and-rose palette in two modes. The dark set is the
+// one designed in the Hearth theme studio; the light set is its counterpart,
+// written by hand because the studio's export is a single unscoped block of
+// dark colours (see hearth-ui issue #2). Every text pair in both sets is at
+// least 4.5:1 on every surface, and the field border is at least 3:1.
+
+// Not colours: shared by both modes.
+const SHARED = {
+  '--h-motion': '.15s',
+  '--h-control-height': '44px',
+  '--h-control-padding': '16px',
+  '--h-focus-width': '2px',
+  '--h-page-padding': 'clamp(20px, 3vw, 40px)',
+  '--h-separator-space': '20px',
+  '--h-radius-card': '21px',
+  '--h-radius-panel': '25px',
+  '--h-radius-pill': '999px',
+  '--h-radius-control': '15px',
+  '--h-sidebar-width': '232px',
+  '--h-space': '4px',
+  '--h-content-max': '1440px',
+  '--h-progress-height': '8px',
+  '--h-sidebar-height': '420px',
+  '--h-card-padding': '24px',
+  '--h-font-size': '14px',
+  '--h-font-mono': 'ui-monospace, SFMono-Regular, Consolas, monospace',
+  '--h-font': 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
 }
 
-// The rose-to-purple wash behind the whole app, and the accent gradient for
-// the few places that mark "you are here".
-export const ACCENT_GRADIENT = 'linear-gradient(135deg, #c792ea, #f472b6)'
+const DARK = {
+  ...SHARED,
+  '--h-bg': '#1c1726',
+  '--h-surface': '#342659',
+  '--h-raised': '#29223b',
+  '--h-panel': '#201a30e0',
+  '--h-border': '#ffffff17',
+  '--h-border-strong': '#536177',
+  '--h-text': '#f7f8fb',
+  '--h-muted': '#aeb8ca',
+  '--h-faint': '#91a0b6',
+  '--h-accent': '#a689f5',
+  '--h-accent-hover': '#d7c9fa',
+  '--h-accent-text': '#cebcf8',
+  '--h-on-accent': '#211735',
+  '--h-accent-subtle': 'color-mix(in srgb, #a689f5 10%, transparent)',
+  '--h-success': '#24c978',
+  '--h-warning': '#f4b21a',
+  '--h-danger': '#ff8290',
+  '--h-info': '#86b8f5',
+  '--h-focus': '#cebcf8',
+  '--h-shadow': '0 12px 40px #0000002e',
+  '--h-shadow-soft': '0 4px 14px #0000001a',
+  '--h-scene-text': '#f7f8fb',
+  '--h-scene-muted': '#b5bfd1',
+  '--h-scene-bg': 'linear-gradient(145deg, #302443, #1a1429 65%, #44334f)',
+  '--h-mountain-back': '#61516f',
+  '--h-mountain-mid': '#3e3053',
+  '--h-mountain-front': '#1c152b',
+}
+
+const LIGHT = {
+  ...SHARED,
+  '--h-bg': '#f6f3fb',
+  '--h-surface': '#ffffff',
+  '--h-raised': '#fbf9fe',
+  '--h-panel': '#ffffffe6',
+  '--h-border': '#2a1f4a24',
+  '--h-border-strong': '#7b6f96',
+  '--h-text': '#1d1630',
+  '--h-muted': '#52476b',
+  '--h-faint': '#645a7f',
+  '--h-accent': '#6d3fc8',
+  '--h-accent-hover': '#5b2fb0',
+  '--h-accent-text': '#5b2fb0',
+  '--h-on-accent': '#ffffff',
+  '--h-accent-subtle': 'color-mix(in srgb, #6d3fc8 9%, transparent)',
+  '--h-success': '#0b6a3e',
+  '--h-warning': '#734d00',
+  '--h-danger': '#a11d36',
+  '--h-info': '#1d5189',
+  '--h-focus': '#5b2fb0',
+  '--h-shadow': '0 12px 40px #2a1f4a1f',
+  '--h-shadow-soft': '0 4px 14px #2a1f4a14',
+  '--h-scene-text': '#1d1630',
+  '--h-scene-muted': '#52476b',
+  '--h-scene-bg': 'linear-gradient(145deg, #ece4fa, #f6f3fb 65%, #f8e6ee)',
+  '--h-mountain-back': '#cbbfe6',
+  '--h-mountain-mid': '#b4a4da',
+  '--h-mountain-front': '#9b88c9',
+}
+
+export const TOKENS = { dark: DARK, light: LIGHT }

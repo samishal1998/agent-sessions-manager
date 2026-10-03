@@ -28,6 +28,10 @@ On a phone the sidebar becomes an overlay and the transcript takes the full scre
 
 ![The web UI at phone width](../../../assets/shots/mobile.png)
 
+## Light and dark
+
+The **Color mode** switcher at the bottom of the sidebar picks Light, Dark or System (follow the operating system). On phones it is at the top of the Sessions screen, and the hub admin page has its own. The choice is remembered in the browser.
+
 ## The hub summary
 
 When the machine has joined a hub, one line above the list says how it stands (the screenshot at the top of this page shows it):

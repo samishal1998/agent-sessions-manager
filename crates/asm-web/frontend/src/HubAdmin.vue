@@ -1,14 +1,14 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import {
-  HAlert, HBadge, HButton, HCard, HCopyField, HDataTable, HEmptyState, HInput, HPageHeader, HStatCard, HTabs, HTheme, HTimeline,
+  HAlert, HBadge, HButton, HCard, HCopyField, HDataTable, HEmptyState, HInput, HPageHeader, HStatCard, HTabs, HTheme, HThemeSwitcher, HTimeline,
   HToaster, tableCellSlot,
 } from '@hearth-ui/vue'
 import AgentMark from './components/AgentMark.vue'
 import DialogHost from './components/DialogHost.vue'
 import { confirmDialog } from './dialogs.js'
 import { dismiss, notify, toasts } from './toasts.js'
-import { NIGHT_OWL } from './theme.js'
+import { useTheme } from './useTheme.js'
 import { AdminError, admin, saveToken, savedToken } from './admin-api.js'
 import { ago, bytes } from './format.js'
 import { shortId } from './ids.js'
@@ -17,6 +17,7 @@ import './styles/admin.css'
 
 // The hub's own page: who has joined, what is stored, and the few actions an
 // owner needs. It controls the hub, never a machine's agents.
+const { preference, resolved, tokens, setPreference } = useTheme()
 const token = ref(savedToken())
 const input = ref('')
 const signedIn = ref(false)
@@ -152,9 +153,10 @@ onMounted(() => token.value && load())
 </script>
 
 <template>
-  <HTheme class="asm-root" theme="dusk" mode="dark" :tokens="NIGHT_OWL">
+  <HTheme class="asm-root" theme="dusk" :mode="resolved" :data-asm-mode="resolved" :tokens="tokens">
     <main class="admin">
       <HPageHeader title="asm hub administration" :description="`Machines, the join token and stored sessions on ${host}.`">
+        <HThemeSwitcher :model-value="preference" label="Color mode" @update:model-value="setPreference" />
         <template v-if="signedIn">
           <HButton size="compact" :loading="busy" label="Refresh" @click="load" />
           <HButton size="compact" variant="ghost" label="Sign out" @click="signOut" />

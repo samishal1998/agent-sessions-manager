@@ -13,6 +13,7 @@ import {
   HListItem,
   HSkeleton,
   HTheme,
+  HThemeSwitcher,
   HToaster,
 } from '@hearth-ui/vue'
 import api from './api.js'
@@ -20,7 +21,7 @@ import { agentOptions, resumeCommand } from './agents.js'
 import { confirmDialog, promptDialog } from './dialogs.js'
 import { shortId, shortProject } from './ids.js'
 import { uniqueTails } from './paths.js'
-import { NIGHT_OWL } from './theme.js'
+import { useTheme } from './useTheme.js'
 import { dismiss, notify, toasts } from './toasts.js'
 import TranscriptView from './TranscriptView.vue'
 import AgentMark from './components/AgentMark.vue'
@@ -31,6 +32,7 @@ import SessionRow from './components/SessionRow.vue'
 import SessionToolbar from './components/SessionToolbar.vue'
 import './styles/shell.css'
 
+const { preference, resolved, tokens, setPreference } = useTheme()
 const sessions = ref([])
 const doctor = ref(null)
 const filter = ref('')
@@ -698,7 +700,7 @@ function openHit(hit) {
 </script>
 
 <template>
-  <HTheme class="asm-root" theme="dusk" mode="dark" :tokens="NIGHT_OWL">
+  <HTheme class="asm-root" theme="dusk" :mode="resolved" :data-asm-mode="resolved" :tokens="tokens">
     <HDashboardShell
       class="asm-shell"
       brand="asm"
@@ -711,6 +713,7 @@ function openHit(hit) {
       @navigate="go"
     >
       <template #sidebar-footer>
+        <HThemeSwitcher class="s-theme" :model-value="preference" label="Color mode" @update:model-value="setPreference" />
         <p class="s-side-note">{{ sessions.length }} session{{ sessions.length === 1 ? '' : 's' }} on this machine</p>
       </template>
 
