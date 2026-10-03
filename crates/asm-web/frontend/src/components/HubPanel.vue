@@ -111,6 +111,7 @@ function toggle(state) {
 
 <template>
   <section v-if="hub?.joined" class="hubpanel" aria-label="Hub">
+    <h2 class="sr-only">Hub</h2>
     <div class="hub-line">
       <!-- Icon and words, never colour alone; announced when it changes. -->
       <span
@@ -184,6 +185,7 @@ function toggle(state) {
         class="chip"
         :class="{ on: modelValue.includes(c.state) }"
         :aria-pressed="modelValue.includes(c.state)"
+        :data-state="c.state"
         :title="c.hint"
         @click="toggle(c.state)"
       >

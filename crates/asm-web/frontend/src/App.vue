@@ -760,6 +760,7 @@ function pickProject(root) {
 
 <template>
   <div class="layout">
+    <a class="skip" href="#main">Skip to sessions</a>
     <div v-if="sidebarOpen" class="scrim" @click="sidebarOpen = false" />
 
     <aside
@@ -773,7 +774,7 @@ function pickProject(root) {
       </div>
 
       <div>
-        <div class="side-heading">Projects</div>
+        <h2 class="side-heading">Projects</h2>
         <label v-if="projectSearchShown" class="side-search">
           <Search :size="13" />
           <input v-model="projectSearch" placeholder="Find a project…" aria-label="Find a project" />
@@ -815,7 +816,7 @@ function pickProject(root) {
 
       <!-- A project spans checkouts; show them when there is more than one. -->
       <div v-if="selectedProject && selectedProject.worktrees.length > 1">
-        <div class="side-heading">Worktrees</div>
+        <h2 class="side-heading">Worktrees</h2>
         <div class="side-list">
           <div
             v-for="w in selectedProject.worktrees"
@@ -858,7 +859,8 @@ function pickProject(root) {
       @keydown="onResizeKey"
     />
 
-    <main class="main">
+    <main id="main" class="main" tabindex="-1">
+      <h1 class="sr-only">Sessions</h1>
       <div class="toolbar">
         <button class="icon-btn mobile-only" aria-label="Show projects" @click="sidebarOpen = true">
           <Menu :size="18" />
@@ -866,7 +868,7 @@ function pickProject(root) {
 
         <label class="field">
           <Search :size="15" />
-          <input v-model="filter" placeholder="Filter by title, ID, or project…" />
+          <input v-model="filter" placeholder="Filter by title, ID, or project…" aria-label="Filter sessions" />
         </label>
 
         <label class="field">
@@ -874,6 +876,7 @@ function pickProject(root) {
           <input
             v-model="fullText"
             placeholder="Search inside transcripts…"
+            aria-label="Search inside transcripts"
             @keyup.enter="runSearch"
             @keyup.esc="clearSearch"
           />
