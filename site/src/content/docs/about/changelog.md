@@ -5,7 +5,7 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
-## Unreleased
+## 0.8.1 — 2026-10-04
 
 - **Light and dark modes.** A colour-mode switcher (Light, Dark, System) sits at the bottom of the sidebar (in the page header on phones, and on the hub admin page) and is remembered per browser. The purple-and-rose palette now comes in both modes, each checked for contrast.
 
