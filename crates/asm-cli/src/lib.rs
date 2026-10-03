@@ -216,6 +216,12 @@ enum Command {
         /// quiet pass.
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..))]
         interval: u64,
+        /// Push only sessions that are live or changed in the last N minutes
+        /// while the daemon runs: the ones being worked in, not every older
+        /// session that differs from the hub. Default: everything that
+        /// differs.
+        #[arg(long, value_name = "MINUTES", value_parser = clap::value_parser!(u64).range(1..))]
+        active_within: Option<u64>,
     },
     /// Bring a session from the hub onto this machine.
     Pull {
@@ -348,13 +354,15 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
             push(&refs, all, force, move_away, &filter, cli.json)
         }
         Command::Daemon { action: Some(DaemonCommand::Status), .. } => daemon_status(cli.json),
-        Command::Daemon { action: None, interval } => {
+        Command::Daemon { action: None, interval, active_within } => {
             let remote = asm_core::hub::client::load()?;
             eprintln!(
-                "Pushing to {} as {} every {interval}s (ctrl-c to stop).",
-                remote.url, remote.machine.name
+                "Pushing to {} as {} every {interval}s{} (ctrl-c to stop).",
+                remote.url,
+                remote.machine.name,
+                active_within.map_or(String::new(), |m| format!(", only sessions active in the last {m}m"))
             );
-            Ok(asm_core::hub::daemon::run(&remote, &filter, std::time::Duration::from_secs(interval), |line| {
+            Ok(asm_core::hub::daemon::run(&remote, &filter, std::time::Duration::from_secs(interval), active_within.map(|m| std::time::Duration::from_secs(m * 60)), |line| {
                 eprintln!("{line}")
             })?)
         }
@@ -832,7 +840,17 @@ fn daemon_status(json: bool) -> anyhow::Result<()> {
     println!("interval    {}s", f.interval);
     println!("last pass   {}", f.last_pass.map_or("none yet".into(), since));
     println!("last push   {}", f.last_push.map_or("none yet".into(), since));
+    println!(
+        "pushes      {}",
+        f.active_window.map_or("everything that differs from the hub".to_string(), |w| format!(
+            "sessions live or changed in the last {}",
+            ago(w)
+        ))
+    );
     println!("waiting     {} session{}", f.pending, if f.pending == 1 { "" } else { "s" });
+    if f.idle > 0 {
+        println!("idle        {} not pushed: out of step but not being worked in", f.idle);
+    }
     println!("totals      {} synced over {} passes", f.synced, f.passes);
     if let Some(e) = &f.last_error {
         println!("problem     {e}");

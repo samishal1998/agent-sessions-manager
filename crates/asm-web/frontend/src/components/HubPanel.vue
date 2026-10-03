@@ -65,6 +65,7 @@ const daemonLine = computed(() => {
   if (d.state === 'running') {
     const bits = [`Daemon running · last push ${since(f?.last_push)}`]
     if (f?.pending) bits.push(`${f.pending} waiting`)
+    if (f?.idle) bits.push(`${f.idle} idle`)
     return bits.join(' · ')
   }
   if (d.state === 'hung') return `Daemon not responding — no pass finished for ${since(f?.last_pass || f?.started).replace(' ago', '')}`

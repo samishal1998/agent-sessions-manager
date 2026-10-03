@@ -25,33 +25,57 @@ use crate::{CoreError, fsutil, ops, paths};
 /// Passes a changed session may keep changing before it is pushed anyway.
 const MAX_WAIT: u32 = 10;
 
-/// One pass. `seen` carries each session's fingerprint from the previous
-/// pass and how many passes it has been waiting; a session is pushed when
-/// it differs from what was last synced and has not moved since, or has
-/// waited `MAX_WAIT` passes.
+/// What a pass remembers about one session.
+#[derive(Default, Clone)]
+pub struct Seen {
+    fingerprint: String,
+    /// Passes it has been changing without a pause.
+    waited: u32,
+    /// When this daemon last saw it change (unix seconds). A session that
+    /// has not changed since the daemon started has none.
+    changed: Option<u64>,
+}
+
+/// One pass. A session is pushed when it differs from what was last synced
+/// and has not moved since the previous pass, or has waited `MAX_WAIT`
+/// passes. With `window` set, only a session that is live, or that changed
+/// within the last `window` seconds, is considered at all: the ones being
+/// worked in, not everything that happens to differ from the hub.
 // ponytail: a session the hub refuses (diverged) is re-read and re-refused
 // every pass until someone resolves it; remember the refused fingerprint if
 // that cost ever shows.
 pub fn cycle(
     remote: &Remote,
     filter: &SessionFilter,
-    seen: &mut HashMap<String, (String, u32)>,
+    window: Option<u64>,
+    now_at: u64,
+    seen: &mut HashMap<String, Seen>,
 ) -> Result<Pass, CoreError> {
     let state = SyncState::load(remote)?;
     let mut ready = Vec::new();
     let mut now = HashMap::new();
-    let mut unsynced = 0;
+    let (mut unsynced, mut idle) = (0, 0);
     for session in ops::list_sessions(filter)? {
         let k = key(session.handle.agent, &session.handle.native_id);
         let fingerprint = bundle::fingerprint(&session);
         let synced = state.get(&k).is_some_and(|t| t.fingerprint == fingerprint);
-        let (before, waited) = seen.get(&k).cloned().unwrap_or_default();
+        let before = seen.get(&k).cloned();
+        let moved = before.as_ref().is_some_and(|b| b.fingerprint != fingerprint);
+        let changed = if moved { Some(now_at) } else { before.as_ref().and_then(|b| b.changed) };
+        let live = matches!(session.status, crate::model::SessionStatus::Live { .. });
+        let active = is_active(window, live, changed, now_at);
+        if !synced && !active {
+            idle += 1;
+            now.insert(k, Seen { fingerprint, waited: 0, changed });
+            continue;
+        }
         unsynced += usize::from(!synced);
-        let waited = if synced { 0 } else { waited + 1 };
-        if !synced && (before == fingerprint || waited >= MAX_WAIT) {
+        let waited = if synced { 0 } else { before.as_ref().map_or(0, |b| b.waited) + 1 };
+        let still = before.as_ref().is_some_and(|b| b.fingerprint == fingerprint);
+        if !synced && (still || waited >= MAX_WAIT) {
             ready.push(session);
         }
-        now.insert(k, (fingerprint, waited));
+        now.insert(k, Seen { fingerprint, waited, changed });
     }
     let report = if ready.is_empty() { BulkReport::default() } else { actions::push(remote, &ready, false, false)? };
     // The wait starts over only for what the hub now has; a push that
@@ -60,12 +84,18 @@ pub fn cycle(
         if matches!(item.outcome, ItemOutcome::Ok { .. })
             && let Some(entry) = now.get_mut(&key(item.agent, &item.native_id))
         {
-            entry.1 = 0;
+            entry.waited = 0;
         }
     }
     *seen = now;
     let pending = unsynced.saturating_sub(report.ok());
-    Ok(Pass { report, pending })
+    Ok(Pass { report, pending, idle })
+}
+
+/// Is a session being worked in? Always, with no window; otherwise when a
+/// live process owns it or this daemon saw it change within the window.
+fn is_active(window: Option<u64>, live: bool, changed: Option<u64>, now: u64) -> bool {
+    window.is_none_or(|w| live || changed.is_some_and(|c| now.saturating_sub(c) <= w))
 }
 
 /// What one pass did, and how many sessions are still out of step with the
@@ -73,6 +103,8 @@ pub fn cycle(
 pub struct Pass {
     pub report: BulkReport,
     pub pending: usize,
+    /// Out of step with the hub but not being worked in, so left alone.
+    pub idle: usize,
 }
 
 /// Events kept in the status file, newest last.
@@ -108,6 +140,13 @@ pub struct DaemonFile {
     pub last_push: Option<u64>,
     /// Sessions not yet in step with the hub after the last pass.
     pub pending: usize,
+    /// Out of step but outside the active window, so not pushed.
+    #[serde(default)]
+    pub idle: usize,
+    /// Only sessions live or changed within this many seconds are pushed;
+    /// `None` pushes everything that differs from the hub.
+    #[serde(default)]
+    pub active_window: Option<u64>,
     pub hub_reachable: bool,
     pub last_error: Option<String>,
     /// Sessions brought into step with the hub, over this run.
@@ -154,7 +193,8 @@ impl DaemonStatus {
         match (&self.state, &self.file) {
             (DaemonState::Running, Some(f)) => {
                 let wait = if f.pending > 0 { format!(" · {} waiting", f.pending) } else { String::new() };
-                format!("daemon running · last push {}{wait}", since(f.last_push))
+                let idle = if f.idle > 0 { format!(" · {} idle", f.idle) } else { String::new() };
+                format!("daemon running · last push {}{wait}{idle}", since(f.last_push))
             }
             (DaemonState::Running, None) => "daemon running".into(),
             (DaemonState::Hung, _) => format!("daemon not responding for {}", ago(self.quiet_for.unwrap_or(0))),
@@ -203,6 +243,7 @@ pub fn run(
     remote: &Remote,
     filter: &SessionFilter,
     interval: Duration,
+    window: Option<Duration>,
     mut say: impl FnMut(&str),
 ) -> Result<(), CoreError> {
     let dir = dir()?;
@@ -221,6 +262,8 @@ pub fn run(
         last_pass: None,
         last_push: None,
         pending: 0,
+        idle: 0,
+        active_window: window.map(|d| d.as_secs()),
         hub_reachable: true,
         last_error: None,
         synced: 0,
@@ -243,9 +286,10 @@ pub fn run(
         }
     };
     loop {
-        match cycle(remote, filter, &mut seen) {
-            Ok(Pass { report, pending }) => {
+        match cycle(remote, filter, window.map(|w| w.as_secs()), now_secs(), &mut seen) {
+            Ok(Pass { report, pending, idle }) => {
                 info.pending = pending;
+                info.idle = idle;
                 // A pass with nothing to push never talks to the hub, so
                 // ask it, or "reachable" would just mean "not asked".
                 let ping = if report.items.is_empty() { remote.ping() } else { Ok(()) };
@@ -330,6 +374,8 @@ mod tests {
             last_pass,
             last_push: None,
             pending: 0,
+            idle: 0,
+            active_window: None,
             hub_reachable: true,
             last_error: None,
             synced: 0,
@@ -355,6 +401,16 @@ mod tests {
         // Hung only past max(5 intervals, 300s) without a finished pass.
         assert_eq!(st(2000 + 299).state, DaemonState::Running);
         assert_eq!(st(2000 + 301).state, DaemonState::Hung);
+    }
+
+    #[test]
+    fn only_what_is_live_or_recently_changed_counts_as_active() {
+        assert!(is_active(None, false, None, 1000), "no window: everything");
+        assert!(!is_active(Some(60), false, None, 1000), "never seen to change");
+        assert!(is_active(Some(60), true, None, 1000), "live");
+        assert!(is_active(Some(60), false, Some(950), 1000));
+        assert!(is_active(Some(60), false, Some(940), 1000), "edge of the window");
+        assert!(!is_active(Some(60), false, Some(939), 1000));
     }
 
     #[test]
