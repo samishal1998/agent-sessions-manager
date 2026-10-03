@@ -5,7 +5,7 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
-## Unreleased
+## 0.6.0 — 2026-10-03
 
 - **Hub status in both UIs.** The TUI and web UI say whether the hub answered, mark every session with what it needs (Synced / Needs push / Not on hub / Needs pull / New on hub / Check sync / Diverged), list what is new on the hub, and push or pull from the list. A hub that is down is a status with a reason, not an error.
 - **Daemon visibility.** `asm daemon status` (and the web hub panel and TUI) show whether a daemon is running, when it last pushed, what is waiting and what failed. One daemon per machine, enforced by a lock.
