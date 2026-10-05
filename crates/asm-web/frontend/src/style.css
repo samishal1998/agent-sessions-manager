@@ -133,6 +133,15 @@ html[data-asm-mode='light'] body {
   margin: 0;
 }
 
+/* The reset above would pin every modal dialog to the top-left corner of the
+   screen: the browser centres them with `margin: auto`. (On phones Hearth
+   docks them to the bottom itself.) */
+@media (min-width: 641px) {
+  .asm-root dialog.h-dialog {
+    margin: auto;
+  }
+}
+
 body {
   color: var(--fg);
   -webkit-font-smoothing: antialiased;

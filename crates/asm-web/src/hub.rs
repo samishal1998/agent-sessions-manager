@@ -26,6 +26,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio_stream::StreamExt;
 
+use asm_core::hub::commands::{Caps, NewCommand, Report};
 use asm_core::hub::store::{Hub, HubError, Machine};
 
 pub struct HubState {
@@ -36,6 +37,10 @@ pub struct HubState {
 
 type Shared = Arc<HubState>;
 
+/// Which token opened a commands route, for the record.
+#[derive(Clone, Copy)]
+struct Actor(&'static str);
+
 fn error(status: StatusCode, message: impl ToString) -> Response {
     (status, Json(json!({ "error": message.to_string() }))).into_response()
 }
@@ -45,6 +50,7 @@ fn hub_error(e: HubError) -> Response {
         HubError::Unauthorized => error(StatusCode::UNAUTHORIZED, e),
         HubError::BadRequest(_) | HubError::ShaMismatch => error(StatusCode::BAD_REQUEST, e),
         HubError::NotFound => error(StatusCode::NOT_FOUND, e),
+        HubError::Busy(_) => error(StatusCode::CONFLICT, e),
         HubError::TooLarge { .. } => error(StatusCode::PAYLOAD_TOO_LARGE, e),
         HubError::Conflict { ref head } => (
             StatusCode::CONFLICT,
@@ -106,6 +112,24 @@ async fn authenticate(State(state): State<Shared>, mut request: Request, next: N
             Err(e) => hub_error(e),
         };
     }
+    // Remote control's administrator side: its own token (or the admin one).
+    if request.uri().path().starts_with("/hub/v1/commands") {
+        let Some(token) = bearer(request.headers()) else {
+            return error(StatusCode::UNAUTHORIZED, "the commands token is required");
+        };
+        let st = state.clone();
+        return match blocking(move || st.hub.check_commands(&token)).await {
+            Ok(actor) => {
+                request.extensions_mut().insert(Actor(actor));
+                let mut response = next.run(request).await;
+                response
+                    .headers_mut()
+                    .insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
+                response
+            }
+            Err(e) => hub_error(e),
+        };
+    }
     if is_admin_page(&request) && state.hub.admin_enabled() {
         return next.run(request).await;
     }
@@ -134,6 +158,13 @@ pub fn router(state: Shared) -> axum::Router {
         .route("/hub/v1/sessions/{agent}/{id}/revisions/{rev}", get(revision))
         .route("/hub/v1/missing", post(missing))
         .route("/hub/v1/blobs/{sha}", get(get_blob).put(put_blob))
+        .route("/hub/v1/inbox", get(inbox))
+        .route("/hub/v1/inbox/{id}/claim", post(inbox_claim))
+        .route("/hub/v1/inbox/{id}/result", post(inbox_result).layer(DefaultBodyLimit::max(8192)))
+        .route("/hub/v1/commands", get(commands_list).post(commands_create).layer(DefaultBodyLimit::max(4096)))
+        .route("/hub/v1/commands/{id}", get(command_get))
+        .route("/hub/v1/commands/{id}/cancel", post(command_cancel))
+        .route("/hub/v1/commands/{id}/retry", post(command_retry))
         .route("/hub/v1/admin/overview", get(admin_overview))
         .route("/hub/v1/admin/machines", get(admin_machines))
         .route("/hub/v1/admin/machines/{id}/revoke", post(admin_revoke))
@@ -244,6 +275,94 @@ async fn admin_log(State(state): State<Shared>) -> Response {
 struct JoinBody {
     token: String,
     name: String,
+}
+
+#[derive(Deserialize)]
+struct InboxQuery {
+    v: Option<u32>,
+    ops: Option<String>,
+    enabled: Option<u8>,
+}
+
+/// A machine asks for its commands and says what it can do. Only the
+/// operations this hub knows are kept.
+async fn inbox(
+    State(state): State<Shared>,
+    Extension(machine): Extension<Machine>,
+    axum::extract::Query(q): axum::extract::Query<InboxQuery>,
+) -> Response {
+    let ops: Vec<String> = q
+        .ops
+        .unwrap_or_default()
+        .split(',')
+        .filter(|o| asm_core::hub::commands::OPS.iter().any(|k| k.as_str() == *o))
+        .map(String::from)
+        .collect();
+    let caps = Caps { v: q.v.unwrap_or(1), ops, enabled: q.enabled == Some(1) };
+    match blocking(move || state.hub.inbox(&machine, caps)).await {
+        Ok(work) => Json(work).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn inbox_claim(State(state): State<Shared>, Extension(machine): Extension<Machine>, Path(id): Path<String>) -> Response {
+    match blocking(move || state.hub.claim(&machine, &id)).await {
+        Ok(work) => Json(work).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn inbox_result(
+    State(state): State<Shared>,
+    Extension(machine): Extension<Machine>,
+    Path(id): Path<String>,
+    Json(report): Json<Report>,
+) -> Response {
+    match blocking(move || state.hub.report(&machine, &id, report)).await {
+        Ok(command) => Json(command).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct ListQuery {
+    limit: Option<usize>,
+}
+
+async fn commands_list(State(state): State<Shared>, axum::extract::Query(q): axum::extract::Query<ListQuery>) -> Response {
+    let limit = q.limit.unwrap_or(100).clamp(1, 500);
+    match blocking(move || Ok(state.hub.commands(limit)?)).await {
+        Ok(list) => Json(list).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn commands_create(State(state): State<Shared>, Extension(Actor(by)): Extension<Actor>, Json(request): Json<NewCommand>) -> Response {
+    match blocking(move || state.hub.enqueue(request, by)).await {
+        Ok(command) => (StatusCode::CREATED, Json(command)).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn command_get(State(state): State<Shared>, Path(id): Path<String>) -> Response {
+    match blocking(move || state.hub.command(&id)).await {
+        Ok(command) => Json(command).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn command_cancel(State(state): State<Shared>, Path(id): Path<String>) -> Response {
+    match blocking(move || state.hub.cancel_command(&id)).await {
+        Ok(command) => Json(command).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn command_retry(State(state): State<Shared>, Path(id): Path<String>) -> Response {
+    match blocking(move || state.hub.retry_command(&id)).await {
+        Ok(command) => Json(command).into_response(),
+        Err(e) => hub_error(e),
+    }
 }
 
 async fn join(State(state): State<Shared>, Json(body): Json<JoinBody>) -> Response {
@@ -637,6 +756,14 @@ mod tests {
             ("POST", "/hub/v1/missing"),
             ("GET", "/hub/v1/blobs/00"),
             ("PUT", "/hub/v1/blobs/00"),
+            ("GET", "/hub/v1/inbox"),
+            ("POST", "/hub/v1/inbox/x/claim"),
+            ("POST", "/hub/v1/inbox/x/result"),
+            ("GET", "/hub/v1/commands"),
+            ("POST", "/hub/v1/commands"),
+            ("GET", "/hub/v1/commands/x"),
+            ("POST", "/hub/v1/commands/x/cancel"),
+            ("POST", "/hub/v1/commands/x/retry"),
             ("GET", "/no/such/route"),
             ("GET", "/api/sessions"),
         ] {
@@ -645,6 +772,62 @@ mod tests {
                 assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri} with {cred:?}");
             }
         }
+    }
+
+    /// Remote control through the door that matters: a machine asks and
+    /// answers with its credential, an administrator creates with a token that
+    /// opens nothing else, and neither opens the other's routes.
+    #[tokio::test]
+    async fn remote_control_runs_a_command_from_creation_to_result() {
+        let (_d, state, app) = app();
+        let cred = credential(&app, &state).await;
+        let inbox = "/hub/v1/inbox?v=1&ops=push,pull&enabled=1";
+        let (status, v) = send(&app, "GET", inbox, Some(&cred), Body::empty()).await;
+        assert_eq!((status, v.as_array().map(Vec::len)), (StatusCode::OK, Some(0)));
+
+        let ask = json!({ "op": "push", "machine": "laptop", "agent": "claude-code", "session": "s1" }).to_string();
+        let (status, _) = send(&app, "POST", "/hub/v1/commands", Some(&cred), Body::from(ask.clone())).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "a machine cannot create commands");
+        let (status, _) = send(&app, "POST", "/hub/v1/commands", Some("asmk_none"), Body::from(ask.clone())).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "no commands token exists yet");
+
+        let token = state.hub.rotate_commands_token().unwrap();
+        let admin = state.hub.rotate_admin_token().unwrap();
+        let (status, _) = send(&app, "GET", "/hub/v1/admin/overview", Some(&token), Body::empty()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "the commands token opens no admin route");
+        let (status, _) = send(&app, "GET", inbox, Some(&token), Body::empty()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "nor a machine's");
+        let (status, _) = send(&app, "GET", "/hub/v1/commands", Some(&cred), Body::empty()).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let (status, made) = send(&app, "POST", "/hub/v1/commands", Some(&token), Body::from(ask)).await;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        assert_eq!((made["state"].as_str(), made["created_by"].as_str()), (Some("queued"), Some("commands-token")));
+        let id = made["id"].as_str().unwrap().to_string();
+        let again = json!({ "op": "push", "machine": "laptop", "agent": "claude-code", "session": "s1" }).to_string();
+        let (status, v) = send(&app, "POST", "/hub/v1/commands", Some(&admin), Body::from(again)).await;
+        assert_eq!(status, StatusCode::CONFLICT, "one command per session: {v}");
+
+        let (status, v) = send(&app, "GET", inbox, Some(&cred), Body::empty()).await;
+        assert_eq!((status, v[0]["id"].as_str(), v[0]["op"].as_str()), (StatusCode::OK, Some(id.as_str()), Some("push")));
+        assert!(v[0].get("created_by").is_none(), "the machine sees the work, not the record");
+        let claim = format!("/hub/v1/inbox/{id}/claim");
+        assert_eq!(send(&app, "POST", &claim, Some(&cred), Body::empty()).await.0, StatusCode::OK);
+        assert_eq!(send(&app, "POST", &claim, Some(&cred), Body::empty()).await.0, StatusCode::CONFLICT);
+
+        let result = json!({ "code": "diverged", "detail": "both machines continued it" }).to_string();
+        let (status, v) = send(&app, "POST", &format!("/hub/v1/inbox/{id}/result"), Some(&cred), Body::from(result)).await;
+        assert_eq!((status, v["state"].as_str(), v["code"].as_str()), (StatusCode::OK, Some("blocked"), Some("diverged")));
+
+        let (status, v) = send(&app, "GET", &format!("/hub/v1/commands/{id}"), Some(&token), Body::empty()).await;
+        assert_eq!((status, v["detail"].as_str()), (StatusCode::OK, Some("both machines continued it")));
+        let (status, v) = send(&app, "POST", &format!("/hub/v1/commands/{id}/retry"), Some(&token), Body::empty()).await;
+        assert_eq!((status, v["state"].as_str()), (StatusCode::OK, Some("queued")));
+        let (status, v) = send(&app, "POST", &format!("/hub/v1/commands/{id}/cancel"), Some(&token), Body::empty()).await;
+        assert_eq!((status, v["state"].as_str()), (StatusCode::OK, Some("cancelled")));
+        let (status, v) = send(&app, "GET", "/hub/v1/admin/machines", Some(&admin), Body::empty()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v[0]["remote"]["enabled"].as_bool(), Some(true), "the admin page sees what the machine reported");
     }
 
     #[tokio::test]

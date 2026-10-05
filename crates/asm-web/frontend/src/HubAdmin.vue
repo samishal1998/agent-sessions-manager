@@ -1,17 +1,22 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   HAlert, HBadge, HButton, HCard, HCopyField, HDataTable, HInput, HPageHeader, HSkeleton, HTabs, HTheme, HTimeline,
   HToaster, tableCellSlot,
 } from '@hearth-ui/vue'
+import { Ban, Check, Power, TriangleAlert } from 'lucide-vue-next'
 import ColorModeSwitch from './components/ColorModeSwitch.vue'
 import SessionsPanel from './components/admin/SessionsPanel.vue'
+import CommandsPanel from './components/admin/CommandsPanel.vue'
+import NewCommandDialog from './components/admin/NewCommandDialog.vue'
+import StatusBadge from './components/admin/StatusBadge.vue'
 import TranscriptSheet from './components/admin/TranscriptSheet.vue'
 import DialogHost from './components/DialogHost.vue'
 import { confirmDialog } from './dialogs.js'
 import { dismiss, notify, toasts } from './toasts.js'
 import { useTheme } from './useTheme.js'
 import { AdminError, admin, saveToken, savedToken } from './admin-api.js'
+import { isOpen, remoteStatus } from './commands.js'
 import { ago, bytes } from './format.js'
 import { shortId } from './ids.js'
 const sid = (s) => shortId({ ref: { agent: s.agent, native_id: s.id }, slug: s.slug })
@@ -32,6 +37,9 @@ const overview = ref(null)
 const machines = ref([])
 const sessions = ref([])
 const log = ref([])
+const commands = ref([])
+const commandsError = ref('')
+const newCmd = ref(null) // null closed, { session } open
 const opened = ref(null)
 const refreshed = ref(null)
 const preview = ref(null)
@@ -44,7 +52,7 @@ async function load() {
   try {
     // The token is proven by the first call alone, so a wrong one is one 401.
     const o = await api.value.overview()
-    const [m, s, l] = await Promise.all([api.value.machines(), api.value.sessions(), api.value.log()])
+    const [m, s, l] = await Promise.all([api.value.machines(), api.value.sessions(), api.value.log(), loadCommands()])
     overview.value = o
     machines.value = m
     sessions.value = s
@@ -64,6 +72,36 @@ async function load() {
     busy.value = false
   }
 }
+
+// A hub without remote control answers the commands route with an error; that
+// must not take the rest of the page down, so only a 401 is rethrown.
+async function loadCommands() {
+  try {
+    commands.value = await api.value.commands(100)
+    commandsError.value = ''
+  } catch (e) {
+    if (e instanceof AdminError && e.status === 401) throw e
+    commandsError.value = e instanceof AdminError && e.status === 404 ? 'This hub does not support remote control yet. Update asm on the hub machine.' : e.message
+  }
+}
+async function reloadCommands() {
+  try {
+    await loadCommands()
+  } catch {
+    load()
+  }
+}
+function created(c) {
+  newCmd.value = null
+  notify(`Queued: ${c.op} ${c.title || 'the session'} ${c.op === 'push' ? 'from' : 'to'} ${c.machine.name}.`)
+  tab.value = 'commands'
+  reloadCommands()
+}
+// While commands are in flight the list keeps itself fresh; otherwise it is left alone.
+const poll = setInterval(() => {
+  if (tab.value === 'commands' && signedIn.value && document.visibilityState === 'visible' && commands.value.some(isOpen)) reloadCommands()
+}, 10000)
+onBeforeUnmount(() => clearInterval(poll))
 
 async function signIn() {
   const t = input.value.trim()
@@ -135,16 +173,19 @@ const stats = computed(() => {
 const tabs = computed(() => [
   { value: 'overview', label: 'Overview' },
   { value: 'machines', label: `Machines (${machines.value.length})` },
+  { value: 'commands', label: `Commands (${commands.value.length})` },
   { value: 'sessions', label: `Sessions (${sessions.value.length})` },
   { value: 'storage', label: 'Storage' },
   { value: 'activity', label: 'Activity' },
 ])
 
 const machineCols = [
-  { key: 'name', label: 'Name' }, { key: 'sessions', label: 'Sessions pushed' }, { key: 'joined', label: 'Joined' },
+  { key: 'name', label: 'Name' }, { key: 'remote', label: 'Remote control' }, { key: 'sessions', label: 'Sessions pushed' }, { key: 'joined', label: 'Joined' },
   { key: 'seen', label: 'Last seen' }, { key: 'actions', label: 'Actions' },
 ]
-const machineRows = computed(() => machines.value.map((m) => ({ id: m.id, name: m.name, sessions: m.sessions, joined: ago(m.joined), seen: m.last_seen ? ago(m.last_seen) : 'never', actions: '' })))
+const REMOTE_ICON = { on: Check, stale: TriangleAlert, off: Power, unknown: Ban }
+const remote = (m) => ({ ...remoteStatus(m.remote), ops: m.remote?.enabled && m.remote.ops?.length ? `Allowed: ${m.remote.ops.join(', ')}` : '' })
+const machineRows = computed(() => machines.value.map((m) => ({ id: m.id, name: m.name, sessions: m.sessions, joined: ago(m.joined), seen: m.last_seen ? ago(m.last_seen) : 'never', remote: remote(m).label, actions: '' })))
 const byMachine = computed(() => Object.fromEntries(machines.value.map((m) => [m.id, m])))
 const events = computed(() => log.value.slice(0, 20).map((e, i) => ({ id: String(i), title: e.action, description: e.target, timestamp: ago(e.at) })))
 
@@ -198,20 +239,29 @@ onMounted(() => token.value && load())
           <ul class="admin-cards" aria-label="Machines that have joined this hub">
             <li v-for="m in machines" :key="m.id" class="admin-card">
               <strong class="admin-clip" :title="m.name">{{ m.name }}</strong>
+              <span class="admin-actions"><span class="admin-meta">Remote control</span><StatusBadge :tone="remote(m).tone" :label="remote(m).label" :icon="REMOTE_ICON[remote(m).kind]" /></span>
+              <span v-if="remote(m).ops" class="admin-meta">{{ remote(m).ops }}</span>
               <span class="admin-meta">{{ m.sessions }} sessions pushed · joined {{ ago(m.joined) }} · seen {{ m.last_seen ? ago(m.last_seen) : 'never' }}</span>
               <HButton size="compact" variant="danger" label="Revoke" :aria-label="`Revoke ${m.name}`" @click="revoke(m)" />
             </li>
             <li v-if="!machines.length" class="admin-meta">No machine has joined.</li>
           </ul>
           <HDataTable class="admin-table" label="Machines that have joined this hub" :rows="machineRows" :columns="machineCols" empty-text="No machine has joined.">
+            <template v-for="m in machineRows" :key="m.id + 'r'" #[tableCellSlot(m.id,'remote')]>
+              <span class="cp-status"><StatusBadge :tone="remote(byMachine[m.id]).tone" :label="remote(byMachine[m.id]).label" :icon="REMOTE_ICON[remote(byMachine[m.id]).kind]" /><span v-if="remote(byMachine[m.id]).ops" class="admin-meta">{{ remote(byMachine[m.id]).ops }}</span></span>
+            </template>
             <template v-for="m in machineRows" :key="m.id" #[tableCellSlot(m.id,'actions')]>
               <HButton size="compact" variant="danger" label="Revoke" :aria-label="`Revoke ${m.name}`" @click="revoke(byMachine[m.id])" />
             </template>
           </HDataTable>
         </template>
 
+        <template #commands>
+          <CommandsPanel :commands="commands" :machines="machines" :api="api" :error="commandsError" @new="newCmd = {}" @changed="reloadCommands" @expired="load" />
+        </template>
+
         <template #sessions>
-          <SessionsPanel :sessions="sessions" :sid="sid" @open="opened = $event" @remove="remove" />
+          <SessionsPanel :sessions="sessions" :sid="sid" @open="opened = $event" @remove="remove" @send="newCmd = { session: $event }" />
         </template>
 
         <template #storage>
@@ -230,6 +280,7 @@ onMounted(() => token.value && load())
       </HTabs>
     </main>
     <TranscriptSheet v-if="signedIn" :session="opened" :api="api" :sid="opened ? sid(opened) : ''" @close="opened = null" @remove="remove" @expired="opened = null; load()" />
+    <NewCommandDialog v-if="signedIn && newCmd" :sessions="sessions" :machines="machines" :api="api" :prefill="newCmd.session || null" @close="newCmd = null" @created="created" @expired="newCmd = null; load()" />
     <DialogHost />
     <HToaster :items="toasts" @dismiss="dismiss" />
   </HTheme>

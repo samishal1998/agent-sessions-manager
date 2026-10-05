@@ -3,7 +3,7 @@ title: The daemon
 description: Keep the hub current in the background — status, targeting, and running it as a service.
 ---
 
-`asm daemon` pushes this machine's sessions to the hub as they change, so closing the laptop loses almost nothing. It is **push-only**: it never writes into an agent's store, so it cannot disturb a session in use, and two machines running it do not echo each other's work back. Every install is still an explicit `asm pull`.
+`asm daemon` pushes this machine's sessions to the hub as they change, so closing the laptop loses almost nothing. On its own it is **push-only**: it never writes into an agent's store, so it cannot disturb a session in use, and two machines running it do not echo each other's work back. Every install is an explicit `asm pull` — or, only after you ran `asm control enable` on this machine, a pull the hub asked for through [remote control](/hub/control/), which refuses a running session like any other pull.
 
 ## How a pass works
 

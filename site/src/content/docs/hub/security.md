@@ -12,6 +12,7 @@ The hub speaks HTTP and **you** provide TLS: run it on a tailnet or LAN you trus
 - The **join token** buys a machine its **own** credential. The hub keeps only a hash of each credential; the join token is compared in constant time and a wrong token writes nothing.
 - `asm hub revoke <machine>` shuts one laptop out without touching the rest; `asm hub token --rotate` retires the join token without disconnecting machines that already joined.
 - Every route except the join is behind a bearer check, so an unknown path returns 401, not 404.
+- **Remote control** has its own **commands token** (`asm hub commands-token`): it creates, lists, cancels and retries commands for machines that opted in, and opens neither the admin API nor any machine route. A machine credential cannot create commands. What a stolen commands token can do is bounded to asking opted-in machines to push or pull sessions the hub already holds; see [Remote control](/hub/control/).
 - The hub's admin page and API use a **separate admin token** (`asm hub admin-token`) that no machine credential can stand in for, and that opens none of the machine routes. See [Administering the hub](/hub/admin/).
 
 ## Keeping secrets out of the process list

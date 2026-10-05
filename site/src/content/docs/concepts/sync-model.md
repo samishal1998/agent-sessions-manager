@@ -23,7 +23,7 @@ Divergence is a `409`, not a merge. Two reasons: there is no correct automatic m
 
 ## The daemon only pushes
 
-Writing into an agent's store unattended would break the safety model, so the daemon is read-and-upload. Pulls are explicit.
+Writing into an agent's store unattended would break the safety model, so the daemon is read-and-upload. Pulls are explicit — by you at the keyboard, or, on a machine where you ran `asm control enable`, by a command you sent with the commands token ([Remote control](/hub/control/)).
 
 ## Machine-local state stays machine-local
 

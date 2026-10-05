@@ -21,6 +21,7 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
+use super::commands::{Caps, Command as RemoteCommand, NewCommand, Report, Work};
 use super::manifest::Manifest;
 use super::store::{Head, History, Joined, Machine, random_hex};
 use crate::{CoreError, fsutil, paths};
@@ -145,7 +146,7 @@ fn private_ip(ip: std::net::IpAddr) -> bool {
 /// Plain HTTP carries every transcript and the credential in the clear, so
 /// it is only accepted to an address no one on the internet can sit between:
 /// loopback, a private LAN range, or a VPN's.
-fn plain_http_is_private(url: &str) -> bool {
+pub fn plain_http_is_private(url: &str) -> bool {
     let Some((host, port)) = host_and_port(url) else { return false };
     match (host.as_str(), port).to_socket_addrs() {
         Ok(addrs) => {
@@ -438,6 +439,36 @@ impl Remote {
         result
     }
 
+    /// This machine's waiting commands, telling the hub what it can do.
+    pub fn inbox(&self, caps: &Caps) -> Result<Vec<Work>, CoreError> {
+        let path = format!("/hub/v1/inbox?v={}&ops={}&enabled={}", caps.v, caps.ops.join(","), u8::from(caps.enabled));
+        let profile = if self.quick { Profile::Probe } else { Profile::Control };
+        let r = self.call("GET", &path, Body::None, profile)?;
+        if r.status == 404 || r.status == 405 {
+            // A hub from before remote control: nothing to do, and no
+            // reason to ask again soon (the caller backs off).
+            return Err(invalid("this hub does not offer remote control"));
+        }
+        parse(&expect(r, &[200], "asking the hub for commands")?, "asking the hub for commands")
+    }
+
+    /// Take a command. `None` when it is no longer waiting (another attempt
+    /// of this machine took it, it was cancelled or expired).
+    pub fn claim(&self, id: &str) -> Result<Option<Work>, CoreError> {
+        let r = self.call("POST", &format!("/hub/v1/inbox/{id}/claim"), Body::None, Profile::Once)?;
+        if matches!(r.status, 404 | 409) {
+            return Ok(None);
+        }
+        Ok(Some(parse(&expect(r, &[200], "claiming a command")?, "claiming a command")?))
+    }
+
+    /// Say how a command went. Safe to repeat: the hub keeps the first.
+    pub fn report(&self, id: &str, report: &Report) -> Result<(), CoreError> {
+        let body = serde_json::to_vec(report).unwrap();
+        let r = self.call("POST", &format!("/hub/v1/inbox/{id}/result"), Body::Json(body), Profile::Control)?;
+        expect(r, &[200], "reporting a command's result").map(|_| ())
+    }
+
     pub fn put_revision(&self, manifest: &Manifest) -> Result<PutOutcome, CoreError> {
         let path = format!("/hub/v1/sessions/{}/{}", manifest.agent, manifest.id);
         let body = serde_json::to_vec(manifest).unwrap();
@@ -466,6 +497,62 @@ impl Remote {
             }
             _ => expect(r, &[201], "pushing").map(|_| unreachable!()),
         }
+    }
+}
+
+/// The administrator's side of remote control: create, list, cancel and retry
+/// commands with the commands token (or the admin token). Not a machine, so it
+/// needs no credential of its own — only the hub's address.
+pub struct Control {
+    url: String,
+    token: String,
+}
+
+impl Control {
+    pub fn new(url: &str, token: &str) -> Result<Control, CoreError> {
+        let token = token.trim();
+        if token.is_empty() {
+            return Err(invalid("no commands token: set ASM_HUB_COMMANDS_TOKEN (`asm hub commands-token` on the hub mints one)"));
+        }
+        config_safe(token)?;
+        Ok(Control { url: normalize_url(url)?, token: token.to_string() })
+    }
+
+    fn call(&self, method: &str, path: &str, body: Body) -> Result<Response, CoreError> {
+        let r = run_curl(&format!("{}{path}", self.url), Some(&self.token), method, body, Profile::Control, None)?;
+        match r.status {
+            401 => Err(invalid(
+                "the hub did not accept that token for remote control (or it is a hub from before \
+                 remote control: update it)",
+            )),
+            _ => Ok(r),
+        }
+    }
+
+    pub fn create(&self, request: &NewCommand) -> Result<RemoteCommand, CoreError> {
+        let body = serde_json::to_vec(request).unwrap();
+        let r = self.call("POST", "/hub/v1/commands", Body::Json(body))?;
+        parse(&expect(r, &[201], "creating a command")?, "creating a command")
+    }
+
+    pub fn list(&self, limit: usize) -> Result<Vec<RemoteCommand>, CoreError> {
+        let r = self.call("GET", &format!("/hub/v1/commands?limit={limit}"), Body::None)?;
+        parse(&expect(r, &[200], "listing commands")?, "listing commands")
+    }
+
+    pub fn get(&self, id: &str) -> Result<RemoteCommand, CoreError> {
+        let r = self.call("GET", &format!("/hub/v1/commands/{}", config_safe(id)?), Body::None)?;
+        parse(&expect(r, &[200], "reading a command")?, "reading a command")
+    }
+
+    pub fn cancel(&self, id: &str) -> Result<RemoteCommand, CoreError> {
+        let r = self.call("POST", &format!("/hub/v1/commands/{}/cancel", config_safe(id)?), Body::None)?;
+        parse(&expect(r, &[200], "cancelling a command")?, "cancelling a command")
+    }
+
+    pub fn retry(&self, id: &str) -> Result<RemoteCommand, CoreError> {
+        let r = self.call("POST", &format!("/hub/v1/commands/{}/retry", config_safe(id)?), Body::None)?;
+        parse(&expect(r, &[200], "retrying a command")?, "retrying a command")
     }
 }
 

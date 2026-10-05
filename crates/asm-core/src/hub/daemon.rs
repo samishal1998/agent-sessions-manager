@@ -1,7 +1,9 @@
 //! `asm daemon`: keep the hub up to date with this machine.
 //!
-//! Push-only. It never writes into an agent's store — every install is an
-//! explicit `asm pull` — so it cannot touch a session someone is using. A
+//! Push-only on its own: it never writes into an agent's store unless asked.
+//! Every install is an explicit `asm pull` — or, once `asm control enable`
+//! has been run on this machine, a pull the hub asked for (`control.rs`),
+//! which refuses a running session like any pull. A
 //! session goes up once its fingerprint has held still for a whole
 //! interval, so a streaming turn is pushed when it ends rather than on every
 //! write; one that never holds still (a long agent run) goes up anyway every
@@ -17,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use super::actions::{self, key};
 use super::bundle;
 use super::client::Remote;
+use super::control;
 use super::state::SyncState;
 use crate::adapter::SessionFilter;
 use crate::bulk::{BulkReport, ItemOutcome};
@@ -278,6 +281,7 @@ pub fn run(
     };
     publish(&info);
     let mut seen = HashMap::new();
+    let mut poller = control::Poller::default();
     let mut said: HashMap<String, String> = HashMap::new();
     let note = |info: &mut DaemonFile, ok: bool, line: &str| {
         info.recent.push(Event { at: now_secs(), ok, line: line.into() });
@@ -344,7 +348,25 @@ pub fn run(
         info.passes += 1;
         info.last_pass = Some(now_secs());
         publish(&info);
-        std::thread::sleep(interval);
+        // Between passes, ask the hub for commands every few seconds. A
+        // command may outlast the wait; the next pass then simply starts late.
+        let until = now_secs() + interval.as_secs();
+        loop {
+            let mut lines = Vec::new();
+            poller.step(remote, now_secs(), interval.as_secs(), &mut |l: &str| lines.push(l.to_string()));
+            for l in &lines {
+                say(l);
+                note(&mut info, true, l);
+            }
+            if !lines.is_empty() {
+                publish(&info);
+            }
+            let left = until.saturating_sub(now_secs());
+            if left == 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(left.min(control::TICK_SECS)));
+        }
     }
 }
 

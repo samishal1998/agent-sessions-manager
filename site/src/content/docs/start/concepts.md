@@ -45,4 +45,4 @@ Everywhere a session is compared with the hub, one vocabulary is used — in the
 
 ## Daemon
 
-A background process that pushes sessions to the hub as they change. It only pushes: it never writes into an agent's store. See [The daemon](/hub/daemon/).
+A background process that pushes sessions to the hub as they change. It only pushes: it never writes into an agent's store, unless you turned on [remote control](/hub/control/). See [The daemon](/hub/daemon/).

@@ -40,4 +40,5 @@ Then [keep it current with the daemon](/hub/daemon/), or hand a single session o
 - [How sync decides](/hub/sync/) — states, revisions, divergence.
 - [Restore, per agent](/hub/restore/) — what each agent's pull does.
 - [The daemon](/hub/daemon/) — automatic pushing, status, running as a service.
+- [Remote control](/hub/control/) — ask another machine to push or pull a session, and follow the result.
 - [Security](/hub/security/) — the threat model, plainly.

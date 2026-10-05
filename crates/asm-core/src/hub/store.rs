@@ -39,27 +39,38 @@ pub struct Hub {
     /// content write the same bytes.
     // ponytail: one lock for every session; per-session locks if a hub ever
     // serves enough machines for pushes to queue behind each other.
-    lock: Mutex<()>,
+    pub(super) lock: Mutex<()>,
+    /// When each machine last asked for its commands (by machine id). Kept in
+    /// memory: it changes every few seconds and a restart only costs the
+    /// time until the next poll.
+    pub(super) polled: Mutex<std::collections::HashMap<String, Timestamp>>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct HubFile {
-    join_token: String,
-    created: Timestamp,
+pub(super) struct HubFile {
+    pub(super) join_token: String,
+    pub(super) created: Timestamp,
     /// Hash of the admin token, if one was ever minted. The admin API and
     /// UI exist only once it is: a hub with none answers 401 to both.
     #[serde(default)]
-    admin_token_sha256: Option<String>,
+    pub(super) admin_token_sha256: Option<String>,
+    /// Hash of the commands token, if one was minted: it may create, list,
+    /// cancel and retry remote-control commands and nothing else.
+    #[serde(default)]
+    pub(super) commands_token_sha256: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct MachineRecord {
-    id: String,
-    name: String,
+pub(super) struct MachineRecord {
+    pub(super) id: String,
+    pub(super) name: String,
     credential_sha256: String,
     joined: Timestamp,
     #[serde(default)]
     last_seen: Option<Timestamp>,
+    /// What the machine last said about remote control (see `commands`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) caps: Option<super::commands::Caps>,
 }
 
 /// A machine as anyone may see it: never the credential hash.
@@ -126,6 +137,10 @@ pub enum HubError {
     BadRequest(String),
     #[error("not found")]
     NotFound,
+    /// A request that is fine in itself but not right now: another command
+    /// for the session is in flight, a queue is full.
+    #[error("{0}")]
+    Busy(String),
     /// The push was based on a revision that is no longer the head.
     #[error("the session changed on the hub since this machine last synced it")]
     Conflict { head: Option<String> },
@@ -160,21 +175,21 @@ pub fn random_hex(bytes: usize) -> Result<String, CoreError> {
     Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-fn sha256(text: &str) -> [u8; 32] {
+pub(super) fn sha256(text: &str) -> [u8; 32] {
     Sha256::digest(text.as_bytes()).into()
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(super) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Constant-time comparison. Both sides are hashes, so an attacker learns
 /// nothing useful from timing anyway; this closes the question.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+pub(super) fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-fn valid_name(name: &str) -> bool {
+pub(super) fn valid_name(name: &str) -> bool {
     (1..=64).contains(&name.chars().count()) && !name.chars().any(char::is_control)
 }
 
@@ -203,12 +218,13 @@ impl Hub {
             fs::create_dir_all(&dir).map_err(io(&dir))?;
         }
         restrict(root, 0o700);
-        let hub = Hub { root: root.to_path_buf(), lock: Mutex::new(()) };
+        let hub = Hub { root: root.to_path_buf(), lock: Mutex::new(()), polled: Mutex::new(Default::default()) };
         if !hub.hub_file().is_file() {
             hub.write_hub_file(&HubFile {
                 join_token: format!("asmj_{}", random_hex(24)?),
                 created: Timestamp::now(),
                 admin_token_sha256: None,
+                commands_token_sha256: None,
             })?;
         }
         // Uploads a previous run was killed in the middle of. They are
@@ -237,24 +253,24 @@ impl Hub {
         self.root.join("machines.json")
     }
 
-    fn write_private(&self, path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
+    pub(super) fn write_private(&self, path: &Path, bytes: &[u8]) -> Result<(), CoreError> {
         fsutil::write_atomic(path, bytes)?;
         restrict(path, 0o600);
         Ok(())
     }
 
-    fn write_hub_file(&self, file: &HubFile) -> Result<(), CoreError> {
+    pub(super) fn write_hub_file(&self, file: &HubFile) -> Result<(), CoreError> {
         self.write_private(&self.hub_file(), &serde_json::to_vec_pretty(file).unwrap())
     }
 
-    fn read_hub_file(&self) -> Result<HubFile, CoreError> {
+    pub(super) fn read_hub_file(&self) -> Result<HubFile, CoreError> {
         let path = self.hub_file();
         let bytes = fs::read(&path).map_err(io(&path))?;
         serde_json::from_slice(&bytes)
             .map_err(|e| CoreError::Invalid { msg: format!("{} is unreadable: {e}", path.display()) })
     }
 
-    fn read_machines(&self) -> Result<Vec<MachineRecord>, CoreError> {
+    pub(super) fn read_machines(&self) -> Result<Vec<MachineRecord>, CoreError> {
         let path = self.machines_file();
         match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| CoreError::Invalid {
@@ -265,14 +281,14 @@ impl Hub {
         }
     }
 
-    fn write_machines(&self, machines: &[MachineRecord]) -> Result<(), CoreError> {
+    pub(super) fn write_machines(&self, machines: &[MachineRecord]) -> Result<(), CoreError> {
         self.write_private(&self.machines_file(), &serde_json::to_vec_pretty(machines).unwrap())
     }
 
     /// Hold an exclusive lock on the hub file's writers across processes: the
     /// CLI mints tokens while a server may be rotating one. `self.lock` only
     /// orders threads of one process.
-    fn hub_file_lock(&self) -> Result<fs::File, CoreError> {
+    pub(super) fn hub_file_lock(&self) -> Result<fs::File, CoreError> {
         let path = self.root.join("hub.lock");
         for _ in 0..100 {
             if let Some(file) = fsutil::lock_exclusive(&path)? {
@@ -315,6 +331,7 @@ impl Hub {
             credential_sha256: hex(&sha256(&credential)),
             joined: Timestamp::now(),
             last_seen: Some(Timestamp::now()),
+            caps: None,
         };
         let _guard = self.lock.lock().unwrap();
         let mut machines = self.read_machines()?;
@@ -456,7 +473,7 @@ impl Hub {
         if path.is_file() { Ok(path) } else { Err(HubError::NotFound) }
     }
 
-    fn session_dir(&self, agent: AgentKind, id: &str) -> PathBuf {
+    pub(super) fn session_dir(&self, agent: AgentKind, id: &str) -> PathBuf {
         self.root.join("sessions").join(agent.as_str()).join(id)
     }
 
@@ -619,6 +636,8 @@ pub struct AdminMachine {
     pub machine: Machine,
     /// Sessions whose current copy this machine pushed.
     pub sessions: usize,
+    /// What the machine reports about remote control; none if it never has.
+    pub remote: Option<super::commands::RemoteStatus>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -665,7 +684,7 @@ impl Hub {
         if ct_eq(&sha256(token), &decode_hex(&stored)) { Ok(()) } else { Err(HubError::Unauthorized) }
     }
 
-    fn audit(&self, action: &str, target: &str) {
+    pub(super) fn audit(&self, action: &str, target: &str) {
         let entry = AuditEntry { at: Timestamp::now(), action: action.into(), target: target.into() };
         if let Ok(line) = serde_json::to_string(&entry) {
             let path = self.root.join("admin.log");
@@ -756,7 +775,8 @@ impl Hub {
                     .iter()
                     .filter(|h| h.manifest.machine.as_ref().is_some_and(|m| m.id == machine.id))
                     .count();
-                AdminMachine { machine, sessions }
+                let remote = self.remote_status(&machine.id);
+                AdminMachine { machine, sessions, remote }
             })
             .collect())
     }
@@ -866,7 +886,7 @@ fn read_dirs(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-fn decode_hex(text: &str) -> Vec<u8> {
+pub(super) fn decode_hex(text: &str) -> Vec<u8> {
     (0..text.len() / 2)
         .filter_map(|i| u8::from_str_radix(text.get(i * 2..i * 2 + 2)?, 16).ok())
         .collect()

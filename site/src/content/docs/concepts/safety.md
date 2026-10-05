@@ -12,7 +12,7 @@ asm writes into stores owned by other programs, so the rules are strict.
 - **Never write into a busy store.** OpenCode mutations are refused while an OpenCode instance holds its lock directory.
 - **Only write through sanctioned paths where they exist.** Imports into OpenCode go through `opencode import`, not raw SQL; jcode renames go through `jcode session rename`.
 - **A pull obeys all of the above.** It refuses a live session, never makes a second copy of an id, and only ever appends to a transcript that is a prefix of the hub's.
-- **The daemon never writes into an agent's store.** It only pushes.
+- **The daemon never writes into an agent's store on its own.** It only pushes. The one exception is a pull you allowed with `asm control enable`, which obeys every rule above and installs only under your home folder (see [Remote control](/hub/control/)).
 
 ## What asm writes, and where
 

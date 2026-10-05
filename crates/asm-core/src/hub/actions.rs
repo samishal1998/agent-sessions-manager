@@ -94,6 +94,19 @@ fn human(bytes: u64) -> String {
 /// move) reads every session and settles for nothing less than the hub
 /// holding exactly this copy, sidecars included.
 pub fn push(remote: &Remote, sessions: &[Session], force: bool, exact: bool) -> Result<BulkReport, CoreError> {
+    push_collecting(remote, sessions, force, exact, &mut HashMap::new())
+}
+
+/// `push`, also saying which hub revision each session that went through is
+/// now at (`key` → rev): the one just created, or the head that already held
+/// exactly this copy. Remote control reports it so a pull can be pinned to it.
+pub fn push_collecting(
+    remote: &Remote,
+    sessions: &[Session],
+    force: bool,
+    exact: bool,
+    revs: &mut HashMap<String, String>,
+) -> Result<BulkReport, CoreError> {
     let heads: HashMap<String, Head> = remote
         .heads()?
         .into_iter()
@@ -160,7 +173,7 @@ pub fn push(remote: &Remote, sessions: &[Session], force: bool, exact: bool) -> 
                 ),
             }
         } else {
-            push_one(remote, &mut state, &heads, &mut origins, session, force, exact)
+            push_one(remote, &mut state, &heads, &mut origins, session, force, exact, revs)
                 .unwrap_or_else(|e| ItemOutcome::Failed { error: e.to_string() })
         };
         report.items.push(BulkItem {
@@ -177,6 +190,8 @@ fn in_sync() -> ItemOutcome {
     ItemOutcome::Ok { note: "in sync".into() }
 }
 
+// ponytail: eight arguments; fold them into a context struct if a ninth is needed.
+#[allow(clippy::too_many_arguments)]
 fn push_one(
     remote: &Remote,
     state: &mut SyncState,
@@ -185,6 +200,7 @@ fn push_one(
     session: &Session,
     force: bool,
     exact: bool,
+    revs: &mut HashMap<String, String>,
 ) -> Result<ItemOutcome, CoreError> {
     let (agent, id) = (session.handle.agent, &session.handle.native_id);
     if !valid_id(id) {
@@ -206,12 +222,14 @@ fn push_one(
         && t.fingerprint == fingerprint
         && t.hub_rev == h.rev
     {
+        revs.insert(k.clone(), h.rev.clone());
         return Ok(in_sync());
     }
 
     let mut bundle = bundle::collect(session)?;
     let canonical = bundle.canonical.clone();
-    let record = |state: &mut SyncState, rev: &str, files: String| {
+    let mut record = |state: &mut SyncState, rev: &str, files: String| {
+        revs.insert(k.clone(), rev.to_string());
         let tracked = Tracked {
             hub_rev: rev.to_string(),
             canonical: canonical.clone(),
@@ -353,7 +371,7 @@ fn push_one(
 
 /// Resolve what the user typed against the hub's listing: an id, a unique
 /// id prefix, `agent:prefix`, or the memorable name an agent uses.
-fn resolve_head<'a>(heads: &'a [Head], query: &str) -> Result<&'a Head, CoreError> {
+pub fn resolve_head<'a>(heads: &'a [Head], query: &str) -> Result<&'a Head, CoreError> {
     let (agent, needle) = match query.split_once(':') {
         Some((a, rest)) if AgentKind::parse(a).is_some() => (AgentKind::parse(a), rest),
         _ => (None, query),
@@ -470,6 +488,20 @@ pub fn pull_head(
     head: &Head,
     project_dir: Option<&Path>,
 ) -> Result<Pulled, CoreError> {
+    pull_head_rev(remote, head, project_dir, None)
+}
+
+/// `pull_head`, installing the named revision instead of the head, and
+/// recording that revision as the one this machine last synced. A pull
+/// pinned this way is exactly what was asked for even if another machine has
+/// pushed since — and the next push from here is then refused as based on an
+/// old revision, rather than silently replacing the newer copy.
+pub fn pull_head_rev(
+    remote: &Remote,
+    head: &Head,
+    project_dir: Option<&Path>,
+    rev: Option<&str>,
+) -> Result<Pulled, CoreError> {
     let (agent, id) = (head.manifest.agent, head.manifest.id.clone());
     if !bundle::restorable(agent) {
         return Err(invalid(format!(
@@ -480,7 +512,16 @@ pub fn pull_head(
     let history = remote
         .history(agent.as_str(), &id)?
         .ok_or_else(|| invalid(format!("{} is no longer on the hub", key(agent, &id))))?;
-    let manifest = &history.manifest;
+    let pinned;
+    let (manifest, hub_rev) = match rev {
+        Some(r) if r != history.head => {
+            pinned = remote
+                .revision(agent.as_str(), &id, r)?
+                .ok_or_else(|| invalid(format!("revision {r} of {} is not on the hub", key(agent, &id))))?;
+            (&pinned, r.to_string())
+        }
+        _ => (&history.manifest, history.head.clone()),
+    };
 
     let scratch = Scratch(scratch_dir("pull")?);
     let blob = |sha: &str| -> Result<PathBuf, CoreError> {
@@ -546,7 +587,7 @@ pub fn pull_head(
         SyncState::load(remote)?.record(
             &key(agent, &id),
             Tracked {
-                hub_rev: history.head.clone(),
+                hub_rev,
                 canonical: manifest.canonical.clone(),
                 fingerprint,
                 files: files_hash(&manifest.files),

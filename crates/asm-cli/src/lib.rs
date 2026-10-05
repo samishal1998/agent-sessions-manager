@@ -1,5 +1,6 @@
 //! Command-line frontend: clap definitions and handlers over `asm_core::ops`.
 
+mod control_cmd;
 mod daemon_ctl;
 mod format;
 mod update;
@@ -208,7 +209,8 @@ enum Command {
         move_away: bool,
     },
     /// Keep pushing this machine's sessions to the hub, each once it has been
-    /// still for an interval. Never pulls. Runs until stopped.
+    /// still for an interval. Pulls only what `asm control enable` lets the hub
+    /// ask for. Runs until stopped.
     #[command(args_conflicts_with_subcommands = true)]
     Daemon {
         #[command(subcommand)]
@@ -233,6 +235,10 @@ enum Command {
     /// See what is on the hub, beside what is here.
     #[command(subcommand)]
     Remote(RemoteCommand),
+    /// Ask other machines to push or pull a session through the hub, and let
+    /// this one be asked (off until `asm control enable`).
+    #[command(subcommand)]
+    Control(control_cmd::ControlCommand),
     /// Open the interactive TUI browser.
     Tui,
     /// Serve the web UI (loopback by default).
@@ -334,6 +340,10 @@ enum HubCommand {
     /// any earlier one. It is shown once: only its hash is kept. Until one
     /// exists, the hub serves no admin page or API at all.
     AdminToken,
+    /// Mint the token that creates remote-control commands (`asm control push
+    /// ...`), replacing any earlier one. Shown once. It opens that API and
+    /// nothing else: not the admin page, not any machine's sessions.
+    CommandsToken,
     /// Machines that have joined this hub.
     Machines,
     /// Remove a machine's access, by id or unique name.
@@ -408,6 +418,7 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
             pull(r#ref.as_deref(), all, project_dir.as_deref(), &filter, cli.json)
         }
         Command::Remote(command) => remote(command, &filter, cli.json),
+        Command::Control(command) => control_cmd::run(command, cli.json),
         Command::List => list(&filter, cli.json),
         Command::Projects { worktrees } => projects(cli.json, worktrees),
         Command::Show { r#ref } => show(&r#ref, &filter, cli.json),
@@ -1113,6 +1124,16 @@ fn hub(command: HubCommand, json: bool) -> anyhow::Result<()> {
             println!("Admin token (shown once; running this again replaces it):\n\n  {token}\n");
             println!("Open /admin on this hub and paste it. It controls the hub itself: machines,");
             println!("the join token, deleting sessions. It does not touch anyone's agents.");
+        }
+        HubCommand::CommandsToken => {
+            let token = store.rotate_commands_token()?;
+            if json {
+                return print_json(&serde_json::json!({ "token": token }));
+            }
+            println!("Commands token (shown once; running this again replaces it):\n\n  {token}\n");
+            println!("ASM_HUB_COMMANDS_TOKEN={token} asm control push <machine> <session>");
+            println!("It lets its holder ask machines that turned remote control on to push or pull");
+            println!("sessions. It cannot read sessions, delete anything, or open the admin page.");
         }
         HubCommand::Machines => {
             let machines = store.machines()?;

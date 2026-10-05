@@ -5,6 +5,10 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
+## Unreleased
+
+- **Remote control, phase 1.** From anywhere with a commands token you can ask a machine to push or pull a session through the hub and follow the result: `asm control push|pull <machine> <session> [--wait]`, `jobs`, `show`, `cancel`, `retry`. A machine answers only after `asm control enable` there, from its daemon, which now also asks the hub for commands every few seconds. A pull is pinned to the exact revision that was pushed, installs only under the machine's home folder, and refuses a running session. The hub admin page has a Commands tab and shows which machines answer. See [Remote control](/hub/control/). `asm hub commands-token` mints the token, which opens nothing else.
+
 ## 0.9.0 — 2026-10-04
 
 - **Read transcripts on the hub admin page.** Open a stored session from the admin Sessions tab and read its conversation for every agent (Claude Code, OpenCode, jcode, Codex and Antigravity); the hub rebuilds it from its own copy in a throwaway directory. The Sessions tab gained search, agent and machine filters and sorting, and the page was refined (aligned header, a last-updated time, stat cards, tabs that wrap on phones, narrow-screen lists).

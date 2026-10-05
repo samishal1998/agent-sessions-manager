@@ -73,6 +73,7 @@ export default defineConfig({
             { slug: 'hub/sync' },
             { slug: 'hub/restore' },
             { slug: 'hub/daemon' },
+            { slug: 'hub/control' },
             { slug: 'hub/admin' },
             { slug: 'hub/security' },
           ],

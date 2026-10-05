@@ -40,3 +40,6 @@
 .admin-stat dd { margin: 0; }
 .admin-stat-value { font-size: 28px; line-height: 36px; font-weight: 700; overflow-wrap: anywhere; }
 .admin-stat-detail { font-size: 14px; color: var(--h-muted); }
+/* style.css resets every margin, which un-centres a modal <dialog> (its auto margins); the phone sheet positions itself. */
+/* Remote control: a command's result and machine notes wrap instead of widening the table. */
+.cp-table .admin-meta { white-space: normal; max-width: 30ch; }

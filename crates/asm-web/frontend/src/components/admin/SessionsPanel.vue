@@ -7,7 +7,7 @@ import { ago, bytes } from '../../format.js'
 // The stored sessions with search, filters and sort. The filters survive a
 // refresh (sessionStorage); the token never goes near this.
 const props = defineProps({ sessions: { type: Array, required: true }, sid: { type: Function, required: true } })
-const emit = defineEmits(['open', 'remove'])
+const emit = defineEmits(['open', 'remove', 'send'])
 
 const KEY = 'asm-hub-admin-filters'
 const blank = { q: '', agents: [], machine: '', sort: 'newest' }
@@ -87,6 +87,7 @@ const rows = computed(() => shown.value.map((s) => ({ id: key(s), title: name(s)
         <span class="admin-meta">{{ bytes(s.size) }} · {{ revs(s) }} · {{ ago(s.pushed_at) }}</span>
         <span class="admin-actions">
           <HButton size="compact" @click="emit('open', s)">View transcript<span class="admin-sr"> of {{ name(s) }}</span></HButton>
+          <HButton size="compact" @click="emit('send', s)">Send to machine…<span class="admin-sr"> {{ name(s) }}</span></HButton>
           <HButton size="compact" variant="danger" @click="emit('remove', s)">Delete<span class="admin-sr"> {{ name(s) }}</span></HButton>
         </span>
       </li>
@@ -103,6 +104,7 @@ const rows = computed(() => shown.value.map((s) => ({ id: key(s), title: name(s)
       <template v-for="r in rows" :key="r.id + 'a'" #[tableCellSlot(r.id,'actions')]>
         <span class="admin-actions">
           <HButton size="compact" @click="emit('open', byKey[r.id])">View transcript<span class="admin-sr"> of {{ r.title }}</span></HButton>
+          <HButton size="compact" @click="emit('send', byKey[r.id])">Send to machine…<span class="admin-sr"> {{ r.title }}</span></HButton>
           <HButton size="compact" variant="danger" @click="emit('remove', byKey[r.id])">Delete<span class="admin-sr"> {{ r.title }}</span></HButton>
         </span>
       </template>

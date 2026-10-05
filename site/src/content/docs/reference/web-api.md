@@ -51,6 +51,26 @@ All routes are under `asm serve` (default `http://127.0.0.1:7433`). Mutating (`P
 | `POST /hub/v1/missing` | Which of these blob hashes does the hub lack? |
 | `GET` / `PUT /hub/v1/blobs/{sha}` | A blob; `PUT` is hash-verified and size-capped. |
 
+## The remote-control routes
+
+A machine asks for its work with its own credential:
+
+| Route | |
+|---|---|
+| `GET /hub/v1/inbox?v=1&ops=push,pull&enabled=1` | The caller's queued commands (`[{id, op, agent, session, rev?, exact?}]`). Also reports what the machine can do and marks it as having just asked. Commands the machine refuses by saying `enabled=0` are blocked with `remote_off`. |
+| `POST /hub/v1/inbox/{id}/claim` | Take a command for ten minutes; `409` if it is no longer waiting. |
+| `POST /hub/v1/inbox/{id}/result` | `{code, detail?, rev?}`. Idempotent; a late result from the last claimer is accepted. A successful push must name a revision that is on the hub. |
+
+Administrators create and follow commands with the **commands token** (`Authorization: Bearer asmk_…`) or the admin token; a machine credential gets `401`. Responses are `Cache-Control: no-store`.
+
+| Route | |
+|---|---|
+| `POST /hub/v1/commands` | `{op: "push"\|"pull", machine, agent, session, from?, exact?}` → `201` with the command. A pull needs `from` (the machine that pushed the hub's current copy) and is pinned to that revision. `400` if the machine is not willing, `409` if another command for the session is in flight or its queue is full. |
+| `GET /hub/v1/commands?limit=100` | Commands, newest first. |
+| `GET /hub/v1/commands/{id}` | One command. |
+| `POST /hub/v1/commands/{id}/cancel` | Cancel a waiting command; a running one is asked to. |
+| `POST /hub/v1/commands/{id}/retry` | Queue a blocked, expired or cancelled command again. |
+
 ## The hub admin API
 
 Only present once `asm hub admin-token` has minted a token, and only for that token (`Authorization: Bearer asma_…`); a machine credential or the join token gets `401`. Responses are `Cache-Control: no-store`. See [Administering the hub](/hub/admin/).
@@ -58,7 +78,7 @@ Only present once `asm hub admin-token` has minted a token, and only for that to
 | Route | |
 |---|---|
 | `GET /hub/v1/admin/overview` | Stats, the join token, version, store path, file cap. |
-| `GET /hub/v1/admin/machines` | Machines with the number of sessions each pushed. |
+| `GET /hub/v1/admin/machines` | Machines with the number of sessions each pushed, and what each reports about [remote control](/hub/control/). |
 | `POST /hub/v1/admin/machines/{id}/revoke` | Remove a machine's access. |
 | `POST /hub/v1/admin/join-token/rotate` | Replace the join token; returns the new one. |
 | `GET /hub/v1/admin/sessions` | Every session: project, pusher, revisions, size, pushed time. |
