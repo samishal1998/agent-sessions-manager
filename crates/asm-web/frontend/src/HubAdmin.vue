@@ -16,7 +16,7 @@ import { confirmDialog } from './dialogs.js'
 import { dismiss, notify, toasts } from './toasts.js'
 import { useTheme } from './useTheme.js'
 import { AdminError, admin, saveToken, savedToken } from './admin-api.js'
-import { isOpen, remoteStatus } from './commands.js'
+import { groupItems, isOpen, remoteStatus } from './commands.js'
 import { ago, bytes } from './format.js'
 import { shortId } from './ids.js'
 const sid = (s) => shortId({ ref: { agent: s.agent, native_id: s.id }, slug: s.slug })
@@ -87,17 +87,20 @@ async function loadCommands() {
 async function reloadCommands() {
   try {
     await loadCommands()
+    // "last asked" on a waiting step comes from the machines' own report.
+    if (commands.value.some(isOpen)) machines.value = await api.value.machines()
   } catch {
     load()
   }
 }
 function created(c) {
   newCmd.value = null
-  notify(`Queued: ${c.op} ${c.title || 'the session'} ${c.op === 'push' ? 'from' : 'to'} ${c.machine.name}.`)
+  const [a, b] = c.steps || []
+  notify(a && b ? `Queued: copy ${a.title || 'the session'} from ${a.machine.name} to ${b.machine.name}. ${a.machine.name} keeps its copy.` : `Queued: ${c.op} ${c.title || 'the session'} ${c.op === 'push' ? 'from' : 'to'} ${c.machine.name}.`)
   tab.value = 'commands'
   reloadCommands()
 }
-// While commands are in flight the list keeps itself fresh; otherwise it is left alone.
+// While a command or plan step is in flight (queued, running or waiting) the list keeps itself fresh; otherwise it is left alone.
 const poll = setInterval(() => {
   if (tab.value === 'commands' && signedIn.value && document.visibilityState === 'visible' && commands.value.some(isOpen)) reloadCommands()
 }, 10000)
@@ -143,7 +146,10 @@ async function rotateJoin() {
 async function remove(s) {
   const name = s.title || s.id
   if (await confirmDialog({ title: `Delete ${name} from the hub?`, description: `All ${s.revisions} revision(s) go. Machines that have it keep their copy. Files nothing else uses stay until you collect them.`, confirmLabel: 'Delete', danger: true }))
-    run(`Deleted ${name}.`, () => api.value.remove(s.agent, s.id)).then((r) => r && (opened.value = null))
+    run(`Deleted ${name}.`, () => api.value.remove(s.agent, s.id).catch((e) => {
+      // 409: a command or plan for it has not finished yet.
+      throw e instanceof AdminError && e.status === 409 ? new AdminError(409, `${e.message.replace(/\.$/, '')}. Cancel or wait for it in the Commands tab.`) : e
+    })).then((r) => r && (opened.value = null))
 }
 async function previewCollect() {
   preview.value = null
@@ -173,7 +179,7 @@ const stats = computed(() => {
 const tabs = computed(() => [
   { value: 'overview', label: 'Overview' },
   { value: 'machines', label: `Machines (${machines.value.length})` },
-  { value: 'commands', label: `Commands (${commands.value.length})` },
+  { value: 'commands', label: `Commands (${groupItems(commands.value).length})` },
   { value: 'sessions', label: `Sessions (${sessions.value.length})` },
   { value: 'storage', label: 'Storage' },
   { value: 'activity', label: 'Activity' },

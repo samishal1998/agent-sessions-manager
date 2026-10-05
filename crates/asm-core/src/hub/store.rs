@@ -335,6 +335,11 @@ impl Hub {
         };
         let _guard = self.lock.lock().unwrap();
         let mut machines = self.read_machines()?;
+        // A command names a machine by id or by name, and an id wins: a name
+        // equal to another machine's id would be unreachable.
+        if machines.iter().any(|m| m.id == name) {
+            return Err(HubError::BadRequest("that name is another machine's id; pick another".into()));
+        }
         machines.push(record.clone());
         self.write_machines(&machines)?;
         Ok(Joined { machine: Machine::from(&record), credential })
@@ -806,6 +811,11 @@ impl Hub {
         let dir = self.session_dir(agent, id);
         if !dir.is_dir() {
             return Err(HubError::NotFound);
+        }
+        // A command (a plan's pull, above all) may be about to install one of
+        // these revisions.
+        if self.session_in_flight(agent, id)? {
+            return Err(HubError::Busy("a command for this session is still in flight".into()));
         }
         let revisions = fs::read_dir(dir.join("revisions")).map(|d| d.flatten().count()).unwrap_or(0);
         fsutil::remove_recursive(&dir)?;

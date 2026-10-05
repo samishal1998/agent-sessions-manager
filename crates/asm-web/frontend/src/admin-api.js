@@ -48,5 +48,11 @@ export const admin = (token) => ({
   createCommand: (body) => call(token, 'POST', '', body, '/hub/v1/commands'),
   cancelCommand: (id) => call(token, 'POST', `/${encodeURIComponent(id)}/cancel`, undefined, '/hub/v1/commands'),
   retryCommand: (id) => call(token, 'POST', `/${encodeURIComponent(id)}/retry`, undefined, '/hub/v1/commands'),
+  // Plans: a chain of commands, each starting once the one before it succeeded.
+  plans: (limit = 50) => call(token, 'GET', `?limit=${limit}`, undefined, '/hub/v1/plans'),
+  plan: (id) => call(token, 'GET', `/${encodeURIComponent(id)}`, undefined, '/hub/v1/plans'),
+  createPlan: (body) => call(token, 'POST', '', body, '/hub/v1/plans'),
+  cancelPlan: (id) => call(token, 'POST', `/${encodeURIComponent(id)}/cancel`, undefined, '/hub/v1/plans'),
+  retryPlan: (id) => call(token, 'POST', `/${encodeURIComponent(id)}/retry`, undefined, '/hub/v1/plans'),
   collect: (dryRun) => call(token, 'POST', `/collect?dry_run=${dryRun ? 'true' : 'false'}`),
 })

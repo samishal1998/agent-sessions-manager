@@ -26,7 +26,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio_stream::StreamExt;
 
-use asm_core::hub::commands::{Caps, NewCommand, Report};
+use asm_core::hub::commands::{Caps, NewCommand, NewPlan, Report};
 use asm_core::hub::store::{Hub, HubError, Machine};
 
 pub struct HubState {
@@ -113,7 +113,8 @@ async fn authenticate(State(state): State<Shared>, mut request: Request, next: N
         };
     }
     // Remote control's administrator side: its own token (or the admin one).
-    if request.uri().path().starts_with("/hub/v1/commands") {
+    let path = request.uri().path();
+    if path.starts_with("/hub/v1/commands") || path.starts_with("/hub/v1/plans") {
         let Some(token) = bearer(request.headers()) else {
             return error(StatusCode::UNAUTHORIZED, "the commands token is required");
         };
@@ -165,6 +166,10 @@ pub fn router(state: Shared) -> axum::Router {
         .route("/hub/v1/commands/{id}", get(command_get))
         .route("/hub/v1/commands/{id}/cancel", post(command_cancel))
         .route("/hub/v1/commands/{id}/retry", post(command_retry))
+        .route("/hub/v1/plans", get(plans_list).post(plans_create).layer(DefaultBodyLimit::max(4096)))
+        .route("/hub/v1/plans/{id}", get(plan_get))
+        .route("/hub/v1/plans/{id}/cancel", post(plan_cancel))
+        .route("/hub/v1/plans/{id}/retry", post(plan_retry))
         .route("/hub/v1/admin/overview", get(admin_overview))
         .route("/hub/v1/admin/machines", get(admin_machines))
         .route("/hub/v1/admin/machines/{id}/revoke", post(admin_revoke))
@@ -351,16 +356,52 @@ async fn command_get(State(state): State<Shared>, Path(id): Path<String>) -> Res
     }
 }
 
-async fn command_cancel(State(state): State<Shared>, Path(id): Path<String>) -> Response {
-    match blocking(move || state.hub.cancel_command(&id)).await {
+async fn command_cancel(State(state): State<Shared>, Extension(Actor(by)): Extension<Actor>, Path(id): Path<String>) -> Response {
+    match blocking(move || state.hub.cancel_command(&id, by)).await {
         Ok(command) => Json(command).into_response(),
         Err(e) => hub_error(e),
     }
 }
 
-async fn command_retry(State(state): State<Shared>, Path(id): Path<String>) -> Response {
-    match blocking(move || state.hub.retry_command(&id)).await {
+async fn command_retry(State(state): State<Shared>, Extension(Actor(by)): Extension<Actor>, Path(id): Path<String>) -> Response {
+    match blocking(move || state.hub.retry_command(&id, by)).await {
         Ok(command) => Json(command).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn plans_list(State(state): State<Shared>, axum::extract::Query(q): axum::extract::Query<ListQuery>) -> Response {
+    let limit = q.limit.unwrap_or(50).clamp(1, 500);
+    match blocking(move || state.hub.plans(limit)).await {
+        Ok(list) => Json(list).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn plans_create(State(state): State<Shared>, Extension(Actor(by)): Extension<Actor>, Json(request): Json<NewPlan>) -> Response {
+    match blocking(move || state.hub.create_plan(request, by)).await {
+        Ok(plan) => (StatusCode::CREATED, Json(plan)).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn plan_get(State(state): State<Shared>, Path(id): Path<String>) -> Response {
+    match blocking(move || state.hub.plan(&id)).await {
+        Ok(plan) => Json(plan).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn plan_cancel(State(state): State<Shared>, Extension(Actor(by)): Extension<Actor>, Path(id): Path<String>) -> Response {
+    match blocking(move || state.hub.cancel_plan(&id, by)).await {
+        Ok(plan) => Json(plan).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+async fn plan_retry(State(state): State<Shared>, Extension(Actor(by)): Extension<Actor>, Path(id): Path<String>) -> Response {
+    match blocking(move || state.hub.retry_plan(&id, by)).await {
+        Ok(plan) => Json(plan).into_response(),
         Err(e) => hub_error(e),
     }
 }
@@ -764,6 +805,11 @@ mod tests {
             ("GET", "/hub/v1/commands/x"),
             ("POST", "/hub/v1/commands/x/cancel"),
             ("POST", "/hub/v1/commands/x/retry"),
+            ("GET", "/hub/v1/plans"),
+            ("POST", "/hub/v1/plans"),
+            ("GET", "/hub/v1/plans/x"),
+            ("POST", "/hub/v1/plans/x/cancel"),
+            ("POST", "/hub/v1/plans/x/retry"),
             ("GET", "/no/such/route"),
             ("GET", "/api/sessions"),
         ] {
@@ -825,9 +871,144 @@ mod tests {
         assert_eq!((status, v["state"].as_str()), (StatusCode::OK, Some("queued")));
         let (status, v) = send(&app, "POST", &format!("/hub/v1/commands/{id}/cancel"), Some(&token), Body::empty()).await;
         assert_eq!((status, v["state"].as_str()), (StatusCode::OK, Some("cancelled")));
+        // The record says who asked for each change.
+        let log = std::fs::read_to_string(state.hub.root().join("commands.log")).unwrap();
+        for event in ["retry", "cancel"] {
+            let line = log.lines().find(|l| l.contains(&format!("\"event\":\"{event}\""))).unwrap();
+            assert!(line.contains("\"by\":\"commands-token\""), "{line}");
+        }
         let (status, v) = send(&app, "GET", "/hub/v1/admin/machines", Some(&admin), Body::empty()).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(v[0]["remote"]["enabled"].as_bool(), Some(true), "the admin page sees what the machine reported");
+    }
+
+    /// Sending a session from one machine to another, through the door that
+    /// matters: the plan is made with the commands token, each machine only
+    /// ever sees its own step, and the pull gets the revision the push made.
+    #[tokio::test]
+    async fn a_plan_sends_a_session_from_one_machine_to_another() {
+        let (_d, state, app) = app();
+        let alpha = credential(&app, &state).await;
+        let body = json!({ "token": state.hub.join_token().unwrap(), "name": "desk" }).to_string();
+        let (status, v) = send(&app, "POST", "/hub/v1/join", None, Body::from(body)).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let beta = v["credential"].as_str().unwrap().to_string();
+        let inbox = "/hub/v1/inbox?v=1&ops=push,pull&enabled=1";
+        for who in [&alpha, &beta] {
+            assert_eq!(send(&app, "GET", inbox, Some(who), Body::empty()).await.0, StatusCode::OK);
+        }
+        let id = "7f3a1c88-2d4e-4b91-9a05-6c7e8f201b43";
+        let ask = |session: &str, from: &str, to: &str| {
+            json!({ "kind": "send", "agent": "claude-code", "session": session, "from": from, "to": to }).to_string()
+        };
+
+        // Who may make a plan: the commands token or the admin token, no machine.
+        for (method, uri) in [("POST", "/hub/v1/plans"), ("GET", "/hub/v1/plans"), ("GET", "/hub/v1/plans/x")] {
+            for who in [None, Some(alpha.as_str()), Some("asmk_none")] {
+                assert_eq!(send(&app, method, uri, who, Body::from(ask(id, "laptop", "desk"))).await.0, StatusCode::UNAUTHORIZED, "{method} {uri} {who:?}");
+            }
+        }
+        let token = state.hub.rotate_commands_token().unwrap();
+        let admin = state.hub.rotate_admin_token().unwrap();
+        assert_eq!(send(&app, "GET", "/hub/v1/plans", Some(&alpha), Body::empty()).await.0, StatusCode::UNAUTHORIZED, "a machine cannot read plans");
+        assert_eq!(send(&app, "GET", "/hub/v1/plans", Some(&beta), Body::empty()).await.0, StatusCode::UNAUTHORIZED);
+
+        // Refusals say why, and leave nothing behind.
+        let (status, v) = send(&app, "POST", "/hub/v1/plans", Some(&token), Body::from(ask(id, "laptop", "laptop"))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("both ends"), "{v}");
+        let (status, _) = send(&app, "POST", "/hub/v1/plans", Some(&token), Body::from(ask(id, "laptop", "nobody"))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (_, v) = send(&app, "GET", "/hub/v1/plans", Some(&token), Body::empty()).await;
+        assert_eq!(v.as_array().map(Vec::len), Some(0));
+
+        let (status, plan) = send(&app, "POST", "/hub/v1/plans", Some(&token), Body::from(ask(id, "laptop", "desk"))).await;
+        assert_eq!(status, StatusCode::CREATED, "{plan}");
+        assert_eq!((plan["kind"].as_str(), plan["state"].as_str()), (Some("send"), Some("queued")));
+        let steps = plan["steps"].as_array().unwrap();
+        assert_eq!(steps.len(), 2);
+        let (push, pull) = (steps[0]["id"].as_str().unwrap().to_string(), steps[1]["id"].as_str().unwrap().to_string());
+        assert_eq!((steps[0]["step"].as_u64(), steps[1]["step"].as_u64()), (Some(1), Some(2)));
+        assert_eq!((steps[1]["state"].as_str(), steps[1]["needs"].as_str()), (Some("pending"), Some(push.as_str())));
+        assert!(steps[1]["rev"].is_null(), "no revision yet: {plan}");
+        assert_eq!(steps[1]["plan"], plan["id"]);
+        let plan_id = plan["id"].as_str().unwrap().to_string();
+
+        let (status, v) = send(&app, "POST", "/hub/v1/plans", Some(&admin), Body::from(ask(id, "laptop", "desk"))).await;
+        assert_eq!(status, StatusCode::CONFLICT, "one command per session, plans included: {v}");
+
+        // Each machine sees only its own step; the pull not yet.
+        let (_, v) = send(&app, "GET", inbox, Some(&beta), Body::empty()).await;
+        assert_eq!(v.as_array().map(Vec::len), Some(0), "the pending pull is not offered");
+        let (_, v) = send(&app, "GET", inbox, Some(&alpha), Body::empty()).await;
+        assert_eq!((v[0]["id"].as_str(), v[0]["op"].as_str()), (Some(push.as_str()), Some("push")));
+        assert_eq!(send(&app, "POST", &format!("/hub/v1/inbox/{pull}/claim"), Some(&beta), Body::empty()).await.0, StatusCode::CONFLICT);
+        assert_eq!(send(&app, "POST", &format!("/hub/v1/inbox/{push}/claim"), Some(&alpha), Body::empty()).await.0, StatusCode::OK);
+
+        // The push really uploads a copy; a result naming a revision that is not
+        // there is refused and moves nothing.
+        let sha = asm_core::fsutil::sha256_hex(b"line\n");
+        send(&app, "PUT", &format!("/hub/v1/blobs/{sha}"), Some(&alpha), Body::from("line\n")).await;
+        let manifest = json!({
+            "schema": 1, "agent": "claude-code", "id": id, "project_root": "/x", "project_root_portable": "/x",
+            "canonical": "c", "parent_rev": null, "files": [{ "path": "transcript.jsonl", "sha256": sha, "size": 5 }]
+        });
+        let (status, v) = send(&app, "PUT", &format!("/hub/v1/sessions/claude-code/{id}"), Some(&alpha), Body::from(manifest.to_string())).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let rev = v["rev"].as_str().unwrap().to_string();
+        let result = |code: &str, rev: Option<&str>| json!({ "code": code, "rev": rev }).to_string();
+        let bogus = "0".repeat(64);
+        let (status, _) = send(&app, "POST", &format!("/hub/v1/inbox/{push}/result"), Some(&alpha), Body::from(result("ok", Some(&bogus)))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (_, v) = send(&app, "GET", &format!("/hub/v1/plans/{plan_id}"), Some(&token), Body::empty()).await;
+        assert_eq!(v["state"].as_str(), Some("running"));
+
+        // The session cannot be deleted from under the plan.
+        let (status, v) = send(&app, "DELETE", &format!("/hub/v1/admin/sessions/claude-code/{id}"), Some(&admin), Body::empty()).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{v}");
+        assert!(v["error"].as_str().unwrap().contains("still in flight"));
+
+        let (status, v) = send(&app, "POST", &format!("/hub/v1/inbox/{push}/result"), Some(&alpha), Body::from(result("ok", Some(&rev)))).await;
+        assert_eq!((status, v["state"].as_str(), v["rev"].as_str()), (StatusCode::OK, Some("ok"), Some(rev.as_str())));
+
+        // Now the pull is offered, pinned to that revision, and nobody else has it.
+        let (_, v) = send(&app, "GET", inbox, Some(&beta), Body::empty()).await;
+        assert_eq!((v[0]["id"].as_str(), v[0]["op"].as_str(), v[0]["rev"].as_str()), (Some(pull.as_str()), Some("pull"), Some(rev.as_str())));
+        let (_, v) = send(&app, "GET", inbox, Some(&alpha), Body::empty()).await;
+        assert_eq!(v.as_array().map(Vec::len), Some(0));
+        let (_, v) = send(&app, "GET", &format!("/hub/v1/commands/{pull}"), Some(&token), Body::empty()).await;
+        assert_eq!((v["state"].as_str(), v["rev"].as_str(), v["plan"].as_str()), (Some("queued"), Some(rev.as_str()), Some(plan_id.as_str())));
+        assert_eq!(send(&app, "POST", &format!("/hub/v1/inbox/{pull}/claim"), Some(&beta), Body::empty()).await.0, StatusCode::OK);
+        let (status, _) = send(&app, "POST", &format!("/hub/v1/inbox/{pull}/result"), Some(&beta), Body::from(result("ok", None))).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, v) = send(&app, "GET", &format!("/hub/v1/plans/{plan_id}"), Some(&admin), Body::empty()).await;
+        assert_eq!((status, v["state"].as_str()), (StatusCode::OK, Some("ok")));
+        assert!(v["steps"].as_array().unwrap().iter().all(|s| s["state"] == "ok"));
+        let (_, v) = send(&app, "GET", "/hub/v1/plans?limit=5", Some(&token), Body::empty()).await;
+        assert_eq!((v.as_array().map(Vec::len), v[0]["id"].as_str()), (Some(1), Some(plan_id.as_str())));
+        let (_, v) = send(&app, "GET", "/hub/v1/commands", Some(&token), Body::empty()).await;
+        assert_eq!(v.as_array().map(Vec::len), Some(2), "plan steps are commands too");
+        assert_eq!(send(&app, "GET", "/hub/v1/plans/nope", Some(&token), Body::empty()).await.0, StatusCode::NOT_FOUND);
+        // Finished: nothing to cancel or retry (400), and an unknown plan is 404.
+        for route in ["cancel", "retry"] {
+            let (status, _) = send(&app, "POST", &format!("/hub/v1/plans/{plan_id}/{route}"), Some(&token), Body::empty()).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{route}");
+            let (status, _) = send(&app, "POST", &format!("/hub/v1/plans/nope/{route}"), Some(&token), Body::empty()).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{route}");
+        }
+
+        // Cancel and retry a second plan.
+        let (status, plan) = send(&app, "POST", "/hub/v1/plans", Some(&token), Body::from(ask(id, "desk", "laptop"))).await;
+        assert_eq!(status, StatusCode::CREATED, "{plan}");
+        let plan_id = plan["id"].as_str().unwrap().to_string();
+        let (status, v) = send(&app, "POST", &format!("/hub/v1/plans/{plan_id}/cancel"), Some(&token), Body::empty()).await;
+        assert_eq!((status, v["state"].as_str()), (StatusCode::OK, Some("cancelled")));
+        assert_eq!((v["steps"][0]["state"].as_str(), v["steps"][1]["skipped"].as_bool()), (Some("cancelled"), Some(true)));
+        let (status, v) = send(&app, "POST", &format!("/hub/v1/plans/{plan_id}/retry"), Some(&token), Body::empty()).await;
+        assert_eq!((status, v["state"].as_str()), (StatusCode::OK, Some("queued")));
+        assert_eq!((v["steps"][0]["state"].as_str(), v["steps"][1]["state"].as_str()), (Some("queued"), Some("pending")));
+        assert!(v["steps"][1].get("skipped").is_none());
     }
 
     #[tokio::test]

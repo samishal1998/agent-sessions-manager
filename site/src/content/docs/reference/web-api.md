@@ -68,8 +68,20 @@ Administrators create and follow commands with the **commands token** (`Authoriz
 | `POST /hub/v1/commands` | `{op: "push"\|"pull", machine, agent, session, from?, exact?}` → `201` with the command. A pull needs `from` (the machine that pushed the hub's current copy) and is pinned to that revision. `400` if the machine is not willing, `409` if another command for the session is in flight or its queue is full. |
 | `GET /hub/v1/commands?limit=100` | Commands, newest first. |
 | `GET /hub/v1/commands/{id}` | One command. |
-| `POST /hub/v1/commands/{id}/cancel` | Cancel a waiting command; a running one is asked to. |
-| `POST /hub/v1/commands/{id}/retry` | Queue a blocked, expired or cancelled command again. |
+| `POST /hub/v1/commands/{id}/cancel` | Cancel a waiting command; a running one is asked to. On a plan's step: the steps waiting on it are cancelled too (`skipped: true`). |
+| `POST /hub/v1/commands/{id}/retry` | Queue a blocked, expired or cancelled command again. On a plan's step: its skipped dependants go back to `pending`; `400` if an earlier step has not succeeded. |
+
+**Plans** chain commands: a step starts only after the one before it succeeded. They use the same tokens and the same commands (a plan's steps are listed under `/hub/v1/commands` too, with `plan`, `step`, `needs` and `skipped` set, and state `pending` while a step waits for its parent; a machine never sees a pending step).
+
+| Route | |
+|---|---|
+| `POST /hub/v1/plans` | `{kind: "send", agent, session, from, to, exact?}` (machines by id or name) → `201` with the plan: `{id, kind, state, created, updated, steps: [push on from, pull on to]}`. The pull is `pending` with `rev: null` until the push succeeds; then the hub copies the revision the push reported (and the hub verified) into it and queues it. `400` if `from` and `to` are the same, or a machine is not willing for its step; `409` if another command for the session is in flight or a queue is full. |
+| `GET /hub/v1/plans?limit=50` | Plans, newest first, steps embedded. |
+| `GET /hub/v1/plans/{id}` | One plan. Its `state` is `pending`, `queued` or `running` while any step is, `blocked`, `cancelled` or `expired` when a step ended that way, and `ok` only when every step is. |
+| `POST /hub/v1/plans/{id}/cancel` | Cancel every step that has not finished (a running one is asked to; steps after it are cancelled with `skipped: true`). `400` if it already finished. |
+| `POST /hub/v1/plans/{id}/retry` | Queue the first step that did not succeed again, and put the steps skipped because of it back to `pending`. Same checks as a command retry; `400` if nothing can be retried. |
+
+A step that ends `blocked`, `cancelled` or `expired` cancels the steps waiting on it (`skipped: true`, `code: "cancelled"`, detail `step N did not succeed`). `DELETE /hub/v1/admin/sessions/{agent}/{id}` is refused with `409` (`a command for this session is still in flight`) while any command or plan step for that session has not finished.
 
 ## The hub admin API
 

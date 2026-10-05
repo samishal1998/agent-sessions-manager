@@ -21,7 +21,7 @@ use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
-use super::commands::{Caps, Command as RemoteCommand, NewCommand, Report, Work};
+use super::commands::{Caps, Command as RemoteCommand, NewCommand, NewPlan, Plan, Report, Work};
 use super::manifest::Manifest;
 use super::store::{Head, History, Joined, Machine, random_hex};
 use crate::{CoreError, fsutil, paths};
@@ -553,6 +553,32 @@ impl Control {
     pub fn retry(&self, id: &str) -> Result<RemoteCommand, CoreError> {
         let r = self.call("POST", &format!("/hub/v1/commands/{}/retry", config_safe(id)?), Body::None)?;
         parse(&expect(r, &[200], "retrying a command")?, "retrying a command")
+    }
+
+    pub fn create_plan(&self, request: &NewPlan) -> Result<Plan, CoreError> {
+        let body = serde_json::to_vec(request).unwrap();
+        let r = self.call("POST", "/hub/v1/plans", Body::Json(body))?;
+        parse(&expect(r, &[201], "creating a plan")?, "creating a plan")
+    }
+
+    pub fn plans(&self, limit: usize) -> Result<Vec<Plan>, CoreError> {
+        let r = self.call("GET", &format!("/hub/v1/plans?limit={limit}"), Body::None)?;
+        parse(&expect(r, &[200], "listing plans")?, "listing plans")
+    }
+
+    pub fn plan(&self, id: &str) -> Result<Plan, CoreError> {
+        let r = self.call("GET", &format!("/hub/v1/plans/{}", config_safe(id)?), Body::None)?;
+        parse(&expect(r, &[200], "reading a plan")?, "reading a plan")
+    }
+
+    pub fn cancel_plan(&self, id: &str) -> Result<Plan, CoreError> {
+        let r = self.call("POST", &format!("/hub/v1/plans/{}/cancel", config_safe(id)?), Body::None)?;
+        parse(&expect(r, &[200], "cancelling a plan")?, "cancelling a plan")
+    }
+
+    pub fn retry_plan(&self, id: &str) -> Result<Plan, CoreError> {
+        let r = self.call("POST", &format!("/hub/v1/plans/{}/retry", config_safe(id)?), Body::None)?;
+        parse(&expect(r, &[200], "retrying a plan")?, "retrying a plan")
     }
 }
 
