@@ -5,7 +5,7 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
-## Unreleased
+## 0.11.0 — 2026-10-05
 
 - **Remote control, phase 2: send a session to another machine.** `asm control send <session> --from <machine> --to <machine> [--wait]` makes a *plan*: the first machine pushes, and only once that succeeded does the second pull, installing exactly the revision the push produced. A plan is a chain of steps, each waiting for the one before it; if a step does not succeed, the ones after it are cancelled and `retry` picks the plan up from the step that stopped. `asm control jobs`, `show`, `cancel` and `retry` understand plans, the hub has `/hub/v1/plans` routes, and the hub refuses to delete a session while a command for it is still in flight. This copies the session (the source machine keeps its own copy; nothing is archived or deleted): archiving the source, to make it a true move, comes next. See [Remote control](/hub/control/).
 - **`--wait` for scripts.** `push`, `pull` and `send` wait up to ten minutes and end with a status you can act on: 0 ok, 1 not ok, 2 still waiting (it names the step and the machine, which stays queued until its daemon asks and expires after 7 days), 3 hub unreachable (a failed poll is tried five times first). A plan that ends not ok says which step stopped and what to do about its code.
