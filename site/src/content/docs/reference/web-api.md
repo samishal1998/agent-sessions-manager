@@ -57,9 +57,9 @@ A machine asks for its work with its own credential:
 
 | Route | |
 |---|---|
-| `GET /hub/v1/inbox?v=1&ops=push,pull&enabled=1` | The caller's queued commands (`[{id, op, agent, session, rev?, exact?}]`). Also reports what the machine can do and marks it as having just asked. Commands the machine refuses by saying `enabled=0` are blocked with `remote_off`. |
+| `GET /hub/v1/inbox?v=1&ops=push,pull&enabled=1` | The caller's queued commands (`[{id, op, agent, session, rev?, exact?}]`, `op` one of `push`, `pull`, `archive`). `ops` lists what the machine allows; `archive` appears only for a machine whose owner opted in, and a queued command whose op is not listed is blocked with `unsupported`. Also reports what the machine can do and marks it as having just asked. Commands the machine refuses by saying `enabled=0` are blocked with `remote_off`. |
 | `POST /hub/v1/inbox/{id}/claim` | Take a command for ten minutes; `409` if it is no longer waiting. |
-| `POST /hub/v1/inbox/{id}/result` | `{code, detail?, rev?}`. Idempotent; a late result from the last claimer is accepted. A successful push must name a revision that is on the hub. |
+| `POST /hub/v1/inbox/{id}/result` | `{code, detail?, rev?}`. Idempotent; a late result from the last claimer is accepted. A successful push must name a revision that is on the hub. Codes include `changed_since_move` (an archive step: the session was continued after the copy that was sent, or the hub no longer holds it; a retry cannot succeed, so a new move is needed), `not_archivable` for an archive step, and `archived_here` (a pull onto a machine that has the session archived). |
 
 Administrators create and follow commands with the **commands token** (`Authorization: Bearer asmk_…`) or the admin token; a machine credential gets `401`. Responses are `Cache-Control: no-store`.
 
@@ -75,7 +75,7 @@ Administrators create and follow commands with the **commands token** (`Authoriz
 
 | Route | |
 |---|---|
-| `POST /hub/v1/plans` | `{kind: "send", agent, session, from, to, exact?}` (machines by id or name) → `201` with the plan: `{id, kind, state, created, updated, steps: [push on from, pull on to]}`. The pull is `pending` with `rev: null` until the push succeeds; then the hub copies the revision the push reported (and the hub verified) into it and queues it. `400` if `from` and `to` are the same, or a machine is not willing for its step; `409` if another command for the session is in flight or a queue is full. |
+| `POST /hub/v1/plans` | `{kind: "send"\|"move", agent, session, from, to, exact?, confirm_archive?}` (machines by id or name) → `201` with the plan: `{id, kind, state, created, updated, steps}`. `kind` is `send` (steps: push on `from`, pull on `to`) or `move` (those, then archive on `from`; its push is always exact, `exact` is ignored). The pull is `pending` with `rev: null` until the push succeeds; then the hub copies the revision the push reported (and the hub verified) into it and queues it. A move's archive step is `pending` until the pull succeeded, then queued with that same revision; if the pull does not succeed it is cancelled with `skipped: true`. A move needs `confirm_archive` equal to the **id** of the `from` machine (`400` otherwise, naming the id to set: a guard against accidents, not an authorization for a token holder), and `from` must allow push and archive. `400` if `from` and `to` are the same, or a machine is not willing for its step; `409` if another command for the session is in flight or a queue is full (a move puts two steps on `from`). `POST /hub/v1/commands` refuses `op: "archive"`: it exists only as a step of a move. |
 | `GET /hub/v1/plans?limit=50` | Plans, newest first, steps embedded. |
 | `GET /hub/v1/plans/{id}` | One plan. Its `state` is `pending`, `queued` or `running` while any step is, `blocked`, `cancelled` or `expired` when a step ended that way, and `ok` only when every step is. |
 | `POST /hub/v1/plans/{id}/cancel` | Cancel every step that has not finished (a running one is asked to; steps after it are cancelled with `skipped: true`). `400` if it already finished. |

@@ -7,7 +7,7 @@ import ResultText from './ResultText.vue'
 import StatusBadge from './StatusBadge.vue'
 import { STATE_ICON } from './state-icons.js'
 import { AdminError } from '../../admin-api.js'
-import { STATES, STATE_LABEL, STATE_TONE, canRetry, cancelText, groupItems, isOpen, retryStep, stepLabel } from '../../commands.js'
+import { KIND_LABEL, OP_VERB, OP_WHERE, STATES, STATE_LABEL, STATE_TONE, canRetry, cancelText, groupItems, isOpen, retryStep, stepLabel } from '../../commands.js'
 import { confirmDialog } from '../../dialogs.js'
 import { ago } from '../../format.js'
 import { shortId } from '../../ids.js'
@@ -39,7 +39,7 @@ const machineOptions = computed(() => {
 const name = (c) => c.title || 'Untitled session'
 const sid = (c) => shortId({ ref: { agent: c.agent, native_id: c.session } })
 const parts = (i) => (i.plan ? i.steps : [i])
-const hit = (c, q) => [c.title, c.session, c.id, c.plan, c.agent, c.op, c.machine.name, c.from?.name, c.code, c.detail, STATE_LABEL[c.skipped ? 'skipped' : c.state]].some((x) => x && String(x).toLowerCase().includes(q))
+const hit = (c, q) => [c.title, c.session, c.id, c.plan, c.kind, c.agent, c.op, c.machine.name, c.from?.name, c.code, c.detail, STATE_LABEL[c.skipped ? 'skipped' : c.state]].some((x) => x && String(x).toLowerCase().includes(q))
 const shown = computed(() => {
   const q = f.value.q.trim().toLowerCase()
   return items.value.filter((i) => (!f.value.states.length || f.value.states.includes(i.state))
@@ -51,12 +51,12 @@ const clear = () => { f.value = { ...blank } }
 const byId = computed(() => Object.fromEntries(items.value.map((c) => [c.id, c])))
 const machineById = computed(() => Object.fromEntries(props.machines.map((m) => [m.id, m])))
 
-const verb = (c) => (c.op === 'push' ? 'Push' : 'Pull')
-const where = (c) => (c.op === 'push' ? `from ${c.machine.name}` : `to ${c.machine.name}`)
+const verb = (c) => OP_VERB[c.op] || c.op
+const where = (c) => `${OP_WHERE[c.op] || 'on'} ${c.machine.name}`
 const extra = (c) => [c.op === 'pull' && c.from ? `copy pushed by ${c.from.name}` : '', c.rev ? `pinned to ${c.rev.slice(0, 8)}` : '', c.args?.exact ? 'exact' : ''].filter(Boolean).join(' · ')
 const tries = (c) => `${c.attempts} ${c.attempts === 1 ? 'attempt' : 'attempts'}`
 const full = (t) => (t ? new Date(t).toLocaleString() : '')
-const what = (c) => (c.plan ? `send of ${name(c)} from ${c.from.name} to ${c.to.name}` : `${verb(c).toLowerCase()} of ${name(c)}`)
+const what = (c) => (c.plan ? `${c.kind} of ${name(c)} from ${c.from.name} to ${c.to.name}` : `${verb(c).toLowerCase()} of ${name(c)}`)
 const planMeta = (p) => [p.exact ? 'exact' : '', `plan ${p.id.slice(0, 8)}`].filter(Boolean).join(' · ')
 
 async function act(c, fn, done) {
@@ -101,7 +101,7 @@ const rows = computed(() => shown.value.map((c) => ({ id: c.id, state: STATE_LAB
     <HAlert v-if="error" tone="warning" title="Could not load commands" :description="error" />
 
     <HEmptyState v-if="!items.length && !error" icon="server" title="No remote commands yet"
-      description="Remote control lets this hub ask a machine to push or pull one session, or to move a copy from one machine to another. On a machine, run `asm control enable`, and keep `asm daemon` running so it can poll for commands. Then send the first one from here or from the CLI.">
+      description="Remote control lets this hub ask a machine to push or pull one session, to send a copy from one machine to another, or to move a session (a copy, then archive the original; nothing is deleted). On a machine, run `asm control enable`, and keep `asm daemon` running so it can poll for commands. Then send the first one from here or from the CLI.">
       <HButton variant="primary" label="New command" @click="emit('new')" />
     </HEmptyState>
 
@@ -126,7 +126,7 @@ const rows = computed(() => shown.value.map((c) => ({ id: c.id, state: STATE_LAB
       <ul v-else class="admin-cards" aria-label="Remote commands and plans">
         <li v-for="c in shown" :key="c.id" class="admin-card">
           <template v-if="c.plan">
-            <span class="admin-actions"><StatusBadge :tone="STATE_TONE[c.state]" :label="STATE_LABEL[c.state]" :icon="STATE_ICON[c.state]" /><strong>Send {{ c.from.name }} <span aria-hidden="true">→</span><span class="admin-sr"> to </span> {{ c.to.name }}</strong></span>
+            <span class="admin-actions"><StatusBadge :tone="STATE_TONE[c.state]" :label="STATE_LABEL[c.state]" :icon="STATE_ICON[c.state]" /><strong>{{ KIND_LABEL[c.kind] }} {{ c.from.name }} <span aria-hidden="true">→</span><span class="admin-sr"> to </span> {{ c.to.name }}</strong></span>
             <span class="admin-session"><AgentMark :agent="c.agent" :size="16" /><span class="admin-clip" :title="name(c)">{{ name(c) }}</span></span>
             <span class="admin-meta"><span class="admin-mono">{{ sid(c) }}</span> · {{ planMeta(c) }}</span>
             <span class="cp-result">{{ c.progress }}</span>
@@ -162,7 +162,7 @@ const rows = computed(() => shown.value.map((c) => ({ id: c.id, state: STATE_LAB
           <span v-if="byId[r.id].plan" class="cp-plan">
             <span class="admin-session">
               <AgentMark :agent="byId[r.id].agent" :size="16" />
-              <span class="sp-two"><span class="admin-clip" :title="r.what"><strong>Send</strong> {{ r.what }}</span><span class="admin-meta"><span class="admin-mono">{{ sid(byId[r.id]) }}</span> · {{ planMeta(byId[r.id]) }}</span></span>
+              <span class="sp-two"><span class="admin-clip" :title="r.what"><strong>{{ KIND_LABEL[byId[r.id].kind] }}</strong> {{ r.what }}</span><span class="admin-meta"><span class="admin-mono">{{ sid(byId[r.id]) }}</span> · {{ planMeta(byId[r.id]) }}</span></span>
             </span>
             <PlanTimeline :steps="byId[r.id].steps" :machines="machineById" :label="`Steps of the ${what(byId[r.id])}`" />
           </span>

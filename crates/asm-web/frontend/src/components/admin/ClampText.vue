@@ -3,7 +3,7 @@ import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 // A sentence cut to three lines, with the whole of it behind a "Show more" button when it does not fit
 // (an install path in a narrow column would otherwise run down the page).
-const props = defineProps({ text: { type: String, required: true }, small: { type: Boolean, default: false } })
+const props = defineProps({ text: { type: String, required: true }, small: { type: Boolean, default: false }, whole: { type: Boolean, default: false } }) // whole: our own fixed advice, never cut
 const el = ref(null)
 const open = ref(false)
 const over = ref(false)
@@ -22,7 +22,7 @@ watch(open, () => nextTick(measure))
 
 <template>
   <span class="cl" :class="{ 'cl-small': small }">
-    <span ref="el" class="cl-text" :class="{ 'cl-clamp': !open }" :title="over && !open ? text : undefined">{{ text }}</span>
+    <span ref="el" class="cl-text" :class="{ 'cl-clamp': !open && !whole }" :title="over && !open ? text : undefined">{{ text }}</span>
     <button v-if="over || open" type="button" class="cl-more" :aria-expanded="open" @click="open = !open">{{ open ? 'Show less' : 'Show more' }}<span class="admin-sr"> of the result</span></button>
   </span>
 </template>

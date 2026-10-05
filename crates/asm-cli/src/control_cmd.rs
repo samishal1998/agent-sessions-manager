@@ -1,6 +1,6 @@
 //! `asm control`: ask other machines to push or pull a session through the
-//! hub, send a session from one machine to another, and decide whether this
-//! one may be asked.
+//! hub, send a session from one machine to another (or move it: send, then
+//! archive the source), and decide whether this one may be asked.
 //!
 //! Two sides, one namespace. `enable` / `disable` / `status` are about this
 //! machine (its daemon does what the hub asks only after `enable`). The rest
@@ -22,8 +22,12 @@ use asm_core::model::AgentKind;
 pub enum ControlCommand {
     /// Let the hub ask this machine to push and pull sessions. Off until you
     /// run this; needs the daemon (`asm daemon install`) to be running.
+    /// Archiving a session here, as the last step of a move, is a separate
+    /// opt-in: `--allow push,pull,archive`.
     Enable {
-        /// Allow only these operations (comma separated): push, pull.
+        /// Allow only these operations (comma separated): push, pull, archive.
+        /// `archive` is never on by default: it lets the hub archive a session
+        /// here as the last step of a move (reversible with `asm unarchive`).
         #[arg(long, value_delimiter = ',', default_value = "push,pull")]
         allow: Vec<String>,
     },
@@ -87,6 +91,30 @@ pub enum ControlCommand {
         #[arg(long)]
         wait: bool,
     },
+    /// Move a session from one machine to another: the first pushes it, the
+    /// second pulls exactly that copy, and only then is it archived on the
+    /// first. Nothing is deleted; `asm unarchive` brings it back there.
+    Move {
+        /// The session: `agent:id`, or anything on the hub that names it.
+        r#ref: String,
+        /// The machine that has the session and archives it at the end (id or
+        /// name). It must have allowed archive: `asm control enable --allow
+        /// push,pull,archive` there. When this machine has not joined the hub,
+        /// give the machine's id.
+        #[arg(long)]
+        from: String,
+        /// The machine that pulls it (id or name).
+        #[arg(long)]
+        to: String,
+        /// Do not ask for confirmation (required when there is no terminal).
+        #[arg(long)]
+        yes: bool,
+        /// Follow the plan until every step has ended (up to ten minutes).
+        /// Exit status: 0 plan ok, 1 blocked, cancelled or expired, 2 still
+        /// waiting, 3 could not reach the hub.
+        #[arg(long)]
+        wait: bool,
+    },
     /// Recent commands and plans, newest first.
     Jobs {
         /// How many commands to list. A plan's steps count as commands, and
@@ -114,15 +142,27 @@ fn word<T: serde::Serialize>(v: &T) -> String {
     serde_json::to_value(v).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default()
 }
 
+/// `push, pull and archive`.
+fn list(words: &[String]) -> String {
+    match words {
+        [] => "do nothing".into(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
+    }
+}
+
+fn hub_url() -> anyhow::Result<String> {
+    match std::env::var("ASM_HUB_URL") {
+        Ok(url) => Ok(url),
+        Err(_) => Ok(client::load().context("no hub to talk to: join one, or set ASM_HUB_URL")?.url),
+    }
+}
+
 fn client() -> anyhow::Result<Control> {
     let token = std::env::var("ASM_HUB_COMMANDS_TOKEN")
         .or_else(|_| std::env::var("ASM_HUB_ADMIN_TOKEN"))
         .context("set ASM_HUB_COMMANDS_TOKEN to the token `asm hub commands-token` prints on the hub")?;
-    let url = match std::env::var("ASM_HUB_URL") {
-        Ok(url) => url,
-        Err(_) => client::load().context("no hub to talk to: join one, or set ASM_HUB_URL")?.url,
-    };
-    Ok(Control::new(&url, &token)?)
+    Ok(Control::new(&hub_url()?, &token)?)
 }
 
 /// What the session is called, from what the person typed: looked up on the
@@ -151,17 +191,25 @@ fn hint(code: Code, op: Op) -> Option<&'static str> {
         (Code::Diverged, Op::Pull) => "The target machine has changes the sent copy does not. Decide which to keep there, then retry.",
         (Code::Diverged, Op::Push) => "Both machines changed this session. Resolve it on the machine, or push with --force there.",
         (Code::Ahead, _) => "That machine's copy is newer than the one being pulled.",
+        (Code::Live, Op::Archive) => "The session is running on the source. Close it without continuing it, then retry. If you continue it, run the move again.",
         (Code::Live, _) => "The session is running on that machine. Close it and retry.",
         (Code::NoDir, _) => "The project folder does not exist on that machine. Pull it there once with --project-dir.",
         (Code::NotRestorable, _) => "This agent's sessions cannot be restored onto a machine yet.",
         (Code::HubNewer, _) => "The hub has a newer copy from another machine. Pull it first.",
         (Code::Conflict, _) => "Another machine pushed at the same time. Retry.",
         (Code::RemoteOff, _) => "Remote control is off on that machine (`asm control enable` there).",
-        (Code::Unsupported, _) => "That machine's asm is too old for this command.",
+        (Code::ChangedSinceMove, _) => CHANGED_SINCE_MOVE,
+        (Code::ArchivedHere, _) => "This machine has the session archived. Run `asm unarchive` there, then retry.",
+        (Code::NotArchivable, _) => "This session cannot be archived on that machine.",
+        (Code::Unsupported, Op::Archive) => "That machine does not allow archive commands: run `asm control enable --allow push,pull,archive` there.",
+        (Code::Unsupported, _) => "That machine's asm is too old, or does not run this kind of command.",
         (Code::Expired, _) => "The machine did not pick this up in time. Retry when it is online.",
         _ => return None,
     })
 }
+
+/// A blocked archive step cannot be retried into success: the sync record will not match until a new push.
+const CHANGED_SINCE_MOVE: &str = "The session was continued on the source after the copy that was sent, so it was not archived. The destination has the sent copy. To move the current state, run the move again.";
 
 fn line(job: &Job) -> String {
     let short: String = job.session.chars().take(8).collect();
@@ -178,7 +226,7 @@ fn line(job: &Job) -> String {
         (Some(code), None) => word(code),
         _ => String::new(),
     };
-    format!("{}  {:<9} {:<4} {}:{short}  on {who}  {age}  {result}", job.id, word(&job.state), word(&job.op), job.agent)
+    format!("{}  {:<9} {:<7} {}:{short}  on {who}  {age}  {result}", job.id, word(&job.state), word(&job.op), job.agent)
 }
 
 fn show(job: &Job, json: bool) -> anyhow::Result<()> {
@@ -240,6 +288,12 @@ fn poll<T>(id: &str, mut ask: impl FnMut() -> Result<T, asm_core::CoreError>) ->
     }
 }
 
+/// A move's archive that is still waiting: the source has not been touched.
+fn not_started(archive: &Job, steps: &[Job]) -> String {
+    let until = steps.iter().find(|s| Some(&s.id) == archive.needs.as_ref()).and_then(|s| s.step).map_or("the earlier step".to_string(), |n| format!("step {n}"));
+    format!("Not started: {} keeps its session until {until} succeeds; nothing has been archived.", archive.machine.name)
+}
+
 /// The step (or lone command) a wait that ran out is still on, and what that means.
 fn still_waiting(jobs: &[Job], id: &str) -> String {
     let Some(job) = jobs.iter().find(|j| !j.state.is_final()) else {
@@ -254,7 +308,9 @@ fn still_waiting(jobs: &[Job], id: &str) -> String {
         State::Pending => format!("{what} is waiting for the step before it."),
         _ => format!("{what} is still queued: it stays queued until {}'s daemon asks the hub, and expires after 7 days.", job.machine.name),
     };
-    format!("still waiting after {} minutes: {state} `asm control show {id}` follows it.", WAIT_SECS / 60)
+    // A move's archive has not started, and says what that means for the source.
+    let hold = jobs.iter().find(|j| j.op == Op::Archive && j.state == State::Pending).map_or(String::new(), |a| format!(" {}", not_started(a, jobs)));
+    format!("still waiting after {} minutes: {state}{hold} `asm control show {id}` follows it.", WAIT_SECS / 60)
 }
 
 /// Poll until the command ends (or ten minutes pass), then say how it went.
@@ -290,8 +346,9 @@ fn step_line(job: &Job) -> String {
 
 fn plan_head(plan: &Plan) -> String {
     let session = plan.steps.first().map_or(String::new(), |s| format!("{}:{}", s.agent, s.session.chars().take(8).collect::<String>()));
+    // The machine that pushes and the one that pulls (a move's archive is back on the first).
     let (from, to) = match plan.steps.as_slice() {
-        [first, .., last] => (first.machine.name.as_str(), last.machine.name.as_str()),
+        [first, second, ..] => (first.machine.name.as_str(), second.machine.name.as_str()),
         _ => ("", ""),
     };
     let age = daemon::ago((now() - plan.created.as_second()).max(0) as u64);
@@ -308,6 +365,7 @@ fn show_plan(plan: &Plan, json: bool) -> anyhow::Result<()> {
         println!("{}", step_line(step));
         let when = daemon::ago((now() - step.updated.as_second()).max(0) as u64);
         let note = match (step.state, step.attempts, step.cancel_requested) {
+            (State::Pending, ..) if step.op == Op::Archive => not_started(step, &plan.steps),
             (State::Pending, ..) => "waiting for the step before it".to_string(),
             (State::Running, _, true) => format!("cancel requested; it may still finish ({when})"),
             (_, n, _) if n > 1 => format!("{n} attempts, last change {when}"),
@@ -315,10 +373,18 @@ fn show_plan(plan: &Plan, json: bool) -> anyhow::Result<()> {
         };
         println!("       {note}");
     }
-    if let Some(line) = stopped(plan) {
+    if let Some(line) = stopped(plan).or_else(|| archived(plan)) {
         println!("{line}");
     }
     Ok(())
+}
+
+/// What a finished move did to the source, and the way back.
+fn archived(plan: &Plan) -> Option<String> {
+    let step = plan.steps.iter().find(|s| s.op == Op::Archive).filter(|s| plan.state == State::Ok && s.state == State::Ok)?;
+    let (source, session) = (&step.machine.name, format!("{}:{}", step.agent, step.session));
+    let did = if step.code == Some(Code::AlreadyApplied) { "already had" } else { "archived" };
+    Some(format!("{source} {did} {session}; undo with asm unarchive {session} on {source}."))
 }
 
 /// The step a plan stopped at (the first that did not succeed, preferring one that really ended
@@ -329,6 +395,10 @@ fn stopped(plan: &Plan) -> Option<String> {
     }
     let step = plan.steps.iter().find(|s| s.state != State::Ok && !s.skipped).or_else(|| plan.steps.iter().find(|s| s.state != State::Ok))?;
     let n = step.step.unwrap_or(1);
+    // Asking again cannot succeed (the sync record will not match until a new push): only a new move can.
+    if step.op == Op::Archive && step.code == Some(Code::ChangedSinceMove) {
+        return Some(format!("step {n} stopped; earlier steps stay done. {CHANGED_SINCE_MOVE}"));
+    }
     let mut out = if n > 1 {
         format!("step {n} stopped; earlier steps stay done. `asm control retry {}` queues step {n} again.", plan.id)
     } else {
@@ -367,7 +437,7 @@ fn wait_for_plan(ctl: &Control, id: &str, json: bool) -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&plan)?);
             } else {
                 println!("plan {}", word(&plan.state));
-                if let Some(line) = stopped(&plan) {
+                if let Some(line) = stopped(&plan).or_else(|| archived(&plan)) {
                     println!("{line}");
                 }
             }
@@ -405,7 +475,8 @@ pub fn run(command: ControlCommand, json: bool) -> anyhow::Result<()> {
                 .map(|a| match a.as_str() {
                     "push" => Ok(Op::Push),
                     "pull" => Ok(Op::Pull),
-                    other => Err(anyhow::anyhow!("{other:?} is not an operation (push, pull)")),
+                    "archive" => Ok(Op::Archive),
+                    other => Err(anyhow::anyhow!("{other:?} is not an operation (push, pull, archive)")),
                 })
                 .collect::<Result<_, _>>()?;
             let remote = client::load()?;
@@ -414,9 +485,12 @@ pub fn run(command: ControlCommand, json: bool) -> anyhow::Result<()> {
                 println!("{}", serde_json::to_string_pretty(&config)?);
                 return Ok(());
             }
-            println!("Remote control is on: {} may ask this machine to {}.", remote.url, config.allow.join(" and "));
+            println!("Remote control is on: {} may ask this machine to {}.", remote.url, list(&config.allow));
             if daemon::status()?.state != DaemonState::Running {
                 println!("Nothing will happen until its daemon runs: `asm daemon install` (or `asm daemon start`).");
+            }
+            if ops.contains(&Op::Archive) {
+                println!("It may also archive sessions here, as the last step of a move (`asm unarchive` brings one back).");
             }
             println!("`asm control disable` turns it off.");
         }
@@ -435,7 +509,7 @@ pub fn run(command: ControlCommand, json: bool) -> anyhow::Result<()> {
                 return Ok(());
             }
             if config.enabled {
-                println!("Remote control: on ({})", config.allow.join(", "));
+                println!("Remote control: on ({})", list(&config.allow));
             } else {
                 println!("Remote control: off (`asm control enable` turns it on)");
             }
@@ -504,9 +578,42 @@ pub fn run(command: ControlCommand, json: bool) -> anyhow::Result<()> {
                 from,
                 to,
                 exact: exact.then_some(true),
+                confirm_archive: None,
             })?;
             if !json {
                 println!("planned {}: push on {}, then pull on {} ({} keeps its copy). It runs as those machines' daemons ask (every few seconds).", plan.id, plan.steps[0].machine.name, plan.steps[1].machine.name, plan.steps[0].machine.name);
+            }
+            if wait { wait_for_plan(&ctl, &plan.id, json)? } else { show_plan(&plan, json)? }
+        }
+        ControlCommand::Move { r#ref, from, to, yes, wait } => {
+            let (agent, id) = session(&r#ref)?;
+            // The hub wants the source machine's id, typed on purpose, so the machines are looked up
+            // first (a bad or ambiguous name fails before anything is asked). Only the hub this command
+            // goes to can answer: a machine joined to another hub is no help (give the id then).
+            let url = hub_url()?;
+            // The token is checked before anything is asked, so nobody confirms and then learns it is missing.
+            let ctl = client()?;
+            // A joined machine whose credential was revoked cannot look names up: the ids still work.
+            let machines = match client::load() {
+                Ok(remote) if same_hub(&remote.url, &url) => remote.machines().ok(),
+                _ => None,
+            };
+            let ends = Ends::resolve(&from, &to, machines.as_deref())?;
+            confirm_move(&format!("{agent}:{id}"), &ends, yes, std::io::IsTerminal::is_terminal(&std::io::stdin()), ask_yes)?;
+            let plan = ctl.create_plan(&NewPlan {
+                kind: "move".into(),
+                agent: agent.as_str().into(),
+                session: id,
+                from: ends.from_id.clone(),
+                to: ends.to_id,
+                exact: None,
+                confirm_archive: Some(ends.from_id),
+            })?;
+            if !json {
+                println!(
+                    "planned {}: push on {}, pull on {}, then archive on {} (nothing is deleted; `asm unarchive` brings it back). It runs as those machines' daemons ask (every few seconds).",
+                    plan.id, plan.steps[0].machine.name, plan.steps[1].machine.name, plan.steps[0].machine.name
+                );
             }
             if wait { wait_for_plan(&ctl, &plan.id, json)? } else { show_plan(&plan, json)? }
         }
@@ -517,7 +624,7 @@ pub fn run(command: ControlCommand, json: bool) -> anyhow::Result<()> {
                 return Ok(());
             }
             if jobs.is_empty() {
-                println!("No commands yet. `asm control push|pull <machine> <session>` asks a machine; `asm control send` moves a copy between two.");
+                println!("No commands yet. `asm control push|pull <machine> <session>` asks a machine; `asm control send` copies a session between two machines, `asm control move` moves it.");
             }
             // Newest first; a plan is shown once, at its newest step, with all its steps.
             let mut shown = std::collections::HashSet::new();
@@ -561,6 +668,74 @@ pub fn run(command: ControlCommand, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The two machines of a move as the hub knows them, so what is confirmed is what is sent.
+struct Ends {
+    from_id: String,
+    from_name: String,
+    to_id: String,
+    to_name: String,
+}
+
+/// A machine by id, else by a unique name.
+fn machine<'a>(query: &str, machines: &'a [asm_core::hub::store::Machine]) -> anyhow::Result<&'a asm_core::hub::store::Machine> {
+    if let Some(m) = machines.iter().find(|m| m.id == query) {
+        return Ok(m);
+    }
+    let hits: Vec<_> = machines.iter().filter(|m| m.name == query).collect();
+    match hits.as_slice() {
+        [one] => Ok(one),
+        [] => bail!("no machine on this hub is called {query:?}"),
+        many => bail!("{query:?} names {} machines; use the machine's id", many.len()),
+    }
+}
+
+impl Ends {
+    /// Look both up among the hub's machines when they are known, else take them as given (the
+    /// person gave the source's id, which the hub wants as the confirmation).
+    fn resolve(from: &str, to: &str, machines: Option<&[asm_core::hub::store::Machine]>) -> anyhow::Result<Ends> {
+        let Some(machines) = machines else {
+            return Ok(Ends { from_id: from.into(), from_name: from.into(), to_id: to.into(), to_name: to.into() });
+        };
+        let (a, b) = (machine(from, machines)?, machine(to, machines)?);
+        if a.id == b.id {
+            bail!("{} is both ends of the move", a.name);
+        }
+        Ok(Ends { from_id: a.id.clone(), from_name: a.name.clone(), to_id: b.id.clone(), to_name: b.name.clone() })
+    }
+
+    /// What a move does, in the words the person confirms.
+    fn summary(&self, session: &str) -> String {
+        let (from, to) = (&self.from_name, &self.to_name);
+        format!("move {session}: push from {from}, pull on {to}, then archive on {from} — nothing is deleted; asm unarchive brings it back")
+    }
+}
+
+/// A move archives the source, so it is only made once the person said so: `--yes`, or an answer
+/// at a terminal. Without either it refuses (a script must pass `--yes` on purpose).
+fn confirm_move(session: &str, ends: &Ends, yes: bool, tty: bool, ask: impl FnOnce() -> bool) -> anyhow::Result<()> {
+    if yes {
+        return Ok(());
+    }
+    eprintln!("This will {}.", ends.summary(session));
+    if !tty {
+        bail!("not asking: there is no terminal to answer on. Pass --yes to confirm the archive on {}.", ends.from_name);
+    }
+    if ask() { Ok(()) } else { bail!("not confirmed; nothing was done") }
+}
+
+fn ask_yes() -> bool {
+    use std::io::Write;
+    eprint!("Continue? [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer).is_ok() && matches!(answer.trim(), "y" | "Y" | "yes" | "Yes")
+}
+
+/// The same hub, whatever the trailing slash.
+fn same_hub(a: &str, b: &str) -> bool {
+    a.trim().trim_end_matches('/') == b.trim().trim_end_matches('/')
+}
+
 fn queued(job: &Job, json: bool, wait: bool, ctl: &Control) -> anyhow::Result<()> {
     if !json {
         println!("queued {} on {}: it runs when that machine's daemon next asks (every few seconds)", job.id, job.machine.name);
@@ -575,7 +750,7 @@ mod tests {
     fn step(n: u32, op: &str, state: &str, more: serde_json::Value) -> Job {
         let mut v = serde_json::json!({
             "id": format!("c{n}"), "op": op, "agent": "claude-code", "session": "s1", "plan": "p1", "step": n,
-            "machine": { "id": format!("m{n}"), "name": if n == 1 { "laptop" } else { "server" } },
+            "machine": { "id": format!("m{n}"), "name": if n == 2 { "server" } else { "laptop" } },
             "state": state, "attempts": 1, "created": "2026-01-01T00:00:00Z", "updated": "2026-01-01T00:00:00Z",
             "expires": "2026-01-08T00:00:00Z", "created_by": "t",
         });
@@ -621,5 +796,130 @@ mod tests {
         assert!(said.contains("until server's daemon asks") && said.contains("expires after 7 days"));
         let running = [step(1, "push", "running", serde_json::json!({})), step(2, "pull", "pending", serde_json::json!({}))];
         assert!(still_waiting(&running, "p1").contains("step 1 (push on laptop) is still running"));
+    }
+
+    fn plan3(a: Job, b: Job, c: Job) -> Plan {
+        Plan::new("p1", vec![a, b, c])
+    }
+
+    #[test]
+    fn a_move_names_the_machine_that_pulls_and_the_step_it_stopped_at() {
+        let ok = |n, op| step(n, op, "ok", serde_json::json!({}));
+        let blocked = plan3(ok(1, "push"), ok(2, "pull"), step(3, "archive", "blocked", serde_json::json!({ "code": "changed_since_move" })));
+        assert_eq!(blocked.kind, "move");
+        let head = plan_head(&blocked);
+        assert!(head.contains("plan blocked") && head.contains("move") && head.contains("laptop -> server"), "{head}");
+        // Asking again cannot succeed, so the line says to run the move again, and never offers a retry.
+        let line = stopped(&blocked).unwrap();
+        assert!(line.starts_with("step 3 stopped; earlier steps stay done. The session was continued on the source"), "{line}");
+        assert!(line.ends_with("run the move again."), "{line}");
+        assert!(!line.contains("retry") && !line.contains("send again"), "{line}");
+        // Any other stop of the archive step is still retried.
+        let live = plan3(ok(1, "push"), ok(2, "pull"), step(3, "archive", "blocked", serde_json::json!({ "code": "live" })));
+        let line = stopped(&live).unwrap();
+        assert!(line.contains("`asm control retry p1` queues step 3 again.") && line.ends_with("If you continue it, run the move again."), "{line}");
+        // A pull that failed: the skipped archive is not where it stopped.
+        let cut = plan3(ok(1, "push"), step(2, "pull", "blocked", serde_json::json!({ "code": "live" })), step(3, "archive", "cancelled", serde_json::json!({ "skipped": true })));
+        assert!(stopped(&cut).unwrap().starts_with("step 2 stopped"));
+        assert!(stopped(&plan3(ok(1, "push"), ok(2, "pull"), ok(3, "archive"))).is_none());
+        let open = plan3(ok(1, "push"), ok(2, "pull"), step(3, "archive", "queued", serde_json::json!({})));
+        assert!(stopped(&open).is_none());
+        assert!(step_line(&open.steps[2]).contains("archive"));
+        assert!(still_waiting(&open.steps, "p1").contains("step 3 (archive on laptop) is still queued"));
+    }
+
+    #[test]
+    fn a_waiting_archive_says_the_source_keeps_its_session() {
+        let ok = |n, op| step(n, op, "ok", serde_json::json!({}));
+        let mut waiting = plan3(ok(1, "push"), step(2, "pull", "queued", serde_json::json!({})), step(3, "archive", "pending", serde_json::json!({})));
+        let archive_id = waiting.steps[2].id.clone();
+        waiting.steps[2].needs = Some(waiting.steps[1].id.clone());
+        let said = not_started(&waiting.steps[2], &waiting.steps);
+        assert_eq!(said, "Not started: laptop keeps its session until step 2 succeeds; nothing has been archived.");
+        let timeout = still_waiting(&waiting.steps, "p1");
+        assert!(timeout.contains("step 2 (pull on server) is still queued") && timeout.contains(&said), "{timeout}");
+        // A pending pull of a send is only waiting.
+        let send = plan(step(1, "push", "running", serde_json::json!({})), step(2, "pull", "pending", serde_json::json!({})));
+        assert!(!still_waiting(&send.steps, "p1").contains("Not started"));
+        // A queued archive is the machine's to pick up: no claim about the source.
+        waiting.steps[1].state = State::Ok;
+        waiting.steps[2].state = State::Queued;
+        assert!(!still_waiting(&waiting.steps, "p1").contains("Not started"), "{archive_id}");
+    }
+
+    #[test]
+    fn a_finished_move_says_where_it_archived_and_the_way_back() {
+        let ok = |n, op| step(n, op, "ok", serde_json::json!({}));
+        let done = plan3(ok(1, "push"), ok(2, "pull"), step(3, "archive", "ok", serde_json::json!({ "code": "ok" })));
+        assert_eq!(archived(&done).unwrap(), "laptop archived claude-code:s1; undo with asm unarchive claude-code:s1 on laptop.");
+        let twice = plan3(ok(1, "push"), ok(2, "pull"), step(3, "archive", "ok", serde_json::json!({ "code": "already_applied" })));
+        assert!(archived(&twice).unwrap().starts_with("laptop already had claude-code:s1;"));
+        // Nothing to undo when it did not finish, or for a send.
+        let blocked = plan3(ok(1, "push"), ok(2, "pull"), step(3, "archive", "blocked", serde_json::json!({ "code": "live" })));
+        assert!(archived(&blocked).is_none());
+        assert!(archived(&plan(ok(1, "push"), ok(2, "pull"))).is_none());
+    }
+
+    #[test]
+    fn the_allowed_operations_read_as_a_sentence() {
+        let w = |l: &[&str]| list(&l.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(w(&["push", "pull", "archive"]), "push, pull and archive");
+        assert_eq!(w(&["push", "pull"]), "push and pull");
+        assert_eq!(w(&["push"]), "push");
+        assert_eq!(w(&[]), "do nothing");
+        assert!(same_hub("http://hub:7777/", " http://hub:7777") && !same_hub("http://hub:7777", "http://other:7777"));
+        let job = step(1, "archive", "ok", serde_json::json!({}));
+        assert!(line(&job).contains(" ok        archive "), "{}", line(&job));
+    }
+
+    #[test]
+    fn the_two_new_codes_have_one_fixed_hint_each() {
+        let changed = hint(Code::ChangedSinceMove, Op::Archive).unwrap();
+        assert_eq!(changed, "The session was continued on the source after the copy that was sent, so it was not archived. The destination has the sent copy. To move the current state, run the move again.");
+        assert!(!changed.contains("retry") && !changed.contains("send again"));
+        assert_eq!(hint(Code::NotArchivable, Op::Archive), Some("This session cannot be archived on that machine."));
+        assert_eq!(hint(Code::Unsupported, Op::Archive).unwrap(), "That machine does not allow archive commands: run `asm control enable --allow push,pull,archive` there.");
+        assert!(hint(Code::Unsupported, Op::Pull).unwrap().contains("too old") && !hint(Code::Unsupported, Op::Pull).unwrap().contains("archive"));
+        assert_eq!(hint(Code::ArchivedHere, Op::Pull).unwrap(), "This machine has the session archived. Run `asm unarchive` there, then retry.");
+        assert!(hint(Code::Live, Op::Archive).unwrap().contains("Close it without continuing it"));
+        assert!(!hint(Code::Live, Op::Pull).unwrap().contains("without continuing"));
+    }
+
+    fn m(id: &str, name: &str) -> asm_core::hub::store::Machine {
+        serde_json::from_value(serde_json::json!({ "id": id, "name": name, "joined": "2026-01-01T00:00:00Z" })).unwrap()
+    }
+    fn ends() -> Ends {
+        Ends::resolve("laptop", "server", Some(&[m("aaaa", "laptop"), m("bbbb", "server")])).unwrap()
+    }
+
+    #[test]
+    fn a_move_asks_unless_told_and_never_without_a_terminal() {
+        let never = || -> bool { panic!("must not ask") };
+        let e = ends();
+        assert!(confirm_move("claude-code:s1", &e, true, false, never).is_ok(), "--yes needs no terminal");
+        assert!(confirm_move("claude-code:s1", &e, true, true, never).is_ok(), "nor a question");
+        let err = confirm_move("claude-code:s1", &e, false, false, never).unwrap_err().to_string();
+        assert!(err.contains("Pass --yes") && err.contains("laptop"), "{err}");
+        assert!(confirm_move("claude-code:s1", &e, false, true, || true).is_ok());
+        assert!(confirm_move("claude-code:s1", &e, false, true, || false).unwrap_err().to_string().contains("nothing was done"));
+        assert_eq!(e.summary("claude-code:s1"), "move claude-code:s1: push from laptop, pull on server, then archive on laptop — nothing is deleted; asm unarchive brings it back");
+    }
+
+    #[test]
+    fn the_machines_are_resolved_before_anything_is_asked() {
+        let all = [m("aaaa", "laptop"), m("bbbb", "server"), m("cccc", "dup"), m("dddd", "dup")];
+        // The confirmation is the source's id whatever it was called, and the echo names both.
+        let e = Ends::resolve("laptop", "bbbb", Some(&all)).unwrap();
+        assert_eq!((e.from_id.as_str(), e.from_name.as_str(), e.to_id.as_str(), e.to_name.as_str()), ("aaaa", "laptop", "bbbb", "server"));
+        let e = Ends::resolve("aaaa", "server", Some(&all)).unwrap();
+        assert_eq!((e.from_id.as_str(), e.from_name.as_str()), ("aaaa", "laptop"));
+        let bad = |from, to| Ends::resolve(from, to, Some(&all)).err().unwrap().to_string();
+        assert!(bad("dup", "server").contains("names 2 machines"));
+        assert!(bad("nobody", "server").contains("no machine"));
+        assert!(bad("laptop", "nobody").contains("no machine"));
+        assert!(bad("laptop", "aaaa").contains("both ends"));
+        // Not joined to this hub: the ids are taken as given.
+        let e = Ends::resolve("aaaa", "server", None).unwrap();
+        assert_eq!((e.from_id.as_str(), e.to_id.as_str()), ("aaaa", "server"));
     }
 }

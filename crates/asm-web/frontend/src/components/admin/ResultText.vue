@@ -22,7 +22,7 @@ const silent = computed(() => {
 
 <template>
   <span class="rt">
-    <ClampText v-if="text" :text="text" />
+    <ClampText v-if="text" :text="text" :whole="text !== c.detail" />
     <ClampText v-if="more" :text="more" small />
     <span v-if="silent" class="rt-warn" role="note"><TriangleAlert :size="14" aria-hidden="true" /><span>{{ silent }}</span></span>
   </span>

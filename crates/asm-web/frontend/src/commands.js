@@ -13,12 +13,30 @@ export const HINTS = {
   hub_newer: 'The hub has a newer copy from another machine. Pull it first.',
   conflict: 'Another machine pushed at the same time. Retry.',
   remote_off: 'Remote control is off on that machine (asm control enable).',
-  unsupported: "That machine's asm is too old for this command.",
+  unsupported: "That machine's asm is too old, or does not run this kind of command.",
   expired: 'The machine did not pick this up in time. Retry when it is online.',
+  changed_since_move: 'The session was continued on the source after the copy that was sent, so it was not archived. The destination has the sent copy. To move the current state, run the move again.',
+  archived_here: 'This machine has the session archived. Restore it there (asm unarchive, or in the agent itself), then Retry.',
+  not_archivable: 'This session cannot be archived on that machine.',
 }
 // A pull that diverged is a different decision: a force push from the target would replace the hub's current copy with the target's divergent one.
 const PULL_DIVERGED = 'The target machine has changes the sent copy does not. Decide which to keep there, then Retry.'
+const ARCHIVE_ENABLE = 'asm control enable --allow push,pull,archive'
+// Codes whose advice depends on which step ended with them.
+const ARCHIVE_HINTS = {
+  unsupported: `That machine does not allow archive commands: run ${ARCHIVE_ENABLE} there.`,
+  live: 'The session is running on the source. Close it without continuing it, then Retry. If you continue it, run the move again.',
+}
+/// What to do about a command that ended with `code`; `op` is the step's, since the same code means different things on an archive.
+export const hintFor = (code, op) => (op === 'archive' && ARCHIVE_HINTS[code]) || (code === 'diverged' && op === 'pull' ? PULL_DIVERGED : HINTS[code]) || ''
 const DONE = { ok: 'The machine finished it.', in_sync: 'Already in sync, nothing to do.', already_applied: 'Already applied, nothing to do.', cancelled: 'Cancelled before it finished.' }
+
+/// A plan is a send (copy) or a move (copy, then archive the source). The hub says which; older rows are told apart by their steps.
+export const KIND_LABEL = { send: 'Send', move: 'Move' }
+export const planKind = (steps) => steps[0]?.plan_kind || (steps.some((c) => c.op === 'archive') ? 'move' : 'send')
+export const OP_VERB = { push: 'Push', pull: 'Pull', archive: 'Archive' }
+/// Where an op runs, as a preposition: a push leaves its machine, a pull arrives, an archive happens on it.
+export const OP_WHERE = { push: 'from', pull: 'to', archive: 'on' }
 
 export const STATES = ['pending', 'queued', 'running', 'ok', 'blocked', 'cancelled', 'expired']
 // `skipped` is not a hub state: it is a cancelled step whose `skipped` flag is set (an earlier step did not succeed).
@@ -29,7 +47,8 @@ export const STATE_TONE = { pending: 'neutral', queued: 'neutral', running: 'inf
 export const stateKey = (c) => (c.skipped ? 'skipped' : c.state)
 /// Not final: queued, running, or (a plan step) waiting for its parent.
 export const isOpen = (c) => c.state === 'pending' || c.state === 'queued' || c.state === 'running'
-export const canRetry = (c) => !c.skipped && (c.state === 'blocked' || c.state === 'expired' || c.state === 'cancelled')
+/// Not for an archive that found the session continued: the sync record will not match again until a new push, so only a new move can succeed.
+export const canRetry = (c) => !c.skipped && (c.state === 'blocked' || c.state === 'expired' || c.state === 'cancelled') && !(c.op === 'archive' && c.code === 'changed_since_move')
 /// A step skipped because the plan was cancelled while its parent was still running: the parent then finished ok, so the plan can go on from here.
 const resumable = (c, byId) => c.skipped && byId[c.needs]?.state === 'ok'
 
@@ -47,6 +66,7 @@ export function asked(machine, now = Date.now()) {
 export function resultText(c, byId = {}, machine = null, now = Date.now()) {
   if (c.state === 'pending') {
     const n = byId[c.needs]?.step
+    if (c.op === 'archive') return `Not started: ${c.machine?.name || 'the source'} keeps its session until ${n ? `step ${n}` : 'the earlier step'} succeeds; nothing has been archived.`
     return n ? `Waiting for step ${n}.` : 'Waiting for the earlier step.'
   }
   if (c.skipped) return c.detail || 'Skipped: an earlier step did not succeed.'
@@ -57,12 +77,13 @@ export function resultText(c, byId = {}, machine = null, now = Date.now()) {
   }
   if (c.state === 'running') return c.cancel_requested ? 'Cancel requested. It may still finish.' : 'The machine is working on it.'
   const code = c.code || ''
+  if (c.op === 'archive' && c.state === 'ok' && code === 'ok') return `Archived on ${c.machine?.name || 'the source machine'}. asm unarchive brings it back.`
   if (code === 'failed') return c.detail || 'It failed.'
-  return (code === 'diverged' && c.op === 'pull' ? PULL_DIVERGED : HINTS[code]) || DONE[code] || c.detail || DONE[c.state] || ''
+  return hintFor(code, c.op) || DONE[code] || c.detail || DONE[c.state] || ''
 }
 
 /// The hub's own sentence, when the fixed hint above does not already say it.
-export const moreDetail = (c, byId = {}) => (isOpen(c) || c.skipped || !c.detail || c.detail === resultText(c, byId) ? '' : c.detail)
+export const moreDetail = (c, byId = {}) => (isOpen(c) || c.skipped || !c.detail || c.detail === resultText(c, byId) || (c.op === 'archive' && c.state === 'ok' && c.code === 'ok') ? '' : c.detail)
 
 /// The plan state the hub derives from the steps: any step still going wins
 /// (running, then queued, then waiting), then blocked, expired, cancelled; ok only when every step is.
@@ -83,7 +104,7 @@ export function makePlan(id, list) {
   return {
     plan: true, id, steps, state, progress, first, last,
     title: first.title, agent: first.agent, session: first.session,
-    from: first.machine, to: last.machine, exact: !!first.args?.exact,
+    kind: planKind(steps), from: first.machine, to: (steps.find((c) => c.op === 'pull') || last).machine, exact: !!first.args?.exact,
     created: steps.reduce((m, c) => (c.created < m ? c.created : m), first.created),
     cancel_requested: steps.some((c) => isOpen(c) && c.cancel_requested),
     canCancel: steps.some((c) => isOpen(c) && !c.cancel_requested),
@@ -102,16 +123,19 @@ const words = (list) => (list.length < 2 ? list.join('') : `${list.slice(0, -1).
 export function cancelText(plan) {
   const open = plan.steps.filter(isOpen)
   const out = []
-  for (const c of plan.steps.filter((c) => c.state === 'ok')) out.push(`Step ${c.step} already finished${c.op === 'push' ? '; its copy stays on the hub' : ''}.`)
+  const archive = plan.steps.find((c) => c.op === 'archive')
+  const AFTER = { push: '; its copy stays on the hub', archive: `; the session is archived on ${archive?.machine.name} and asm unarchive brings it back` }
+  for (const c of plan.steps.filter((c) => c.state === 'ok')) out.push(`Step ${c.step} already finished${AFTER[c.op] || ''}.`)
   for (const c of open.filter((c) => c.state === 'running')) out.push(`Step ${c.step} is running on ${c.machine.name} and may still finish.`)
   const idle = open.filter((c) => c.state !== 'running').map((c) => c.step)
   if (idle.length) out.push(`${idle.length > 1 ? 'Steps' : 'Step'} ${words(idle)} will not run.`)
-  out.push('The source machine keeps its copy; nothing is archived or deleted.')
+  if (archive?.state === 'pending' || archive?.state === 'queued') out.push(`The archive will not run unless it has already started: ${archive.machine.name} keeps its session, and nothing is deleted.`)
+  else if (!archive) out.push('The source machine keeps its copy; nothing is archived or deleted.')
   return out.join(' ')
 }
 
 /// The step named the way a toast does: `step 2 (pull to B)`.
-export const stepLabel = (c) => `step ${c.step} (${c.op} ${c.op === 'push' ? 'from' : 'to'} ${c.machine.name})`
+export const stepLabel = (c) => `step ${c.step} (${c.op} ${OP_WHERE[c.op] || 'on'} ${c.machine.name})`
 
 /// The list the Commands tab shows: a plan's steps collapse into one entry (at the place of its first step), single commands stay as they are.
 export function groupItems(commands) {
@@ -139,5 +163,19 @@ export function remoteStatus(remote, now = Date.now()) {
   return { tone: 'warning', label: `On, last polled ${ago(remote.polled_at, now)}`, kind: 'stale' }
 }
 
+/// Why a machine cannot be the source of a move, which pushes and then archives there, or '' when it can.
+export const whyNotSource = (m) => whyNotTarget(m, 'push') || whyNotTarget(m, 'archive')
+
+/// The first protocol version whose asm can archive; an older one cannot be told to, whatever it allows.
+/// ponytail: the hub's PROTOCOL is still 1 for every asm, so this cannot tell an old machine from one whose owner
+/// left archive off; it stays 1 (never matches) until PROTOCOL is bumped with the first archive-capable release, then set it to that.
+export const ARCHIVE_V = 1
+
 /// Why a machine cannot be chosen as a target, or '' when it can.
-export const whyNotTarget = (m, op) => (!m.remote ? 'has not reported remote control' : !m.remote.enabled ? 'remote control is off' : op && Array.isArray(m.remote.ops) && !m.remote.ops.includes(op) ? `does not allow ${op}` : '')
+export function whyNotTarget(m, op) {
+  if (!m.remote) return 'has not reported remote control'
+  if (!m.remote.enabled) return 'remote control is off'
+  if (!op || !Array.isArray(m.remote.ops) || m.remote.ops.includes(op)) return ''
+  if (op !== 'archive') return `does not allow ${op}`
+  return m.remote.v < ARCHIVE_V ? 'needs a newer asm' : `archive is off: run ${ARCHIVE_ENABLE} there`
+}

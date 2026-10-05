@@ -22,12 +22,19 @@
 //! most three times; a refusal is never retried automatically.
 //!
 //! A *plan* is a short ordered chain of commands (`send`: push on one machine,
-//! then pull on another). A step with a `needs` parent is `pending` — never
+//! then pull on another; `move`: the same, then archive on the first one). A step with a `needs` parent is `pending` — never
 //! offered to a machine — until that parent succeeds; the hub then copies the
 //! parent's (verified) revision into it and queues it. A step that ends
 //! without success cancels the steps waiting on it (`skipped`), and a retry
 //! brings them back. All the steps of one plan count as one command for the
 //! one-command-per-session rule.
+//!
+//! The archive step of a `move` is the one step that hides something, so it
+//! is guarded three ways: the plan is only made with an explicit
+//! confirmation naming the source machine, the source's owner must have
+//! allowed `archive` (it is not in the default allow list), and the source
+//! machine itself refuses at run time if the session changed after the copy
+//! that was sent. It is reversible (`asm unarchive`); nothing is deleted.
 
 use std::fs;
 use std::io::Write;
@@ -51,6 +58,8 @@ const QUEUE_DEPTH: usize = 20;
 /// Finished commands are kept this long, for the history on the admin page.
 const PRUNE_SECS: i64 = 14 * 24 * 3600;
 pub const DETAIL_MAX: usize = 1024;
+/// Archive is only ever the last step of a move plan, never made on its own.
+const ARCHIVE_ALONE: &str = "archive is a step of a move; start one with `asm control move`";
 /// A title copied from a manifest (unbounded there) into the list every poll reads.
 const TITLE_MAX: usize = 200;
 /// Stored commands, finished ones included: past this, nothing new is made
@@ -62,6 +71,10 @@ const MAX_STORED: usize = 2000;
 pub enum Op {
     Push,
     Pull,
+    /// Archive the session on the machine (reversible: `asm unarchive`).
+    /// Only ever the last step of a move plan, and only on a machine whose
+    /// owner allowed it separately.
+    Archive,
 }
 
 impl Op {
@@ -69,12 +82,13 @@ impl Op {
         match self {
             Op::Push => "push",
             Op::Pull => "pull",
+            Op::Archive => "archive",
         }
     }
 }
 
 /// Every operation this build can run. A machine reports these.
-pub const OPS: [Op; 2] = [Op::Push, Op::Pull];
+pub const OPS: [Op; 3] = [Op::Push, Op::Pull, Op::Archive];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -112,6 +126,15 @@ pub enum Code {
     NotRestorable,
     HubNewer,
     Conflict,
+    /// A move's archive step: the session on the source changed after the
+    /// copy that was sent (it was continued, or pushed since), so archiving
+    /// it would hide work the destination does not have.
+    ChangedSinceMove,
+    /// This agent's sessions cannot be archived here (or this session cannot yet).
+    NotArchivable,
+    /// The session is archived on the machine that was asked to pull it: a
+    /// copy installed (or found in sync) there would stay hidden.
+    ArchivedHere,
     Failed,
     RemoteOff,
     Unsupported,
@@ -289,18 +312,23 @@ impl Command {
 }
 
 /// A request to send a session from one machine to another: push on `from`,
-/// then pull on `to`.
+/// then pull on `to` (`send`), and for a `move` archive it on `from` after.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewPlan {
-    /// Only `send` exists so far.
+    /// `send` (a copy) or `move` (a copy, then archive the source).
     pub kind: String,
     pub agent: String,
     pub session: String,
     /// Machine id or name.
     pub from: String,
     pub to: String,
+    /// Ignored for a move: its push is always exact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exact: Option<bool>,
+    /// A move archives the session on `from`: it is only made when this is
+    /// that machine's id, typed on purpose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirm_archive: Option<String>,
 }
 
 /// A chain of commands, steps in order. Its state is derived from them.
@@ -319,6 +347,7 @@ impl Plan {
         steps.sort_by_key(|c| (c.step.unwrap_or(0), c.created));
         let kind = match steps.iter().map(|c| c.op).collect::<Vec<_>>().as_slice() {
             [Op::Push, Op::Pull] => "send",
+            [Op::Push, Op::Pull, Op::Archive] => "move",
             _ => "plan",
         };
         Plan {
@@ -548,8 +577,9 @@ impl Hub {
                 let t = now();
                 let c = &mut commands[i];
                 match parent {
-                    // A pull is never queued without the revision it installs.
-                    Some((State::Ok, _, rev, _)) if !(c.op == Op::Pull && rev.is_none()) => {
+                    // A pull is never queued without the revision it installs,
+                    // nor an archive without the one that was copied.
+                    Some((State::Ok, _, rev, _)) if !(matches!(c.op, Op::Pull | Op::Archive) && rev.is_none()) => {
                         c.state = State::Queued;
                         c.rev = rev;
                         // A week from when it can run, not from when it was planned.
@@ -619,21 +649,33 @@ impl Hub {
         if commands.len() < MAX_STORED {
             return Ok(());
         }
-        let open_plans: std::collections::HashSet<String> =
-            commands.iter().filter(|c| !c.state.is_final()).filter_map(|c| c.plan.clone()).collect();
-        let mut evictable: Vec<(Timestamp, String)> = commands
-            .iter()
-            .filter(|c| c.state.is_final() && !c.plan.as_ref().is_some_and(|p| open_plans.contains(p)))
-            .map(|c| (c.updated, c.id.clone()))
-            .collect();
+        // Whole plans only (a lone command is its own unit): a plan cut to
+        // some of its steps would be read as a different kind of plan.
+        let unit = |c: &Command| c.plan.clone().unwrap_or_else(|| c.id.clone());
+        let mut units: std::collections::HashMap<String, (Timestamp, bool, usize)> = std::collections::HashMap::new();
+        for c in commands.iter() {
+            let u = units.entry(unit(c)).or_insert((c.updated, true, 0));
+            u.0 = u.0.max(c.updated);
+            u.1 &= c.state.is_final();
+            u.2 += 1;
+        }
+        let mut evictable: Vec<(Timestamp, String, usize)> =
+            units.into_iter().filter(|(_, u)| u.1).map(|(k, u)| (u.0, k, u.2)).collect();
         if evictable.is_empty() {
             return Err(HubError::Busy(format!("{MAX_STORED} commands are open at once; cancel some or wait for them to finish")));
         }
         evictable.sort();
-        // A tenth at a time, so the next creations do not each evict one.
-        let drop: std::collections::HashSet<String> =
-            evictable.into_iter().take(MAX_STORED / 10).map(|(_, id)| id).collect();
-        commands.retain(|c| !drop.contains(&c.id));
+        // About a tenth at a time, so the next creations do not each evict one.
+        let mut gone = 0;
+        let mut drop = std::collections::HashSet::new();
+        for (_, key, n) in evictable {
+            if gone >= MAX_STORED / 10 {
+                break;
+            }
+            gone += n;
+            drop.insert(key);
+        }
+        commands.retain(|c| !drop.contains(&unit(c)));
         Ok(())
     }
 
@@ -672,13 +714,18 @@ impl Hub {
             return Err(bad(format!("{name} has not turned remote control on (`asm control enable` there)")));
         }
         if !caps.ops.iter().any(|o| o == op.as_str()) {
-            return Err(bad(format!("{name} does not allow {} commands", op.as_str())));
+            let how = if op == Op::Archive { " (`asm control enable --allow push,pull,archive` there)" } else { "" };
+            return Err(bad(format!("{name} does not allow {} commands{how}", op.as_str())));
         }
         Ok(())
     }
 
     /// Ask a machine to do something. `by` says who asked, for the record.
     pub fn enqueue(&self, request: NewCommand, by: &str) -> Result<Command, HubError> {
+        // Said first: it must not follow a hint to enable archive on the machine.
+        if request.op == Op::Archive {
+            return Err(bad(ARCHIVE_ALONE));
+        }
         let agent = AgentKind::parse(&request.agent).ok_or_else(|| bad(format!("unknown agent {:?}", request.agent)))?;
         if !valid_id(&request.session) {
             return Err(bad("that is not a session id"));
@@ -690,6 +737,7 @@ impl Hub {
 
         let (from, rev, title) = match request.op {
             Op::Push => (None, None, None),
+            Op::Archive => return Err(bad(ARCHIVE_ALONE)),
             Op::Pull => {
                 let who = request.from.as_deref().ok_or_else(|| bad("a pull names the machine whose copy to install (from)"))?;
                 let from = find(&machines, who)?;
@@ -730,49 +778,71 @@ impl Hub {
 
     /// Ask for a session to be sent from one machine to another: a push on
     /// `from`, and — once that succeeded — a pull on `to` of exactly the
-    /// revision it produced.
+    /// revision it produced. A `move` adds a last step: once the pull
+    /// succeeded, archive the session on `from`.
     pub fn create_plan(&self, request: NewPlan, by: &str) -> Result<Plan, HubError> {
-        if request.kind != "send" {
-            return Err(bad(format!("{:?} is not a kind of plan (send)", request.kind)));
-        }
+        let moving = match request.kind.as_str() {
+            "send" => false,
+            "move" => true,
+            other => return Err(bad(format!("{other:?} is not a kind of plan (send, move)"))),
+        };
         let agent = AgentKind::parse(&request.agent).ok_or_else(|| bad(format!("unknown agent {:?}", request.agent)))?;
         if !valid_id(&request.session) {
             return Err(bad("that is not a session id"));
+        }
+        // A property of the agent: no machine could ever do the last step.
+        if moving && !super::control::can_archive(agent) {
+            return Err(bad(format!(
+                "{agent} sessions cannot be archived, so they cannot be moved; send it instead"
+            )));
         }
         let _guard = self.lock.lock().unwrap();
         let machines = self.read_machines()?;
         let (source, target) = (find(&machines, &request.from)?, find(&machines, &request.to)?);
         if source.id == target.id {
-            return Err(bad(format!("{} is both ends of the send; name two machines", source.name)));
+            return Err(bad(format!("{} is both ends of the {}; name two machines", source.name, request.kind)));
+        }
+        if moving && request.confirm_archive.as_deref() != Some(source.id.as_str()) {
+            return Err(bad(format!(
+                "a move archives the session on {} once {} has it: confirm it with confirm_archive set to {}",
+                source.name, target.name, source.id
+            )));
         }
         Self::check_willing(source, Op::Push)?;
+        if moving {
+            Self::check_willing(source, Op::Archive)?;
+        }
         Self::check_willing(target, Op::Pull)?;
 
         let mut commands = self.read_commands()?;
         let (_, events) = Self::sweep(&mut commands);
         Self::make_room(&mut commands)?;
         Self::ensure_free(&commands, agent, &request.session, None)?;
-        Self::ensure_room(&commands, &mref(source), 1)?;
+        Self::ensure_room(&commands, &mref(source), if moving { 2 } else { 1 })?;
         Self::ensure_room(&commands, &mref(target), 1)?;
 
         let title = self.history(agent.as_str(), &request.session).ok().and_then(|h| h.manifest.title.clone()).map(|t| clean(&t, TITLE_MAX));
         let plan = random_hex(8)?;
         let mut push = Command::new(Op::Push, agent, request.session.clone(), mref(source), by)?;
-        push.args.exact = Some(request.exact.unwrap_or(false));
-        let mut pull = Command::new(Op::Pull, agent, request.session, mref(target), by)?;
+        // A move settles for nothing less than the hub holding exactly this
+        // copy: the source is archived on the strength of it.
+        push.args.exact = Some(moving || request.exact.unwrap_or(false));
+        let mut pull = Command::new(Op::Pull, agent, request.session.clone(), mref(target), by)?;
         pull.from = Some(mref(source));
         pull.state = State::Pending;
         pull.needs = Some(push.id.clone());
-        let steps: Vec<Command> = [push, pull]
-            .into_iter()
-            .enumerate()
-            .map(|(n, mut c)| {
-                c.plan = Some(plan.clone());
-                c.step = Some(n as u32 + 1);
-                c.title = title.clone();
-                c
-            })
-            .collect();
+        let mut steps = vec![push, pull];
+        if moving {
+            let mut archive = Command::new(Op::Archive, agent, request.session, mref(source), by)?;
+            archive.state = State::Pending;
+            archive.needs = Some(steps[1].id.clone());
+            steps.push(archive);
+        }
+        for (n, c) in steps.iter_mut().enumerate() {
+            c.plan = Some(plan.clone());
+            c.step = Some(n as u32 + 1);
+            c.title = title.clone();
+        }
         commands.extend(steps.iter().cloned());
         self.write_commands(&commands)?;
         self.log_events(events);
@@ -836,7 +906,9 @@ impl Hub {
             if refused {
                 c.state = State::Blocked;
                 c.code = Some(if caps.enabled { Code::Unsupported } else { Code::RemoteOff });
-                c.detail = Some(if caps.enabled {
+                c.detail = Some(if caps.enabled && c.op == Op::Archive {
+                    "that machine does not allow archive commands".into()
+                } else if caps.enabled {
                     "that machine does not run this kind of command".into()
                 } else {
                     "remote control is off on that machine".into()
@@ -899,7 +971,10 @@ impl Hub {
         if c.claimer.as_deref() != Some(machine.id.as_str()) {
             return Err(HubError::NotFound);
         }
-        if c.state.is_final() {
+        // A cancel that did not reach the machine in time: the lease ran out
+        // on a step asked to stop, and the work was done after all.
+        let too_late = c.state == State::Cancelled && c.cancel_requested && !c.skipped && report.code.succeeded();
+        if c.state.is_final() && !too_late {
             // A repeat of a result already recorded — or a real result that
             // arrived after the command was cancelled or expired. The record
             // stands, and the log says what the machine reported.
@@ -934,6 +1009,11 @@ impl Hub {
         c.state = if report.code.succeeded() { State::Ok } else { State::Blocked };
         c.code = Some(report.code);
         c.detail = report.detail.as_deref().map(clip);
+        if too_late {
+            const LATE: &str = " (the cancel arrived too late)";
+            let said = report.detail.as_deref().map_or_else(String::new, |d| clean(d, DETAIL_MAX - LATE.len()));
+            c.detail = Some(format!("{said}{LATE}").trim_start().to_string());
+        }
         if rev.is_some() {
             c.rev = rev;
         }
@@ -1034,9 +1114,18 @@ impl Hub {
             }
             Some(None) => return Err(bad("the step before it is gone; start a new plan")),
         };
-        if c.op == Op::Pull && state == State::Queued {
+        if c.op == Op::Archive && state == State::Queued && rev.is_none() {
+            return Err(bad("the copy to archive after is unknown; start a new plan"));
+        }
+        if matches!(c.op, Op::Pull | Op::Archive) && state == State::Queued {
             // Never queued without a revision, and not one that was pruned meanwhile.
-            let gone = || bad("that revision is gone; start a new plan");
+            let gone = || {
+                bad(if c.op == Op::Pull {
+                    "that revision is gone; start a new plan"
+                } else {
+                    "the copy that was sent is gone from the hub; start a new plan"
+                })
+            };
             self.revision(c.agent.as_str(), &c.session, rev.as_deref().ok_or_else(gone)?).map_err(|_| gone())?;
         }
         Self::check_willing(find(machines, &c.machine.id)?, c.op)?;
@@ -1072,7 +1161,16 @@ impl Hub {
                     && e.needs.as_ref().is_some_and(|n| changed.iter().any(|&i| &next[i].id == n))
             });
             let Some(i) = waiting else { break };
-            Self::check_willing(find(machines, &next[i].machine.id)?, next[i].op)?;
+            let step = &next[i];
+            let machine = find(machines, &step.machine.id)?;
+            Self::check_willing(machine, step.op).map_err(|e| match (step.op, e) {
+                (Op::Archive, HubError::BadRequest(_)) => bad(format!(
+                    "step {} archives on {}: enable archive there (asm control enable --allow push,pull,archive), or start a send",
+                    step.step.unwrap_or(3),
+                    machine.name
+                )),
+                (_, e) => e,
+            })?;
             fresh(&mut next[i], State::Pending, None);
             changed.push(i);
         }
@@ -1397,7 +1495,7 @@ mod tests {
     // --- plans ---
 
     fn send(session: &str) -> NewPlan {
-        NewPlan { kind: "send".into(), agent: "claude-code".into(), session: session.into(), from: "alpha".into(), to: "beta".into(), exact: None }
+        NewPlan { kind: "send".into(), agent: "claude-code".into(), session: session.into(), from: "alpha".into(), to: "beta".into(), exact: None, confirm_archive: None }
     }
 
     fn done(code: Code, rev: Option<&str>) -> Report {
@@ -1422,7 +1520,7 @@ mod tests {
             edit(&mut p);
             hub.create_plan(p, "admin").unwrap_err().to_string()
         };
-        assert!(refused(&hub, &|p| p.kind = "move".into()).contains("not a kind of plan"));
+        assert!(refused(&hub, &|p| p.kind = "copy".into()).contains("not a kind of plan (send, move)"));
         assert!(refused(&hub, &|p| p.agent = "nope".into()).contains("unknown agent"));
         assert!(refused(&hub, &|p| p.session = "../x".into()).contains("not a session id"));
         assert!(refused(&hub, &|p| p.to = "alpha".into()).contains("both ends"));
@@ -1954,5 +2052,547 @@ mod tests {
         r.session = "solo".into();
         hub.enqueue(r, "admin").unwrap();
         assert_eq!(hub.commands(1).unwrap().len(), 1);
+    }
+
+    // --- move: push, pull, then archive the source ---
+
+    fn caps_archive() -> Caps {
+        Caps { v: PROTOCOL, ops: vec!["push".into(), "pull".into(), "archive".into()], enabled: true }
+    }
+
+    /// Alpha (the source) has allowed archive; beta has not and needs not.
+    fn hub_for_moves() -> (tempfile::TempDir, Hub, Machine, Machine) {
+        let (d, hub, a, b) = hub_with_two();
+        hub.inbox(&a, caps_archive()).unwrap();
+        (d, hub, a, b)
+    }
+
+    fn mv(session: &str, hub: &Hub) -> NewPlan {
+        let alpha = hub.read_machines().unwrap().into_iter().find(|m| m.name == "alpha").unwrap();
+        NewPlan { kind: "move".into(), confirm_archive: Some(alpha.id), ..send(session) }
+    }
+
+    /// Push and pull both done on a move: the archive step is what is left.
+    fn through_the_pull(hub: &Hub, a: &Machine, b: &Machine, plan: &Plan, session: &str) -> String {
+        let rev = put_copy_for(hub, a, session);
+        push_ok(hub, a, plan, &rev);
+        hub.claim(b, &plan.steps[1].id).unwrap();
+        hub.report(b, &plan.steps[1].id, done(Code::Ok, None)).unwrap();
+        rev
+    }
+
+    #[test]
+    fn a_move_is_made_only_with_the_confirmation_and_the_consent_of_the_source() {
+        let (_d, hub, a, b) = hub_for_moves();
+        let refused = |edit: &dyn Fn(&mut NewPlan)| {
+            let mut p = mv("s1", &hub);
+            edit(&mut p);
+            hub.create_plan(p, "admin").unwrap_err()
+        };
+        // The confirmation must name the source's id: absent, its name, the destination's id, anything.
+        let want = format!(
+            "a move archives the session on alpha once beta has it: confirm it with confirm_archive set to {}",
+            a.id
+        );
+        for wrong in [None, Some("alpha".to_string()), Some(b.id.clone()), Some(String::new()), Some("yes".into())] {
+            let err = refused(&|p| p.confirm_archive = wrong.clone());
+            assert!(matches!(err, HubError::BadRequest(_)) && err.to_string() == want, "{wrong:?}: {err}");
+        }
+        // `from` may be given by name; the confirmation is still the id.
+        assert!(hub.create_plan(NewPlan { from: a.id.clone(), ..mv("s9", &hub) }, "admin").is_ok());
+
+        assert!(refused(&|p| p.to = "alpha".into()).to_string().contains("alpha is both ends of the move"));
+        assert!(refused(&|p| p.to = "nobody".into()).to_string().contains("no machine"));
+        assert!(refused(&|p| p.agent = "nope".into()).to_string().contains("unknown agent"));
+        assert!(refused(&|p| p.session = "../x".into()).to_string().contains("not a session id"));
+        assert!(refused(&|p| p.kind = "archive".into()).to_string().contains("not a kind of plan (send, move)"));
+
+        // The source's owner must have allowed archive, separately from push and pull.
+        hub.inbox(&a, caps(true)).unwrap();
+        let err = refused(&|_| {}).to_string();
+        assert_eq!(err, "alpha does not allow archive commands (`asm control enable --allow push,pull,archive` there)");
+        // ...while a send from it is still fine, and the destination needs no archive.
+        assert_eq!(hub.create_plan(send("s2"), "admin").unwrap().steps.len(), 2);
+        hub.inbox(&a, caps_archive()).unwrap();
+        hub.inbox(&b, Caps { v: PROTOCOL, ops: vec!["pull".into()], enabled: true }).unwrap();
+        assert!(hub.create_plan(mv("s3", &hub), "admin").is_ok(), "beta only pulls");
+        // The destination must pull, and both must have remote control on.
+        hub.inbox(&b, Caps { v: PROTOCOL, ops: vec!["push".into()], enabled: true }).unwrap();
+        assert!(refused(&|p| p.session = "s4".into()).to_string().contains("beta does not allow pull"));
+        hub.inbox(&b, caps(true)).unwrap();
+        hub.inbox(&a, Caps { enabled: false, ..caps_archive() }).unwrap();
+        assert!(refused(&|p| p.session = "s4".into()).to_string().contains("alpha has not turned remote control on"));
+        hub.inbox(&a, caps_archive()).unwrap();
+        // Only the three plans made above exist: refusals left nothing behind.
+        assert_eq!(hub.plans(100).unwrap().len(), 3);
+        // A send ignores a confirmation it does not need, and stays a copy.
+        let copy = hub.create_plan(NewPlan { confirm_archive: Some(a.id.clone()), ..send("s5") }, "admin").unwrap();
+        assert_eq!((copy.kind.as_str(), copy.steps.len()), ("send", 2));
+    }
+
+    #[test]
+    fn a_move_is_three_steps_and_its_push_is_always_exact() {
+        let (_d, hub, _a, _b) = hub_for_moves();
+        let plan = hub.create_plan(NewPlan { exact: Some(false), ..mv("s1", &hub) }, "admin").unwrap();
+        assert_eq!((plan.kind.as_str(), plan.state), ("move", State::Queued));
+        let [push, pull, archive] = plan.steps.as_slice() else { panic!("three steps") };
+        assert_eq!((push.op, push.step, push.state, push.machine.name.as_str()), (Op::Push, Some(1), State::Queued, "alpha"));
+        assert_eq!((pull.op, pull.step, pull.state, pull.machine.name.as_str()), (Op::Pull, Some(2), State::Pending, "beta"));
+        assert_eq!((archive.op, archive.step, archive.state, archive.machine.name.as_str()), (Op::Archive, Some(3), State::Pending, "alpha"));
+        assert_eq!((pull.needs.as_deref(), archive.needs.as_deref()), (Some(push.id.as_str()), Some(pull.id.as_str())));
+        assert_eq!(push.args.exact, Some(true), "exact is not optional for a move");
+        assert_eq!((pull.rev.as_deref(), archive.rev.as_deref(), archive.from.as_ref()), (None, None, None));
+        assert!(plan.steps.iter().all(|s| s.plan.as_deref() == Some(plan.id.as_str())));
+        // Read back, the stored plan says the same, and the kind survives the round trip.
+        let back = hub.plan(&plan.id).unwrap();
+        assert_eq!((back.kind.as_str(), back.steps.len()), ("move", 3));
+        let json = serde_json::to_value(&back).unwrap();
+        assert_eq!(json["kind"], "move");
+        assert_eq!(json["steps"][2]["op"], "archive");
+        // A send is still a send, exact only when asked for.
+        let copy = hub.create_plan(send("s2"), "admin").unwrap();
+        assert_eq!((copy.kind.as_str(), copy.steps[0].args.exact), ("send", Some(false)));
+    }
+
+    #[test]
+    fn the_archive_is_invisible_until_the_pull_succeeded_and_then_carries_that_revision() {
+        let (_d, hub, a, b) = hub_for_moves();
+        let plan = hub.create_plan(mv("s1", &hub), "admin").unwrap();
+        let archive = plan.steps[2].id.clone();
+        let offered = |m: &Machine, c: Caps| hub.inbox(m, c).unwrap().into_iter().map(|w| w.op).collect::<Vec<_>>();
+        assert_eq!(offered(&a, caps_archive()), [Op::Push]);
+        assert!(matches!(hub.claim(&a, &archive), Err(HubError::Busy(_))), "a pending archive cannot be claimed");
+
+        let rev = put_copy(&hub, &a, None);
+        push_ok(&hub, &a, &plan, &rev);
+        assert!(offered(&a, caps_archive()).is_empty(), "the push is done; the archive waits for the pull");
+        assert_eq!(offered(&b, caps(true)), [Op::Pull]);
+        assert_eq!(state_of(&hub, &archive), State::Pending);
+        assert_eq!(hub.plan(&plan.id).unwrap().state, State::Queued);
+        hub.claim(&b, &plan.steps[1].id).unwrap();
+        assert!(offered(&a, caps_archive()).is_empty(), "nor while the pull runs");
+        assert_eq!(state_of(&hub, &archive), State::Pending);
+        hub.report(&b, &plan.steps[1].id, done(Code::Ok, None)).unwrap();
+
+        let queued = hub.command(&archive).unwrap();
+        assert_eq!((queued.state, queued.rev.as_deref()), (State::Queued, Some(rev.as_str())), "R, the copy that was sent");
+        assert_eq!(hub.command(&plan.steps[1].id).unwrap().rev.as_deref(), Some(rev.as_str()));
+        let work = hub.inbox(&a, caps_archive()).unwrap();
+        assert_eq!(work.len(), 1);
+        assert_eq!((work[0].op, work[0].rev.as_deref(), work[0].exact), (Op::Archive, Some(rev.as_str()), None));
+        assert!(hub.inbox(&b, caps(true)).unwrap().is_empty(), "only the source is asked to archive");
+        // A third machine pushing on top changes nothing about what the source is told it sent.
+        let token = hub.join_token().unwrap();
+        let c = hub.join(&token, "gamma").unwrap().machine;
+        put_copy(&hub, &c, Some(rev.clone()));
+        assert_eq!(hub.inbox(&a, caps_archive()).unwrap()[0].rev.as_deref(), Some(rev.as_str()));
+        assert!(matches!(hub.claim(&b, &archive), Err(HubError::NotFound)), "and only the source may claim it");
+        hub.claim(&a, &archive).unwrap();
+        assert_eq!(hub.plan(&plan.id).unwrap().state, State::Running);
+        hub.report(&a, &archive, done(Code::Ok, Some("archived here"))).unwrap();
+        let end = hub.plan(&plan.id).unwrap();
+        assert_eq!(end.state, State::Ok);
+        assert!(end.steps.iter().all(|s| s.state == State::Ok && !s.skipped));
+
+        // "Already archived" counts as done.
+        let again = hub.create_plan(mv("s2", &hub), "admin").unwrap();
+        through_the_pull(&hub, &a, &b, &again, "s2");
+        hub.claim(&a, &again.steps[2].id).unwrap();
+        hub.report(&a, &again.steps[2].id, done(Code::AlreadyApplied, None)).unwrap();
+        assert_eq!(hub.plan(&again.id).unwrap().state, State::Ok);
+    }
+
+    #[test]
+    fn plan_state_follows_the_three_steps() {
+        let (_d, hub, a, b) = hub_for_moves();
+        let plan = hub.create_plan(mv("s1", &hub), "admin").unwrap();
+        let state = || hub.plan(&plan.id).unwrap().state;
+        assert_eq!(state(), State::Queued);
+        let rev = put_copy(&hub, &a, None);
+        hub.claim(&a, &plan.steps[0].id).unwrap();
+        assert_eq!(state(), State::Running);
+        hub.report(&a, &plan.steps[0].id, done(Code::Ok, Some(&rev))).unwrap();
+        assert_eq!(state(), State::Queued, "the pull is queued, the archive pending");
+        hub.claim(&b, &plan.steps[1].id).unwrap();
+        assert_eq!(state(), State::Running);
+        hub.report(&b, &plan.steps[1].id, done(Code::Ok, None)).unwrap();
+        assert_eq!(state(), State::Queued, "two steps ok is not ok");
+        hub.claim(&a, &plan.steps[2].id).unwrap();
+        assert_eq!(state(), State::Running);
+        hub.report(&a, &plan.steps[2].id, done(Code::ChangedSinceMove, Some("changed"))).unwrap();
+        assert_eq!(state(), State::Blocked, "the one step that did not succeed names the plan's end");
+
+        // An archive cancelled by itself is a cancelled plan, not a skipped one.
+        let plan = hub.create_plan(mv("s2", &hub), "admin").unwrap();
+        through_the_pull(&hub, &a, &b, &plan, "s2");
+        let alone = hub.cancel_command(&plan.steps[2].id, "admin").unwrap();
+        assert_eq!((alone.state, alone.skipped), (State::Cancelled, false));
+        assert_eq!(hub.plan(&plan.id).unwrap().state, State::Cancelled);
+        // ...and an archive that expires is an expired plan.
+        let plan = hub.create_plan(mv("s3", &hub), "admin").unwrap();
+        through_the_pull(&hub, &a, &b, &plan, "s3");
+        let mut all = hub.read_commands().unwrap();
+        all.iter_mut().find(|c| c.id == plan.steps[2].id).unwrap().expires = after(-1);
+        hub.write_commands(&all).unwrap();
+        assert_eq!(hub.plan(&plan.id).unwrap().state, State::Expired);
+    }
+
+    #[test]
+    fn the_archive_is_skipped_when_the_pull_or_the_push_does_not_succeed() {
+        let (_d, hub, a, b) = hub_for_moves();
+        let skipped = |plan: &Plan, n: usize| {
+            let step = hub.command(&plan.steps[n].id).unwrap();
+            assert_eq!((step.state, step.skipped, step.code), (State::Cancelled, true, Some(Code::Cancelled)), "step {}", n + 1);
+            step
+        };
+
+        // The pull is refused by its machine.
+        let plan = hub.create_plan(mv("s1", &hub), "admin").unwrap();
+        let rev = put_copy(&hub, &a, None);
+        push_ok(&hub, &a, &plan, &rev);
+        hub.claim(&b, &plan.steps[1].id).unwrap();
+        hub.report(&b, &plan.steps[1].id, done(Code::Live, None)).unwrap();
+        assert_eq!(skipped(&plan, 2).detail.as_deref(), Some("step 2 did not succeed"));
+        assert_eq!(hub.plan(&plan.id).unwrap().state, State::Blocked);
+        assert!(hub.inbox(&a, caps_archive()).unwrap().is_empty(), "nothing is offered to the source");
+
+        // The pull is cancelled before it runs: the archive goes with it.
+        let plan = hub.create_plan(mv("s2", &hub), "admin").unwrap();
+        let rev = put_copy_for(&hub, &a, "s2");
+        push_ok(&hub, &a, &plan, &rev);
+        hub.cancel_command(&plan.steps[1].id, "admin").unwrap();
+        skipped(&plan, 2);
+        assert_eq!(hub.plan(&plan.id).unwrap().state, State::Cancelled);
+
+        // The pull expires waiting for beta.
+        let plan = hub.create_plan(mv("s3", &hub), "admin").unwrap();
+        let rev = put_copy_for(&hub, &a, "s3");
+        push_ok(&hub, &a, &plan, &rev);
+        let mut all = hub.read_commands().unwrap();
+        all.iter_mut().find(|c| c.id == plan.steps[1].id).unwrap().expires = after(-1);
+        hub.write_commands(&all).unwrap();
+        assert_eq!(state_of(&hub, &plan.steps[1].id), State::Expired);
+        skipped(&plan, 2);
+        assert_eq!(hub.plan(&plan.id).unwrap().state, State::Expired);
+
+        // The push fails: both later steps are skipped, in one go.
+        let plan = hub.create_plan(mv("s4", &hub), "admin").unwrap();
+        hub.claim(&a, &plan.steps[0].id).unwrap();
+        hub.report(&a, &plan.steps[0].id, done(Code::Diverged, None)).unwrap();
+        skipped(&plan, 1);
+        skipped(&plan, 2);
+        assert_eq!(hub.plan(&plan.id).unwrap().state, State::Blocked);
+
+        // Beta turning remote control off blocks the pull, and the archive after it.
+        let plan = hub.create_plan(mv("s5", &hub), "admin").unwrap();
+        let rev = put_copy_for(&hub, &a, "s5");
+        push_ok(&hub, &a, &plan, &rev);
+        assert!(hub.inbox(&b, caps(false)).unwrap().is_empty());
+        assert_eq!(state_of(&hub, &plan.steps[1].id), State::Blocked);
+        skipped(&plan, 2);
+
+        // Cancelling the plan while the pull runs: the pull may finish, the archive never follows.
+        hub.inbox(&b, caps(true)).unwrap();
+        let plan = hub.create_plan(mv("s6", &hub), "admin").unwrap();
+        let rev = put_copy_for(&hub, &a, "s6");
+        push_ok(&hub, &a, &plan, &rev);
+        hub.claim(&b, &plan.steps[1].id).unwrap();
+        let mid = hub.cancel_plan(&plan.id, "admin").unwrap();
+        assert_eq!(mid.steps[2].detail.as_deref(), Some("cancelled with the plan before step 2 finished"));
+        hub.report(&b, &plan.steps[1].id, done(Code::Ok, None)).unwrap();
+        let end = hub.plan(&plan.id).unwrap();
+        assert_eq!((end.steps[1].state, end.steps[2].state, end.steps[2].skipped, end.state), (State::Ok, State::Cancelled, true, State::Cancelled));
+        // The same, with the plan cancelled before anything ran: the archive was never queued either.
+        let plan = hub.create_plan(mv("s7", &hub), "admin").unwrap();
+        let end = hub.cancel_plan(&plan.id, "admin").unwrap();
+        assert_eq!(end.steps.iter().map(|s| s.state).collect::<Vec<_>>(), [State::Cancelled; 3]);
+        assert!(end.steps[1].skipped && end.steps[2].skipped && !end.steps[0].skipped);
+    }
+
+    #[test]
+    fn an_archive_is_never_queued_without_the_revision_that_was_copied() {
+        let (_d, hub, a, b) = hub_for_moves();
+        let plan = hub.create_plan(mv("s1", &hub), "admin").unwrap();
+        // A pull that is ok but carries no revision (it cannot happen through
+        // report(), so make the record by hand): nothing is queued behind it.
+        let mut all = hub.read_commands().unwrap();
+        for (n, c) in all.iter_mut().enumerate().take(2) {
+            c.state = State::Ok;
+            c.code = Some(Code::Ok);
+            c.rev = (n == 0).then(|| "0".repeat(64));
+        }
+        hub.write_commands(&all).unwrap();
+        let archive = hub.command(&plan.steps[2].id).unwrap();
+        assert_eq!((archive.state, archive.skipped, archive.rev.clone()), (State::Cancelled, true, None));
+        let err = hub.retry_command(&archive.id, "admin").unwrap_err();
+        assert!(matches!(err, HubError::BadRequest(_)) && err.to_string().contains("start a new plan"), "{err}");
+        assert_eq!(state_of(&hub, &archive.id), State::Cancelled, "nothing changed");
+        let _ = (a, b);
+    }
+
+    #[test]
+    fn a_blocked_archive_is_retried_with_the_same_revision_and_the_whole_move_finishes() {
+        let (_d, hub, a, b) = hub_for_moves();
+        let plan = hub.create_plan(mv("s1", &hub), "admin").unwrap();
+        let archive = plan.steps[2].id.clone();
+        let rev = through_the_pull(&hub, &a, &b, &plan, "s1");
+        hub.claim(&a, &archive).unwrap();
+        let r = Report { code: Code::ChangedSinceMove, detail: Some("the session changed on alpha after the copy that was sent; nothing was archived".into()), rev: None };
+        let blocked = hub.report(&a, &archive, r).unwrap();
+        assert_eq!((blocked.state, blocked.code), (State::Blocked, Some(Code::ChangedSinceMove)));
+        assert!(blocked.detail.unwrap().contains("nothing was archived"));
+        assert_eq!(hub.plan(&plan.id).unwrap().state, State::Blocked);
+
+        // Not retried by itself.
+        assert!(hub.inbox(&a, caps_archive()).unwrap().is_empty());
+        // A retry that would break a rule changes nothing: alpha withdrew its consent.
+        hub.inbox(&a, caps(true)).unwrap();
+        let err = hub.retry_plan(&plan.id, "admin").unwrap_err().to_string();
+        assert!(err.contains("alpha does not allow archive commands"), "{err}");
+        assert_eq!(state_of(&hub, &archive), State::Blocked);
+        hub.inbox(&a, caps_archive()).unwrap();
+
+        let again = hub.retry_plan(&plan.id, "admin").unwrap();
+        let step = &again.steps[2];
+        assert_eq!((step.state, step.rev.as_deref(), step.attempts, step.code), (State::Queued, Some(rev.as_str()), 0, None));
+        assert_eq!(again.state, State::Queued);
+        assert_eq!((again.steps[0].state, again.steps[1].state), (State::Ok, State::Ok), "earlier steps stay done");
+        assert!(hub.retry_plan(&plan.id, "admin").is_err(), "nothing else to retry");
+        hub.claim(&a, &archive).unwrap();
+        hub.report(&a, &archive, done(Code::Ok, None)).unwrap();
+        assert_eq!(hub.plan(&plan.id).unwrap().state, State::Ok);
+
+        // A blocked pull: retrying it brings the skipped archive back to waiting, then it follows the pull again.
+        let plan = hub.create_plan(mv("s2", &hub), "admin").unwrap();
+        let rev = put_copy_for(&hub, &a, "s2");
+        push_ok(&hub, &a, &plan, &rev);
+        hub.claim(&b, &plan.steps[1].id).unwrap();
+        hub.report(&b, &plan.steps[1].id, done(Code::Diverged, None)).unwrap();
+        assert!(hub.retry_command(&plan.steps[2].id, "admin").unwrap_err().to_string().contains("step 2 did not succeed; retry that step first"));
+        let again = hub.retry_plan(&plan.id, "admin").unwrap();
+        assert_eq!((again.steps[1].state, again.steps[2].state, again.steps[2].skipped), (State::Queued, State::Pending, false));
+        hub.claim(&b, &plan.steps[1].id).unwrap();
+        hub.report(&b, &plan.steps[1].id, done(Code::Ok, None)).unwrap();
+        let after = hub.command(&plan.steps[2].id).unwrap();
+        assert_eq!((after.state, after.rev.as_deref()), (State::Queued, Some(rev.as_str())));
+
+        // Retrying the archive on its own, after the pull succeeded.
+        hub.claim(&a, &plan.steps[2].id).unwrap();
+        hub.report(&a, &plan.steps[2].id, done(Code::NotArchivable, None)).unwrap();
+        let one = hub.retry_command(&plan.steps[2].id, "admin").unwrap();
+        assert_eq!((one.state, one.rev.as_deref()), (State::Queued, Some(rev.as_str())));
+    }
+
+    #[test]
+    fn a_source_that_stops_allowing_archive_blocks_the_step_with_a_clear_detail() {
+        let (_d, hub, a, b) = hub_for_moves();
+        let plan = hub.create_plan(mv("s1", &hub), "admin").unwrap();
+        through_the_pull(&hub, &a, &b, &plan, "s1");
+        assert!(hub.inbox(&a, caps(true)).unwrap().is_empty());
+        let step = hub.command(&plan.steps[2].id).unwrap();
+        assert_eq!((step.state, step.code), (State::Blocked, Some(Code::Unsupported)));
+        assert_eq!(step.detail.as_deref(), Some("that machine does not allow archive commands"));
+        // Turned off altogether: the generic answer.
+        hub.inbox(&a, caps_archive()).unwrap();
+        let plan = hub.create_plan(mv("s2", &hub), "admin").unwrap();
+        through_the_pull(&hub, &a, &b, &plan, "s2");
+        hub.inbox(&a, Caps { enabled: false, ..caps_archive() }).unwrap();
+        assert_eq!(hub.command(&plan.steps[2].id).unwrap().code, Some(Code::RemoteOff));
+        // Archive cannot be asked for alone, only as the last step of a move.
+        hub.inbox(&a, caps_archive()).unwrap();
+        let err = hub
+            .enqueue(NewCommand { op: Op::Archive, machine: "alpha".into(), agent: "claude-code".into(), session: "s3".into(), from: None, exact: None }, "admin")
+            .unwrap_err();
+        assert!(matches!(err, HubError::BadRequest(_)) && err.to_string().contains("a step of a move"), "{err}");
+        assert!(hub.commands(100).unwrap().iter().all(|c| c.session != "s3"));
+    }
+
+    #[test]
+    fn the_three_steps_of_a_move_are_one_command_for_the_session_and_count_against_the_queues() {
+        let (_d, hub, a, b) = hub_for_moves();
+        let plan = hub.create_plan(mv("s1", &hub), "admin").unwrap();
+        // Nothing else touches the session until the archive step has ended, not even after the pull.
+        let busy = || {
+            assert!(matches!(hub.create_plan(send("s1"), "admin"), Err(HubError::Busy(_))));
+            assert!(matches!(hub.create_plan(mv("s1", &hub), "admin"), Err(HubError::Busy(_))));
+            assert!(matches!(hub.enqueue(push_request("beta"), "admin"), Err(HubError::Busy(_))));
+        };
+        busy();
+        through_the_pull(&hub, &a, &b, &plan, "s1");
+        busy();
+        assert_eq!(hub.plan(&plan.id).unwrap().steps[2].state, State::Queued);
+        assert!(hub.delete_session("claude-code", "s1").is_err(), "the revision is held until the archive is done");
+        hub.claim(&a, &plan.steps[2].id).unwrap();
+        assert!(matches!(hub.create_plan(send("s1"), "admin"), Err(HubError::Busy(_))), "and while it runs");
+        hub.report(&a, &plan.steps[2].id, done(Code::Ok, None)).unwrap();
+        hub.create_plan(send("s1"), "admin").unwrap();
+    }
+
+    #[test]
+    fn a_move_puts_two_steps_on_its_source_and_one_on_its_destination() {
+        let (_d, hub, _a, _b) = hub_for_moves();
+        // Alpha holds a push and an archive per move: ten moves fill its 20.
+        for n in 0..QUEUE_DEPTH / 2 {
+            hub.create_plan(mv(&format!("q{n}"), &hub), "admin").unwrap();
+        }
+        let err = hub.create_plan(mv("one-too-many", &hub), "admin").unwrap_err();
+        assert!(matches!(err, HubError::Busy(_)) && err.to_string().contains("alpha already has 20 commands waiting"), "{err}");
+        let err = hub.create_plan(send("one-more"), "admin").unwrap_err();
+        assert!(err.to_string().contains("alpha already has 20"), "{err}");
+        assert_eq!(hub.commands(100).unwrap().len(), 3 * QUEUE_DEPTH / 2, "steps are listed as commands");
+        assert_eq!(hub.plans(100).unwrap().len(), QUEUE_DEPTH / 2);
+        // With one slot left on alpha a send fits and a move does not.
+        let plans = hub.plans(1).unwrap();
+        hub.cancel_plan(&plans[0].id, "admin").unwrap();
+        assert!(hub.create_plan(mv("fits", &hub), "admin").is_ok());
+        // Nineteen waiting on alpha, one slot: a send fits, a move (two) does not.
+        let plans = hub.plans(1).unwrap();
+        hub.cancel_command(&plans[0].steps[2].id, "admin").unwrap();
+        assert!(matches!(hub.create_plan(mv("no-room", &hub), "admin"), Err(HubError::Busy(_))));
+        assert!(hub.create_plan(send("room-for-one"), "admin").is_ok());
+    }
+
+    #[test]
+    fn every_step_of_a_move_is_logged() {
+        let (_d, hub, a, b) = hub_for_moves();
+        let plan = hub.create_plan(mv("s1", &hub), "commands-token").unwrap();
+        let rev = through_the_pull(&hub, &a, &b, &plan, "s1");
+        let lines = log_lines(&hub);
+        let step3 = |event: &str| lines.iter().find(|l| l["event"] == event && l["id"] == plan.steps[2].id.as_str()).cloned();
+        assert_eq!(step3("enqueue").unwrap()["op"], "archive");
+        let advance = step3("advance").unwrap();
+        assert_eq!((advance["rev"].as_str(), advance["by"].as_str()), (Some(rev.as_str()), Some("hub")));
+    }
+
+    // --- second review ---
+
+    #[test]
+    fn a_move_of_an_agent_that_can_never_be_archived_is_refused_before_anything_is_queued() {
+        let (_d, hub, _a, _b) = hub_for_moves();
+        for agent in ["codex", "antigravity"] {
+            let err = hub.create_plan(NewPlan { agent: agent.into(), ..mv("s1", &hub) }, "admin").unwrap_err();
+            assert!(
+                matches!(err, HubError::BadRequest(_))
+                    && err.to_string() == format!("{agent} sessions cannot be archived, so they cannot be moved; send it instead"),
+                "{err}"
+            );
+        }
+        assert!(hub.commands(10).unwrap().is_empty(), "nothing queued");
+        // A send of the same agent is a copy, and fine.
+        assert_eq!(hub.create_plan(NewPlan { agent: "codex".into(), ..send("s1") }, "admin").unwrap().steps.len(), 2);
+    }
+
+    #[test]
+    fn archive_asked_for_alone_is_refused_in_one_sentence_whatever_the_machine_allows() {
+        // alpha has not allowed archive: the answer is still the move one,
+        // not "enable archive" followed by a refusal.
+        let (_d, hub, _a, _b) = hub_with_two();
+        let ask = NewCommand { op: Op::Archive, machine: "alpha".into(), agent: "claude-code".into(), session: "s1".into(), from: None, exact: None };
+        let err = hub.enqueue(ask, "admin").unwrap_err();
+        assert_eq!(err.to_string(), ARCHIVE_ALONE);
+    }
+
+    #[test]
+    fn retrying_an_earlier_step_after_archive_was_withdrawn_says_what_to_do() {
+        let (_d, hub, a, b) = hub_for_moves();
+        let plan = hub.create_plan(mv("s1", &hub), "admin").unwrap();
+        let rev = put_copy(&hub, &a, None);
+        push_ok(&hub, &a, &plan, &rev);
+        hub.claim(&b, &plan.steps[1].id).unwrap();
+        hub.report(&b, &plan.steps[1].id, done(Code::Diverged, None)).unwrap();
+        hub.inbox(&a, caps(true)).unwrap(); // the owner took archive away
+        let err = hub.retry_plan(&plan.id, "admin").unwrap_err();
+        assert!(matches!(err, HubError::BadRequest(_)));
+        assert_eq!(
+            err.to_string(),
+            "step 3 archives on alpha: enable archive there (asm control enable --allow push,pull,archive), or start a send"
+        );
+        // All or nothing: the pull was not brought back either.
+        assert_eq!(state_of(&hub, &plan.steps[1].id), State::Blocked);
+        assert_eq!(state_of(&hub, &plan.steps[2].id), State::Cancelled);
+    }
+
+    #[test]
+    fn a_blocked_archive_is_not_retried_once_the_hub_has_lost_the_copy() {
+        let (_d, hub, a, b) = hub_for_moves();
+        let plan = hub.create_plan(mv("s1", &hub), "admin").unwrap();
+        through_the_pull(&hub, &a, &b, &plan, "s1");
+        hub.claim(&a, &plan.steps[2].id).unwrap();
+        hub.report(&a, &plan.steps[2].id, done(Code::NotArchivable, None)).unwrap();
+        hub.delete_session("claude-code", "s1").unwrap();
+        let err = hub.retry_command(&plan.steps[2].id, "admin").unwrap_err();
+        assert!(err.to_string().contains("gone from the hub; start a new plan"), "{err}");
+        assert_eq!(state_of(&hub, &plan.steps[2].id), State::Blocked);
+    }
+
+    #[test]
+    fn a_success_that_arrives_after_the_cancel_gave_up_waiting_is_recorded() {
+        let (_d, hub, a, _b) = hub_with_two();
+        let rev = put_copy(&hub, &a, None);
+        let made = hub.enqueue(push_request("alpha"), "admin").unwrap();
+        hub.claim(&a, &made.id).unwrap();
+        hub.cancel_command(&made.id, "admin").unwrap();
+        let mut all = hub.read_commands().unwrap();
+        all[0].lease_until = Some(after(-5));
+        hub.write_commands(&all).unwrap();
+        assert_eq!(hub.command(&made.id).unwrap().state, State::Cancelled, "the lease ran out on a step asked to stop");
+        let report = Report { code: Code::Ok, detail: Some("pushed 2 KB".into()), rev: Some(rev.clone()) };
+        let c = hub.report(&a, &made.id, report).unwrap();
+        assert_eq!((c.state, c.code, c.rev.as_deref()), (State::Ok, Some(Code::Ok), Some(rev.as_str())));
+        assert_eq!(c.detail.as_deref(), Some("pushed 2 KB (the cancel arrived too late)"));
+        assert_eq!(hub.command(&made.id).unwrap().state, State::Ok);
+
+        // A failure after the cancel changes nothing, and is only logged.
+        let second = hub.enqueue(push_request("alpha"), "admin").unwrap();
+        hub.claim(&a, &second.id).unwrap();
+        hub.cancel_command(&second.id, "admin").unwrap();
+        let mut all = hub.read_commands().unwrap();
+        all.iter_mut().find(|c| c.id == second.id).unwrap().lease_until = Some(after(-5));
+        hub.write_commands(&all).unwrap();
+        let c = hub.report(&a, &second.id, done(Code::Failed, None)).unwrap();
+        assert_eq!(c.state, State::Cancelled);
+        assert!(log_lines(&hub).iter().any(|l| l["event"] == "late-result-ignored" && l["id"] == second.id.as_str()));
+    }
+
+    #[test]
+    fn a_full_store_drops_whole_plans_never_some_of_their_steps() {
+        let (_d, hub, _a, _b) = hub_with_two();
+        let made = hub.enqueue(push_request("alpha"), "admin").unwrap();
+        hub.cancel_command(&made.id, "admin").unwrap();
+        let template = hub.read_commands().unwrap().remove(0);
+        let base = now().as_second() - 100_000;
+        let mut all: Vec<Command> = Vec::new();
+        // 666 plans of three steps, oldest first, then two loose commands.
+        for n in 0..666usize {
+            for k in 0..3usize {
+                all.push(Command {
+                    id: format!("{n:06}{k:02}"),
+                    plan: Some(format!("p{n}")),
+                    step: Some(k as u32 + 1),
+                    updated: Timestamp::from_second(base + (n * 3 + k) as i64).unwrap(),
+                    ..template.clone()
+                });
+            }
+        }
+        for n in 0..(MAX_STORED - all.len()) {
+            all.push(Command { id: format!("loose{n}"), updated: Timestamp::from_second(base + 5000 + n as i64).unwrap(), ..template.clone() });
+        }
+        // The oldest plan is still going: it must stay, whole.
+        all[2].state = State::Queued;
+        assert_eq!(all.len(), MAX_STORED);
+        Hub::make_room(&mut all).unwrap();
+        assert!(all.len() < MAX_STORED);
+        let mut sizes: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for c in &all {
+            if let Some(p) = &c.plan {
+                *sizes.entry(p.as_str()).or_default() += 1;
+            }
+        }
+        assert!(sizes.values().all(|&n| n == 3), "a plan was cut: {:?}", sizes.iter().filter(|&(_, &n)| n != 3).collect::<Vec<_>>());
+        assert_eq!(sizes.get("p0"), Some(&3), "an open plan is never evicted");
+        assert!(!sizes.contains_key("p1"), "the oldest finished plan went");
+        assert!(sizes.contains_key("p665"), "the newest stayed");
+        // About a tenth went, by whole plans.
+        assert!(MAX_STORED - all.len() >= MAX_STORED / 10, "{}", all.len());
     }
 }

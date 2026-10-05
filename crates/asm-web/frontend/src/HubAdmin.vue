@@ -39,7 +39,7 @@ const sessions = ref([])
 const log = ref([])
 const commands = ref([])
 const commandsError = ref('')
-const newCmd = ref(null) // null closed, { session } open
+const newCmd = ref(null) // null closed, { session, action } open
 const opened = ref(null)
 const refreshed = ref(null)
 const preview = ref(null)
@@ -96,7 +96,8 @@ async function reloadCommands() {
 function created(c) {
   newCmd.value = null
   const [a, b] = c.steps || []
-  notify(a && b ? `Queued: copy ${a.title || 'the session'} from ${a.machine.name} to ${b.machine.name}. ${a.machine.name} keeps its copy.` : `Queued: ${c.op} ${c.title || 'the session'} ${c.op === 'push' ? 'from' : 'to'} ${c.machine.name}.`)
+  const move = (c.kind || a?.plan_kind) === 'move' || c.steps?.some((s) => s.op === 'archive')
+  notify(move ? `Queued: move ${a.title || 'the session'} from ${a.machine.name} to ${b.machine.name}. ${a.machine.name} archives it only once ${b.machine.name} has it; asm unarchive brings it back.` : a && b ? `Queued: copy ${a.title || 'the session'} from ${a.machine.name} to ${b.machine.name}. ${a.machine.name} keeps its copy.` : `Queued: ${c.op} ${c.title || 'the session'} ${c.op === 'push' ? 'from' : 'to'} ${c.machine.name}.`)
   tab.value = 'commands'
   reloadCommands()
 }
@@ -267,7 +268,7 @@ onMounted(() => token.value && load())
         </template>
 
         <template #sessions>
-          <SessionsPanel :sessions="sessions" :sid="sid" @open="opened = $event" @remove="remove" @send="newCmd = { session: $event }" />
+          <SessionsPanel :sessions="sessions" :sid="sid" @open="opened = $event" @remove="remove" @send="newCmd = { session: $event, action: 'send' }" @move="newCmd = { session: $event, action: 'move' }" />
         </template>
 
         <template #storage>
@@ -286,7 +287,7 @@ onMounted(() => token.value && load())
       </HTabs>
     </main>
     <TranscriptSheet v-if="signedIn" :session="opened" :api="api" :sid="opened ? sid(opened) : ''" @close="opened = null" @remove="remove" @expired="opened = null; load()" />
-    <NewCommandDialog v-if="signedIn && newCmd" :sessions="sessions" :machines="machines" :api="api" :prefill="newCmd.session || null" @close="newCmd = null" @created="created" @expired="newCmd = null; load()" />
+    <NewCommandDialog v-if="signedIn && newCmd" :sessions="sessions" :machines="machines" :api="api" :prefill="newCmd.session || null" :action="newCmd.action" @close="newCmd = null" @created="created" @expired="newCmd = null; load()" />
     <DialogHost />
     <HToaster :items="toasts" @dismiss="dismiss" />
   </HTheme>

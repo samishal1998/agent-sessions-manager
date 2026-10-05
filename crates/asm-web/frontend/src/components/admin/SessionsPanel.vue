@@ -7,7 +7,7 @@ import { ago, bytes } from '../../format.js'
 // The stored sessions with search, filters and sort. The filters survive a
 // refresh (sessionStorage); the token never goes near this.
 const props = defineProps({ sessions: { type: Array, required: true }, sid: { type: Function, required: true } })
-const emit = defineEmits(['open', 'remove', 'send'])
+const emit = defineEmits(['open', 'remove', 'send', 'move'])
 
 const KEY = 'asm-hub-admin-filters'
 const blank = { q: '', agents: [], machine: '', sort: 'newest' }
@@ -88,11 +88,12 @@ const rows = computed(() => shown.value.map((s) => ({ id: key(s), title: name(s)
         <span class="admin-actions">
           <HButton size="compact" @click="emit('open', s)">View transcript<span class="admin-sr"> of {{ name(s) }}</span></HButton>
           <HButton size="compact" @click="emit('send', s)">Send to machine…<span class="admin-sr"> {{ name(s) }}</span></HButton>
+          <HButton size="compact" @click="emit('move', s)">Move to machine…<span class="admin-sr"> {{ name(s) }}</span></HButton>
           <HButton size="compact" variant="danger" @click="emit('remove', s)">Delete<span class="admin-sr"> {{ name(s) }}</span></HButton>
         </span>
       </li>
     </ul>
-    <HDataTable v-if="shown.length" class="admin-table" label="Sessions stored on this hub" :rows="rows" :columns="cols">
+    <HDataTable v-if="shown.length" class="admin-table sp-table" label="Sessions stored on this hub" :rows="rows" :columns="cols">
       <template v-for="r in rows" :key="r.id" #[tableCellSlot(r.id,'title')]>
         <span class="admin-session">
           <AgentMark :agent="byKey[r.id].agent" :size="16" />
@@ -105,6 +106,7 @@ const rows = computed(() => shown.value.map((s) => ({ id: key(s), title: name(s)
         <span class="admin-actions">
           <HButton size="compact" @click="emit('open', byKey[r.id])">View transcript<span class="admin-sr"> of {{ r.title }}</span></HButton>
           <HButton size="compact" @click="emit('send', byKey[r.id])">Send to machine…<span class="admin-sr"> {{ r.title }}</span></HButton>
+          <HButton size="compact" @click="emit('move', byKey[r.id])">Move to machine…<span class="admin-sr"> {{ r.title }}</span></HButton>
           <HButton size="compact" variant="danger" @click="emit('remove', byKey[r.id])">Delete<span class="admin-sr"> {{ r.title }}</span></HButton>
         </span>
       </template>
@@ -118,5 +120,7 @@ const rows = computed(() => shown.value.map((s) => ({ id: key(s), title: name(s)
 @media (max-width: 640px) { .sp-filters { grid-template-columns: 1fr; gap: 12px; } }
 .sp-cell { display: block; max-width: 16ch; }
 .sp-two { display: grid; min-width: 0; }
+/* Four actions in one row squeeze the title column to nothing: let them wrap into two rows. */
+.admin-table.sp-table td:last-child .admin-actions { flex-wrap: wrap; max-width: 20rem; }
 .admin-table .admin-session { max-width: 26rem; }
 </style>

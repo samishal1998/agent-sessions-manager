@@ -190,6 +190,18 @@ pub enum Adapter {
 }
 
 impl Adapter {
+    /// What `kind`'s adapter supports, whether or not its store is on this
+    /// machine: a hub plans for machines it does not run on.
+    pub fn capabilities_for(kind: AgentKind) -> Capabilities {
+        match kind {
+            AgentKind::ClaudeCode => claude::ClaudeAdapter::with_root("").capabilities(),
+            AgentKind::OpenCode => opencode::OpenCodeAdapter::with_db("").capabilities(),
+            AgentKind::JCode => jcode::JCodeAdapter::with_root("").capabilities(),
+            AgentKind::Codex => codex::CodexAdapter::with_root("").capabilities(),
+            AgentKind::Antigravity => antigravity::AntigravityAdapter::with_root("").capabilities(),
+        }
+    }
+
     /// All adapters whose store exists on this machine.
     pub fn available() -> Vec<Adapter> {
         let mut adapters = Vec::new();

@@ -1011,6 +1011,118 @@ mod tests {
         assert!(v["steps"][1].get("skipped").is_none());
     }
 
+    /// Moving: push on one machine, pull on another, then archive on the first,
+    /// through the routes. Nothing is made without the confirmation, and the
+    /// archive is not offered before the pull succeeded.
+    #[tokio::test]
+    async fn a_move_archives_the_source_only_once_the_destination_has_the_copy() {
+        let (_d, state, app) = app();
+        let alpha = credential(&app, &state).await;
+        let body = json!({ "token": state.hub.join_token().unwrap(), "name": "desk" }).to_string();
+        let (_, v) = send(&app, "POST", "/hub/v1/join", None, Body::from(body)).await;
+        let beta = v["credential"].as_str().unwrap().to_string();
+        let ids: std::collections::HashMap<String, String> = state.hub.machines().unwrap().into_iter().map(|m| (m.name, m.id)).collect();
+        // The source allows archive; an op this hub does not know is dropped.
+        let inbox_a = "/hub/v1/inbox?v=1&ops=push,pull,archive,rm&enabled=1";
+        let inbox_b = "/hub/v1/inbox?v=1&ops=push,pull&enabled=1";
+        assert_eq!(send(&app, "GET", inbox_a, Some(&alpha), Body::empty()).await.0, StatusCode::OK);
+        assert_eq!(send(&app, "GET", inbox_b, Some(&beta), Body::empty()).await.0, StatusCode::OK);
+        let token = state.hub.rotate_commands_token().unwrap();
+        let admin = state.hub.rotate_admin_token().unwrap();
+        let (_, v) = send(&app, "GET", "/hub/v1/admin/machines", Some(&admin), Body::empty()).await;
+        let laptop = v.as_array().unwrap().iter().find(|m| m["name"] == "laptop").unwrap();
+        assert_eq!(laptop["remote"]["ops"], json!(["push", "pull", "archive"]));
+
+        let id = "7f3a1c88-2d4e-4b91-9a05-6c7e8f201b43";
+        let ask = |confirm: Option<&str>, from: &str, to: &str| {
+            json!({ "kind": "move", "agent": "claude-code", "session": id, "from": from, "to": to, "confirm_archive": confirm }).to_string()
+        };
+        let laptop_id = ids["laptop"].clone();
+        for who in [None, Some(alpha.as_str()), Some(beta.as_str()), Some("asmk_none")] {
+            let (status, _) = send(&app, "POST", "/hub/v1/plans", who, Body::from(ask(Some(&laptop_id), "laptop", "desk"))).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{who:?}");
+        }
+        // No confirmation, the wrong one (a name, the other machine's id): refused with what to type.
+        for wrong in [None, Some("laptop"), Some(ids["desk"].as_str())] {
+            let (status, v) = send(&app, "POST", "/hub/v1/plans", Some(&token), Body::from(ask(wrong, "laptop", "desk"))).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{wrong:?}");
+            let want = format!("a move archives the session on laptop once desk has it: confirm it with confirm_archive set to {laptop_id}");
+            assert_eq!(v["error"].as_str(), Some(want.as_str()));
+        }
+        // The destination has not allowed archive, and is not asked to: but as the source it is refused.
+        let (status, v) = send(&app, "POST", "/hub/v1/plans", Some(&token), Body::from(ask(Some(&ids["desk"]), "desk", "laptop"))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("desk does not allow archive commands"), "{v}");
+        let (_, v) = send(&app, "GET", "/hub/v1/plans", Some(&token), Body::empty()).await;
+        assert_eq!(v.as_array().map(Vec::len), Some(0), "refusals leave nothing behind");
+
+        let (status, plan) = send(&app, "POST", "/hub/v1/plans", Some(&token), Body::from(ask(Some(&laptop_id), "laptop", "desk"))).await;
+        assert_eq!(status, StatusCode::CREATED, "{plan}");
+        assert_eq!((plan["kind"].as_str(), plan["state"].as_str()), (Some("move"), Some("queued")));
+        let steps = plan["steps"].as_array().unwrap();
+        assert_eq!(steps.iter().map(|s| s["op"].as_str().unwrap()).collect::<Vec<_>>(), ["push", "pull", "archive"]);
+        assert_eq!(steps.iter().map(|s| s["state"].as_str().unwrap()).collect::<Vec<_>>(), ["queued", "pending", "pending"]);
+        assert_eq!((steps[0]["args"]["exact"].as_bool(), steps[2]["machine"]["name"].as_str()), (Some(true), Some("laptop")));
+        let (push, pull, archive) = (steps[0]["id"].as_str().unwrap(), steps[1]["id"].as_str().unwrap(), steps[2]["id"].as_str().unwrap());
+        assert_eq!(steps[2]["needs"].as_str(), Some(pull));
+        let plan_id = plan["id"].as_str().unwrap().to_string();
+        let (status, _) = send(&app, "POST", "/hub/v1/plans", Some(&admin), Body::from(ask(Some(&laptop_id), "laptop", "desk"))).await;
+        assert_eq!(status, StatusCode::CONFLICT, "one command per session");
+
+        // Push really uploads a copy.
+        assert_eq!(send(&app, "POST", &format!("/hub/v1/inbox/{push}/claim"), Some(&alpha), Body::empty()).await.0, StatusCode::OK);
+        let sha = asm_core::fsutil::sha256_hex(b"line\n");
+        send(&app, "PUT", &format!("/hub/v1/blobs/{sha}"), Some(&alpha), Body::from("line\n")).await;
+        let manifest = json!({
+            "schema": 1, "agent": "claude-code", "id": id, "project_root": "/x", "project_root_portable": "/x",
+            "canonical": "c", "parent_rev": null, "files": [{ "path": "transcript.jsonl", "sha256": sha, "size": 5 }]
+        });
+        let (_, v) = send(&app, "PUT", &format!("/hub/v1/sessions/claude-code/{id}"), Some(&alpha), Body::from(manifest.to_string())).await;
+        let rev = v["rev"].as_str().unwrap().to_string();
+        let result = |code: &str, rev: Option<&str>| json!({ "code": code, "rev": rev }).to_string();
+        assert_eq!(send(&app, "POST", &format!("/hub/v1/inbox/{push}/result"), Some(&alpha), Body::from(result("ok", Some(&rev)))).await.0, StatusCode::OK);
+
+        // Only the pull is offered, to the destination; the archive is not offered to anyone, nor claimable.
+        let (_, v) = send(&app, "GET", inbox_a, Some(&alpha), Body::empty()).await;
+        assert_eq!(v.as_array().map(Vec::len), Some(0), "the archive waits for the pull: {v}");
+        assert_eq!(send(&app, "POST", &format!("/hub/v1/inbox/{archive}/claim"), Some(&alpha), Body::empty()).await.0, StatusCode::CONFLICT);
+        let (_, v) = send(&app, "GET", inbox_b, Some(&beta), Body::empty()).await;
+        assert_eq!((v[0]["op"].as_str(), v[0]["rev"].as_str()), (Some("pull"), Some(rev.as_str())));
+        assert_eq!(send(&app, "POST", &format!("/hub/v1/inbox/{pull}/claim"), Some(&beta), Body::empty()).await.0, StatusCode::OK);
+        let (_, v) = send(&app, "GET", &format!("/hub/v1/plans/{plan_id}"), Some(&token), Body::empty()).await;
+        assert_eq!(v["state"].as_str(), Some("running"));
+        assert_eq!(send(&app, "POST", &format!("/hub/v1/inbox/{pull}/result"), Some(&beta), Body::from(result("ok", None))).await.0, StatusCode::OK);
+
+        // Now the source is asked to archive, pinned to the revision that was sent; the destination is not.
+        let (_, v) = send(&app, "GET", inbox_b, Some(&beta), Body::empty()).await;
+        assert_eq!(v.as_array().map(Vec::len), Some(0));
+        let (_, v) = send(&app, "GET", inbox_a, Some(&alpha), Body::empty()).await;
+        assert_eq!((v[0]["id"].as_str(), v[0]["op"].as_str(), v[0]["rev"].as_str()), (Some(archive), Some("archive"), Some(rev.as_str())));
+        assert_eq!(send(&app, "POST", &format!("/hub/v1/inbox/{archive}/claim"), Some(&beta), Body::empty()).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(send(&app, "POST", &format!("/hub/v1/inbox/{archive}/claim"), Some(&alpha), Body::empty()).await.0, StatusCode::OK);
+        // The source refuses: the session changed since. The plan says where it stopped, and a retry queues it again.
+        let refusal = json!({ "code": "changed_since_move", "detail": "the session changed on laptop after the copy that was sent; nothing was archived" }).to_string();
+        let (status, v) = send(&app, "POST", &format!("/hub/v1/inbox/{archive}/result"), Some(&alpha), Body::from(refusal)).await;
+        assert_eq!((status, v["state"].as_str(), v["code"].as_str()), (StatusCode::OK, Some("blocked"), Some("changed_since_move")));
+        let (_, v) = send(&app, "GET", &format!("/hub/v1/plans/{plan_id}"), Some(&admin), Body::empty()).await;
+        assert_eq!((v["state"].as_str(), v["steps"][0]["state"].as_str(), v["steps"][1]["state"].as_str()), (Some("blocked"), Some("ok"), Some("ok")));
+        let (status, v) = send(&app, "POST", &format!("/hub/v1/plans/{plan_id}/retry"), Some(&token), Body::empty()).await;
+        assert_eq!((status, v["state"].as_str(), v["steps"][2]["state"].as_str(), v["steps"][2]["rev"].as_str()), (StatusCode::OK, Some("queued"), Some("queued"), Some(rev.as_str())));
+        assert_eq!(send(&app, "POST", &format!("/hub/v1/inbox/{archive}/claim"), Some(&alpha), Body::empty()).await.0, StatusCode::OK);
+        let (status, _) = send(&app, "POST", &format!("/hub/v1/inbox/{archive}/result"), Some(&alpha), Body::from(result("ok", None))).await;
+        assert_eq!(status, StatusCode::OK);
+        let (_, v) = send(&app, "GET", &format!("/hub/v1/plans/{plan_id}"), Some(&token), Body::empty()).await;
+        assert_eq!((v["state"].as_str(), v["kind"].as_str()), (Some("ok"), Some("move")));
+        let (_, v) = send(&app, "GET", "/hub/v1/commands", Some(&token), Body::empty()).await;
+        assert_eq!(v.as_array().map(Vec::len), Some(3), "plan steps are commands too");
+
+        // Archive cannot be created as a command of its own.
+        let alone = json!({ "op": "archive", "machine": "laptop", "agent": "claude-code", "session": "other" }).to_string();
+        let (status, v) = send(&app, "POST", "/hub/v1/commands", Some(&admin), Body::from(alone)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("a step of a move"), "{v}");
+    }
+
     #[tokio::test]
     async fn a_wrong_join_token_is_refused_and_a_right_one_works() {
         let (_d, state, app) = app();

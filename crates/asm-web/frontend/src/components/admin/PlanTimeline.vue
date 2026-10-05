@@ -2,14 +2,14 @@
 import { computed } from 'vue'
 import ResultText from './ResultText.vue'
 import StatusBadge from './StatusBadge.vue'
-import { STATE_LABEL, STATE_TONE, stateKey } from '../../commands.js'
+import { OP_VERB, OP_WHERE, STATE_LABEL, STATE_TONE, stateKey } from '../../commands.js'
 import { STATE_ICON } from './state-icons.js'
 
 // The steps of one plan, in order: what each does, where, and how it went.
 const props = defineProps({ steps: { type: Array, required: true }, label: { type: String, default: 'Steps' }, machines: { type: Object, default: () => ({}) } }) // machines: id -> machine
 
 const byId = computed(() => Object.fromEntries(props.steps.map((c) => [c.id, c])))
-const what = (c) => `${c.op === 'push' ? 'Push from' : 'Pull to'} ${c.machine.name}`
+const what = (c) => `${OP_VERB[c.op] || c.op} ${OP_WHERE[c.op] || 'on'} ${c.machine.name}`
 const retried = (c) => (c.attempts > 1 ? `${c.attempts} attempts` : '')
 </script>
 
