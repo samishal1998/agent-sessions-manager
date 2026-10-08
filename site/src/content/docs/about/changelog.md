@@ -5,7 +5,7 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
-## Unreleased
+## 0.12.1 — 2026-10-08
 
 - **A store asm cannot read no longer breaks everything.** On a machine with OpenCode 2.x (whose database moved sessions to `session_v2`), `asm list` failed, the web UI said it could not reach the hub, and indexing stopped, all with `no such table: session`. Now an OpenCode store with a schema asm does not read is skipped like an agent that is not installed, and any one agent whose store cannot be read is left out of listings (and reported on stderr by `asm list`, and in the index report) instead of failing the rest. Reading OpenCode 2.x's new schema is not supported yet.
 
