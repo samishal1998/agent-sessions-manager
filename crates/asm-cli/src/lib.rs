@@ -809,7 +809,10 @@ fn build_filter(cli: &Cli) -> anyhow::Result<SessionFilter> {
 }
 
 fn list(filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
-    let sessions = ops::list_sessions(filter)?;
+    let (sessions, problems) = ops::list_sessions_partial(filter);
+    for problem in problems {
+        eprintln!("asm: could not read {problem}");
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&sessions)?);
         return Ok(());

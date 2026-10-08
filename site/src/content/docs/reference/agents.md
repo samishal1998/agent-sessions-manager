@@ -35,6 +35,8 @@ description: What asm can do with each agent's sessions, where they live, and wh
 | Codex | `~/.codex/state_5.sqlite` (the `threads` table) and `sessions/` rollouts | `CODEX_HOME` |
 | Antigravity | `~/.gemini/antigravity-cli/` (`conversations/`, `brain/`, `cache/`) | `ASM_ANTIGRAVITY_ROOT` |
 
+OpenCode's database is read with the schema of OpenCode 1.x (`session`, `message`, `part`). OpenCode 2.x keeps sessions in `session_v2`/`session_message`, which asm does not read yet: such a store is skipped as if the agent were not installed.
+
 ## Why the gaps are gaps
 
 ### Codex is read-only

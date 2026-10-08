@@ -253,11 +253,14 @@ impl Index {
         // Subagent sessions are included: their content is worth finding
         // even though the pickers hide them.
         let filter = SessionFilter { include_children: true, ..SessionFilter::default() };
-        let mut sessions = ops::list_sessions(&filter)?;
+        let (mut sessions, unreadable) = ops::list_sessions_partial(&filter);
         // Archived sessions have left their agent's store but not our
         // archive, and "where did I do that thing" should still find them.
         sessions.extend(crate::sync::archived_sessions().unwrap_or_default());
-        self.refresh_with(&sessions, ops::export_ir, progress)
+        let mut report = self.refresh_with(&sessions, ops::export_ir, progress)?;
+        // An agent whose store could not be read does not stop the refresh.
+        report.failed.extend(unreadable);
+        Ok(report)
     }
 
     /// An error mapper that does not borrow the index, so a transaction

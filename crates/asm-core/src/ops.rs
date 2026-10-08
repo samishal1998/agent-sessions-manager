@@ -9,13 +9,26 @@ use crate::adapter::{
 };
 use crate::model::{AgentKind, Project, ProjectWorktree, Session};
 
+/// Every session, from every agent that can be read. An agent whose store
+/// cannot be read is left out rather than failing the whole listing (one
+/// broken or unsupported store must not hide the others); use
+/// `list_sessions_partial` to hear which.
 pub fn list_sessions(filter: &SessionFilter) -> Result<Vec<Session>, CoreError> {
+    Ok(list_sessions_partial(filter).0)
+}
+
+/// `list_sessions`, plus one line per agent that could not be read.
+pub fn list_sessions_partial(filter: &SessionFilter) -> (Vec<Session>, Vec<String>) {
     let mut sessions = Vec::new();
+    let mut problems = Vec::new();
     for adapter in Adapter::available() {
-        sessions.extend(adapter.sessions(filter)?);
+        match adapter.sessions(filter) {
+            Ok(found) => sessions.extend(found),
+            Err(e) => problems.push(format!("{}: {e}", adapter.kind())),
+        }
     }
     sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
-    Ok(sessions)
+    (sessions, problems)
 }
 
 /// Sessions as each agent's store gives them up, for a frontend that shows

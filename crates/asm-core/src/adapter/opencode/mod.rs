@@ -35,6 +35,25 @@ pub struct OpenCodeAdapter {
     lock_dir: Option<PathBuf>,
 }
 
+/// Whether the database has the tables asm reads. OpenCode 2.x moved
+/// sessions into `session_v2`/`session_message`, which asm cannot read yet:
+/// that store is skipped like an agent that is not installed, instead of
+/// every listing failing on `no such table: session`. A database that
+/// cannot be inspected right now (locked, busy) counts as supported, so a
+/// moment's contention never hides the sessions.
+pub fn schema_supported(db: &Path) -> bool {
+    use rusqlite::{Connection, OpenFlags};
+    let Ok(conn) = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX) else {
+        return true;
+    };
+    conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name IN ('session', 'message', 'part')",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .map_or(true, |found| found == 3)
+}
+
 impl OpenCodeAdapter {
     pub fn with_db(db: impl Into<PathBuf>) -> Self {
         OpenCodeAdapter { db: db.into(), lock_dir: None }
@@ -55,7 +74,7 @@ impl OpenCodeAdapter {
     pub fn detect_default() -> Option<Self> {
         let db = default_db()?;
         let lock_dir = state_dir().map(|d| d.join("opencode/locks"));
-        db.is_file().then_some(OpenCodeAdapter { db, lock_dir })
+        (db.is_file() && schema_supported(&db)).then_some(OpenCodeAdapter { db, lock_dir })
     }
 
     pub fn db(&self) -> &Path {
@@ -255,5 +274,37 @@ impl AgentWrite for OpenCodeAdapter {
         opts: &crate::import::ImportOpts,
     ) -> Result<crate::import::ImportOutcome, CoreError> {
         import_ir::import_ir(self, ir, opts)
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::schema_supported;
+
+    fn db_with(dir: &std::path::Path, name: &str, tables: &[&str]) -> std::path::PathBuf {
+        let path = dir.join(name);
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        for t in tables {
+            conn.execute(&format!("CREATE TABLE {t} (id TEXT)"), []).unwrap();
+        }
+        path
+    }
+
+    /// An OpenCode whose sessions live in tables asm does not read (2.x) is
+    /// skipped like an agent that is not installed; the schema asm reads, and
+    /// a database that cannot be inspected right now, are not.
+    #[test]
+    fn a_store_with_a_schema_asm_cannot_read_is_skipped_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let v1 = db_with(dir.path(), "v1.db", &["session", "message", "part", "project"]);
+        let v2 = db_with(dir.path(), "v2.db", &["session_v2", "session_message", "project"]);
+        let empty = db_with(dir.path(), "empty.db", &[]);
+        assert!(schema_supported(&v1));
+        assert!(!schema_supported(&v2), "2.x moved sessions to session_v2");
+        assert!(!schema_supported(&empty), "a database with no tables has no sessions to read");
+        assert!(schema_supported(&dir.path().join("missing.db")), "cannot look: do not hide anything");
+        let garbage = dir.path().join("garbage.db");
+        std::fs::write(&garbage, b"not a database at all, just text").unwrap();
+        assert!(schema_supported(&garbage), "cannot read it: say so later, not here");
     }
 }
