@@ -258,6 +258,229 @@ before the model ever sees the conversation. `asm` therefore re-attributes
 imported conversations to the target install's most recently used model and says
 so in the loss report; the original model stays recorded in the IR provenance.
 
+### OpenCode 2.x
+
+Verified against 2.0.25. asm **reads** this schema directly and **writes** it
+only by running `opencode` (below).
+It is the same file (`opencode.db`), told apart from 1.x by its tables: 2.x has
+`session_v2` and `session_message` and no `message`/`part`. (1.18 already
+carries a `session_message` table beside the 1.x ones, so the pair alone is not
+the test: `session_v2` is.)
+
+```
+project           id, worktree, vcs, name, sandboxes, ...      the same table as 1.x
+session_v2        one row per session (renamed from 1.x's `session`)
+session_message   one row per message: id, session_id, type, seq, time_*, data
+event, event_sequence       the log both of those are projected from
+session_pending, session_inbox   input waiting to be taken into a turn
+workspace, worktree, project_directory
+```
+
+- `session_v2` keeps the 1.x columns asm uses (`id`, `parent_id`, `slug`,
+  `directory`, `title`, `version`, `agent`, `model`, `cost`, `tokens_*`,
+  `time_created`, `time_updated`, `time_archived`) and adds `fork_session_id`,
+  `fork_boundary`, `time_idle`, `idle_outcome`, `time_viewed`, `time_suspended`
+  and `resume_attempts`. `title` is nullable. `directory` is where the session
+  was started (`location.directory` in the transfer document; the project's
+  `worktree` is the fallback when it is empty), which may be inside the project
+  rather than its root; `path` is that directory relative to the project root
+  (`subpath` in the document), unset at the root itself. `parent_id` still
+  marks subagents.
+- **`time_archived` means nothing in 2.0.25.** Only a migration and an import
+  write it, and nothing filters on it, so asm does not treat it as archived: a
+  session archived in 1.x lists as an ordinary one (it could never be
+  unarchived otherwise). The value still travels in a hub bundle, as data.
+- **A migrated database keeps the 1.x tables.** 2.x copies 1.x sessions into
+  `session_v2` in a background job (a cursor in the `kv` row `migration.v1-v2`)
+  and does not drop `session`, `message` and `part`; a 1.x binary can still add
+  rows to them afterwards. `session_v2` plus `session_message` is what makes a
+  store 2.x. A 1.x session that is not in `session_v2` yet is listed and read
+  from the 1.x tables, read-only (so nothing is hidden), and `asm doctor` and
+  `asm list` say how many there are. asm changes nothing in such a store until
+  OpenCode has migrated them: rename, delete, import and a hub pull are
+  refused, and such a session is not pushed to a hub. A database asm cannot inspect at
+  that moment (locked, busy, unreadable) is read as 1.x for listing but never
+  written: every change refuses with a message to retry.
+- **The tables are projections.** The service folds events from `event` into
+  `session_v2`/`session_message`; a streamed tool call is the same `assistant`
+  row rewritten in place, and a committed revert deletes the rows after its
+  boundary. Anything that writes the projections by hand can be contradicted by
+  the log, which is why asm does not.
+- **Order is `seq`**, unique per session. `session_message.data` is the message
+  JSON with `id` and `type` moved into their own columns, and `time_updated` moves whenever
+  the row is rewritten, so a message count with the newest `time_updated` is a
+  complete change marker.
+
+Message kinds, as read (`type` column; the schema is
+`packages/schema/src/session-message.ts` in the OpenCode source):
+
+| `type` | `data` | In the IR |
+|---|---|---|
+| `user` | `text`, `files[{data,mime,source{type,uri?},name?}]`, `agents[{name}]`, `skills[{id,name,text?}]` | user text and file parts (inline bytes are not carried); `agents`, `skills` in extensions |
+| `assistant` | `agent`, `model{id,providerID}`, `content[]`, `finish`, `cost`, `tokens`, `error{type,message}`, `snapshot`, `time{created,streamed?,completed?}` | text, reasoning and tool parts; the rest in extensions (`opencode`); an assistant with no content and no error is dropped |
+| `shell` | `shellID`, `command`, `status` (`running`/`exited`/`timeout`/`killed`), `exit?`, `output{output,cursor,size,truncated}`, `time` | a `shell` tool call and its result (assistant side, as 1.x records `!` commands) |
+| `system`, `synthetic` | `text`, `description?` | system text |
+| `skill` | `skill`, `name`, `text` | system text |
+| `compaction` | `status` (`running`/`completed`/`failed`), `reason` (`auto`/`manual`), `summary`, `recent`, or `error` | system text of the summary (or the failure); `reason`, `recent`, `status` in extensions |
+| `idle`, `agent-switched`, `model-switched`, `location-switched` | `outcome` / `agent` / `model` / `location` | dropped (bookkeeping; every assistant row records its own agent and model) |
+
+An assistant's `content` items are `text{text}`, `reasoning{text, state?}` and
+`tool{id,name,state,time}`. A tool's `state` is `streaming{input: string}` (the
+JSON typed so far), `running{input,metadata}`, `completed{input,content,metadata?}`
+(`content` is never empty) or `error{input,error{type,message},content?}`.
+`content` is a list of `{type:"text",text}` and `{type:"file",uri,mime,name?}`.
+asm turns a completed result into the joined text (files become a one-line
+reference), an error into its message, and leaves streaming and running calls
+without a result. Unlike 1.x, a failed tool keeps its message in `error.message`
+and a completed one has no `output` string.
+
+**Liveness.** The service claims a session by setting `time_suspended` when a turn
+starts and clears it when the turn succeeds, fails or is interrupted by the user.
+An interruption by shutdown leaves the claim for the next start to resume
+(`resume_attempts` counts those). The service writes itself to
+`$XDG_STATE_HOME/opencode/service.json` (`id`, `version`, `url`, `pid`, and
+a `password` when the service has one). asm reports a session live when it is
+claimed *and* that service is proven up the way OpenCode's own probe proves it:
+the pid is alive and `GET <url>/api/info` (loopback only, with the password
+as Basic auth when there is one) answers with that pid and version. A pid alone
+is not proof (it may have been reused by another process). A claim whose
+service is not up is an interrupted turn, shown idle. This was derived from the
+OpenCode source and binary, not observed on a running turn. Only `service.json`
+is read: OpenCode names the file by release channel (`latest`, `dev`, `beta` and
+`next` use it; any other channel writes `service-<channel>.json`), so a service
+of another channel is not seen, and asm stands alone (below) and shows its
+turns as idle. 1.x's `locks/` directory does not appear in 2.x.
+
+**Resume** is unchanged: `opencode -s <id>` from the session's directory.
+
+#### Writing, and the transfer document
+
+asm never writes the projections: the log can contradict them and a running
+service owns them. It runs the CLI instead, and the document it builds and
+reads is `SessionTransfer.Data`, what `opencode session export <id>` prints and
+`opencode session import <file>` takes:
+
+```
+{ "info":     { id, parentID?, fork?, projectID, agent?, model?{id,providerID,variant},
+                cost, tokens{input,output,reasoning,cache{read,write}}, outcome?,
+                time{created,updated,idle?,viewed?,archived?}, title?,
+                location{directory,workspaceID?}, subpath?, metadata?, permissions?, revert? },
+  "messages": [ { id, type, ...data } ... ] }
+```
+
+- **Reading it without OpenCode.** asm builds the same document from read-only
+  queries: `info` the way OpenCode shapes a `session_v2` row (a model without a
+  `variant` gets `"default"`; an unset field is absent), `messages` the stored
+  `data` with `id` and `type` put back, in `seq` order, minus what OpenCode's
+  export leaves out (an assistant message that has not completed, a shell or
+  compaction still running). Run against the same store, it and `opencode
+  session export` print the same document, which a test checks for every
+  message kind.
+- **What an import keeps and rewrites.** It keeps session and message ids, the
+  parent link, titles, `metadata`, `permissions`, cost, tokens, the message
+  order, `idle`/`outcome` and `time.created`. It renumbers `seq` 1..n,
+  recomputes `projectID` from the directory it is given (`--directory`, which
+  must exist; without it the current directory, not `info.location`), makes a
+  new slug, sets `time.updated` to the import time and clamps `time.viewed` to
+  `time.idle`. `fork`, `revert`, `subpath` and `workspaceID` are not imported.
+  A parent must be imported before its children; an id already there answers
+  `Session already exists` with exit status 0, so asm looks first and checks
+  after; a message id cannot be reused under another session; an import is
+  atomic. `--sanitize` redacts content and is never used for a backup.
+- **Refused while busy.** A session is busy when `time_suspended` is set (a turn
+  claimed it, or its service died and left the claim for the next start to
+  resume) or `session_inbox`/`session_pending` holds anything for it. The
+  message says which: a turn that is running, work that is queued, or "an
+  unfinished turn from an OpenCode that is no longer running; start OpenCode once
+  to finish or abandon it, then retry" (asm itself never starts the service that
+  would resume it).
+- **Service or standalone.** With no flag the CLI uses the service in
+  `service.json`; with the service down it would start a managed one whose boot
+  resumes claimed sessions. asm adds `--standalone` unless that service is
+  proven up (see Liveness). A stale `service.json` whose pid another process now
+  owns, or whose port nothing answers, is not a service. `OPENCODE_DB` and
+  `OPENCODE_TEST_HOME` are removed from the environment asm gives `opencode`:
+  they would make it write a database other than the one asm reads.
+- **Rename** is `opencode api session.update --param sessionID=ID -d
+  '{"title":"..."}'`; an empty title would make OpenCode generate one with a
+  model, so it is refused. **Delete** is `opencode session delete ID`, recursive
+  over subagents, after a backup that holds everything stored (an abandoned
+  partial turn too; an import leaves unsettled messages out again), is fsynced
+  with its directory and read back before anything is deleted, is private to the
+  user (directory 0700, files 0600), and comes with a `manifest.json` that names
+  each session's directory. Restoring is `opencode session import <file>
+  --directory <directory>` per session, the root first. Just before the delete
+  the tree is read again; if a session was added, a turn started or a message
+  arrived since the backup, nothing is deleted and the backup stays. There is **no archive**: 2.0.25 sets
+  `time_archived` only by migration and import and nothing filters on it. **Move**
+  (`api session.move`) only queues a request for a persistent server.
+- **Import from another agent** builds a document with deterministic ids
+  (`ses_`/`msg_` from the source id, so a second import is a no-op), user text
+  as `user`, assistant text, reasoning and tool calls as one `assistant` message
+  with its tool results folded into `completed` (or, for a failure, `error{type,
+  message}`) states, tool names mapped (`Bash` and `bash` become `shell`, `Task`
+  becomes `subagent`, `Read`/`Edit`/`Write`/`Glob`/`Grep`/`WebFetch`/`WebSearch`
+  as 2.x names them, anything else kept), a tool input that is not an object
+  wrapped as `{"value": ...}`, a call with no recorded result as an `error` of
+  type `interrupted`, and a closing `idle` message. Attachments (2.x stores
+  their bytes inline) and nested subagent runs are left out, and the loss report
+  says so.
+
+#### The hub bundle
+
+A 2.x session is pushed as one file, `transfer.json`:
+`{generation: "opencode-v2", root, sessions: {<id>: {info, messages}}}`, the
+session and every descendant in the document above, with
+`extra.generation = "opencode-v2"` in the manifest. A 1.x bundle is
+`rows.json` (database rows) and has no generation; a pull checks which one it
+holds against which one the machine has, and refuses a mismatch.
+
+- **Identity.** What the hub records as the copy's identity is a hash of, per
+  session in id order, `id`, `parentID`, `title`, `agent`, `model`, `metadata`,
+  `permissions`, `cost`, `tokens` and every settled message. (What decides
+  whether one copy contains the other is finer: each session's `id`, `parentID`,
+  `title`, `metadata` and `permissions`, and each message, one by one. Cost,
+  tokens, agent and model follow the messages, so a plain continuation does not
+  make a merely-behind copy look diverged.) It leaves out what an import rewrites
+  (`time.updated`, `time.viewed`, `projectID`, the slug) and where the session is
+  filed (`location`, `subpath`, `workspaceID`), so two machines holding the same
+  conversation agree. It is not the push fingerprint, which also moves with
+  `time_updated` and is only ever compared on one machine.
+- **Dropped from the bundle**, because the format has no place for it:
+  `time_suspended` and `resume_attempts` (a claim and its retry count, which
+  belong to one machine's service), the queued `session_inbox` and
+  `session_pending` rows, the machine-local `workspace_id`, and the per-session
+  instruction state (`instruction_state`, `instruction_entry`,
+  `instruction_blob`: what the session's next turn builds its instructions from;
+  neither `session export` nor `session import` in the 2.0.25 source touches
+  them, and OpenCode rebuilds it on the next turn). Dropped by an
+  import: `fork`, `revert`, `subpath`; and `time.viewed` is clamped. A session
+  that is mid-turn is pushed as it stands; its unfinished message is left out
+  until it completes.
+- **Install** imports the root and then each descendant, parents first, with
+  `--directory` the target directory (all of them: a pulled tree is one project
+  here). New: none of the ids is here. In sync: same identity. Behind: replace it,
+  which is back up the local tree as documents, check it did not change meanwhile,
+  `opencode session delete`, import the hub's; if that import fails the old tree
+  is imported back (a half-imported tree is removed on what the store holds, not
+  on what the CLI reported) and the backup is named. A copy that differs only in
+  titles is not replaced: the titles are applied with a rename, the old ones
+  saved first (the pull reports `renamed`). Ahead and diverged change nothing.
+  There is no fast-forward on 2.x because `session import` only creates.
+- **What an install checks first.** The bundle holds at most 1000 sessions and
+  200 000 messages; every session id starts with `ses` and every message id with
+  `msg_`; every session is part of the tree under the root; and the root is
+  nobody's child (an import would otherwise hang the tree under whichever local
+  session had that id). A store that cannot be inspected, or is still migrating
+  1.x sessions, is refused before anything is read. The refusal for the other
+  generation says which case it is: no OpenCode installed here, a 1.x-format
+  database with 2.x installed (start OpenCode 2.x once so it migrates, then pull
+  again), or a different major version (naming the version that pushed it).
+- **Trust.** A pulled session carries its `permissions`, `metadata`, agent and
+  model exactly as pushed, and its messages as they were. Pull only from
+  machines you control. (Remote-control pulls only ever install copies pushed by
+  named machines of your own hub.)
+
 ---
 
 ## What does not cross between agents

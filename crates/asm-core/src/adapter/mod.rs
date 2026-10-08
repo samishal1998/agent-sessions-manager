@@ -162,6 +162,9 @@ pub struct RelocateOutcome {
 pub struct DeleteReport {
     pub backup_dir: Option<PathBuf>,
     pub removed: Vec<PathBuf>,
+    /// Something to tell the user beyond the backup's location (how to
+    /// restore it, when that takes more than putting files back).
+    pub note: Option<String>,
 }
 
 /// Write-side adapter surface. Every implementation must refuse to touch a

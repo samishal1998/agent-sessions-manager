@@ -441,7 +441,11 @@ impl Remote {
 
     /// This machine's waiting commands, telling the hub what it can do.
     pub fn inbox(&self, caps: &Caps) -> Result<Vec<Work>, CoreError> {
-        let path = format!("/hub/v1/inbox?v={}&ops={}&enabled={}", caps.v, caps.ops.join(","), u8::from(caps.enabled));
+        let mut path = format!("/hub/v1/inbox?v={}&ops={}&enabled={}", caps.v, caps.ops.join(","), u8::from(caps.enabled));
+        if !caps.no_archive.is_empty() {
+            // Only when there is something to say: an older hub ignores it.
+            path.push_str(&format!("&no_archive={}", caps.no_archive.join(",")));
+        }
         let profile = if self.quick { Profile::Probe } else { Profile::Control };
         let r = self.call("GET", &path, Body::None, profile)?;
         if r.status == 404 || r.status == 405 {

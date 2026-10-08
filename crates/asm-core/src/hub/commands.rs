@@ -148,12 +148,26 @@ impl Code {
     }
 }
 
+/// Why an agent's sessions cannot be archived, for a sentence.
+fn no_archive_reason(agent: AgentKind) -> String {
+    match agent {
+        AgentKind::OpenCode => "OpenCode 2.x has no archive".into(),
+        other => format!("the installed {other} cannot archive"),
+    }
+}
+
 /// What a machine says it can and may do, sent with every poll.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Caps {
     pub v: u32,
     pub ops: Vec<String>,
     pub enabled: bool,
+    /// Agents whose sessions this machine cannot archive although it may be
+    /// allowed to (the installed OpenCode 2.x has no archive): the hub plans
+    /// no move away from here for them. Absent from an older daemon's poll,
+    /// which then claims nothing.
+    #[serde(default)]
+    pub no_archive: Vec<String>,
 }
 
 /// What an administrator sees of a machine's remote control.
@@ -702,7 +716,7 @@ impl Hub {
     }
 
     /// Check that a machine is willing and able to run `op`.
-    fn check_willing(target: &MachineRecord, op: Op) -> Result<(), HubError> {
+    fn check_willing(target: &MachineRecord, op: Op, agent: AgentKind) -> Result<(), HubError> {
         let name = &target.name;
         let Some(caps) = &target.caps else {
             return Err(bad(format!(
@@ -716,6 +730,9 @@ impl Hub {
         if !caps.ops.iter().any(|o| o == op.as_str()) {
             let how = if op == Op::Archive { " (`asm control enable --allow push,pull,archive` there)" } else { "" };
             return Err(bad(format!("{name} does not allow {} commands{how}", op.as_str())));
+        }
+        if op == Op::Archive && caps.no_archive.iter().any(|a| a == agent.as_str()) {
+            return Err(bad(format!("{name} cannot archive {agent} sessions ({}); use send instead", no_archive_reason(agent))));
         }
         Ok(())
     }
@@ -733,7 +750,7 @@ impl Hub {
         let _guard = self.lock.lock().unwrap();
         let machines = self.read_machines()?;
         let target = find(&machines, &request.machine)?;
-        Self::check_willing(target, request.op)?;
+        Self::check_willing(target, request.op, agent)?;
 
         let (from, rev, title) = match request.op {
             Op::Push => (None, None, None),
@@ -808,11 +825,11 @@ impl Hub {
                 source.name, target.name, source.id
             )));
         }
-        Self::check_willing(source, Op::Push)?;
+        Self::check_willing(source, Op::Push, agent)?;
         if moving {
-            Self::check_willing(source, Op::Archive)?;
+            Self::check_willing(source, Op::Archive, agent)?;
         }
-        Self::check_willing(target, Op::Pull)?;
+        Self::check_willing(target, Op::Pull, agent)?;
 
         let mut commands = self.read_commands()?;
         let (_, events) = Self::sweep(&mut commands);
@@ -902,11 +919,14 @@ impl Hub {
         let (mut changed, mut events) = Self::sweep(&mut commands);
         let t = now();
         for c in commands.iter_mut().filter(|c| c.machine.id == machine.id && c.state == State::Queued) {
-            let refused = !caps.enabled || !caps.ops.iter().any(|o| o == c.op.as_str());
+            let cannot = c.op == Op::Archive && caps.no_archive.iter().any(|a| a == c.agent.as_str());
+            let refused = !caps.enabled || !caps.ops.iter().any(|o| o == c.op.as_str()) || cannot;
             if refused {
                 c.state = State::Blocked;
                 c.code = Some(if caps.enabled { Code::Unsupported } else { Code::RemoteOff });
-                c.detail = Some(if caps.enabled && c.op == Op::Archive {
+                c.detail = Some(if cannot {
+                    format!("that machine cannot archive {} sessions ({})", c.agent, no_archive_reason(c.agent))
+                } else if caps.enabled && c.op == Op::Archive {
                     "that machine does not allow archive commands".into()
                 } else if caps.enabled {
                     "that machine does not run this kind of command".into()
@@ -1128,7 +1148,7 @@ impl Hub {
             };
             self.revision(c.agent.as_str(), &c.session, rev.as_deref().ok_or_else(gone)?).map_err(|_| gone())?;
         }
-        Self::check_willing(find(machines, &c.machine.id)?, c.op)?;
+        Self::check_willing(find(machines, &c.machine.id)?, c.op, c.agent)?;
         Self::ensure_free(commands, c.agent, &c.session, c.plan.as_deref())?;
 
         let mut next = commands.clone();
@@ -1163,7 +1183,7 @@ impl Hub {
             let Some(i) = waiting else { break };
             let step = &next[i];
             let machine = find(machines, &step.machine.id)?;
-            Self::check_willing(machine, step.op).map_err(|e| match (step.op, e) {
+            Self::check_willing(machine, step.op, step.agent).map_err(|e| match (step.op, e) {
                 (Op::Archive, HubError::BadRequest(_)) => bad(format!(
                     "step {} archives on {}: enable archive there (asm control enable --allow push,pull,archive), or start a send",
                     step.step.unwrap_or(3),
@@ -1234,7 +1254,7 @@ mod tests {
     use crate::hub::manifest::Manifest;
 
     fn caps(enabled: bool) -> Caps {
-        Caps { v: PROTOCOL, ops: vec!["push".into(), "pull".into()], enabled }
+        Caps { v: PROTOCOL, ops: vec!["push".into(), "pull".into()], enabled, no_archive: vec![] }
     }
 
     /// A hub with two machines that have both said remote control is on.
@@ -1527,7 +1547,7 @@ mod tests {
         assert!(refused(&hub, &|p| p.to = "nobody".into()).contains("no machine"));
 
         // Beta allows only pushes: the pull step could never run.
-        let push_only = Caps { v: PROTOCOL, ops: vec!["push".into()], enabled: true };
+        let push_only = Caps { v: PROTOCOL, ops: vec!["push".into()], enabled: true, no_archive: vec![] };
         hub.inbox(&b, push_only).unwrap();
         assert!(refused(&hub, &|_| {}).contains("beta does not allow pull"));
         hub.inbox(&b, caps(false)).unwrap();
@@ -2057,7 +2077,7 @@ mod tests {
     // --- move: push, pull, then archive the source ---
 
     fn caps_archive() -> Caps {
-        Caps { v: PROTOCOL, ops: vec!["push".into(), "pull".into(), "archive".into()], enabled: true }
+        Caps { v: PROTOCOL, ops: vec!["push".into(), "pull".into(), "archive".into()], enabled: true, no_archive: vec![] }
     }
 
     /// Alpha (the source) has allowed archive; beta has not and needs not.
@@ -2114,10 +2134,10 @@ mod tests {
         // ...while a send from it is still fine, and the destination needs no archive.
         assert_eq!(hub.create_plan(send("s2"), "admin").unwrap().steps.len(), 2);
         hub.inbox(&a, caps_archive()).unwrap();
-        hub.inbox(&b, Caps { v: PROTOCOL, ops: vec!["pull".into()], enabled: true }).unwrap();
+        hub.inbox(&b, Caps { v: PROTOCOL, ops: vec!["pull".into()], enabled: true, no_archive: vec![] }).unwrap();
         assert!(hub.create_plan(mv("s3", &hub), "admin").is_ok(), "beta only pulls");
         // The destination must pull, and both must have remote control on.
-        hub.inbox(&b, Caps { v: PROTOCOL, ops: vec!["push".into()], enabled: true }).unwrap();
+        hub.inbox(&b, Caps { v: PROTOCOL, ops: vec!["push".into()], enabled: true, no_archive: vec![] }).unwrap();
         assert!(refused(&|p| p.session = "s4".into()).to_string().contains("beta does not allow pull"));
         hub.inbox(&b, caps(true)).unwrap();
         hub.inbox(&a, Caps { enabled: false, ..caps_archive() }).unwrap();
@@ -2128,6 +2148,43 @@ mod tests {
         // A send ignores a confirmation it does not need, and stays a copy.
         let copy = hub.create_plan(NewPlan { confirm_archive: Some(a.id.clone()), ..send("s5") }, "admin").unwrap();
         assert_eq!((copy.kind.as_str(), copy.steps.len()), ("send", 2));
+    }
+
+    /// A machine that cannot archive an agent (OpenCode 2.x has no archive)
+    /// says so with its poll, and the hub refuses the move when it is
+    /// planned, not after the copy was made.
+    #[test]
+    fn a_move_away_from_a_machine_that_cannot_archive_the_agent_is_refused_when_planned() {
+        let (_d, hub, a, b) = hub_for_moves();
+        let oc_move = |s: &str| NewPlan { agent: "opencode".into(), ..mv(s, &hub) };
+        // The hub knows nothing of alpha's limits yet.
+        assert!(hub.create_plan(oc_move("s0"), "admin").is_ok());
+        let early = hub.create_plan(mv("s1", &hub), "admin").unwrap();
+
+        hub.inbox(&a, Caps { no_archive: vec!["opencode".into()], ..caps_archive() }).unwrap();
+        let err = hub.create_plan(oc_move("s2"), "admin").unwrap_err();
+        assert!(matches!(err, HubError::BadRequest(_)));
+        assert_eq!(err.to_string(), "alpha cannot archive opencode sessions (OpenCode 2.x has no archive); use send instead");
+        // A send, and a move of another agent from the same machine, are fine; so is a move from a machine without the limit.
+        assert!(hub.create_plan(NewPlan { agent: "opencode".into(), ..send("s3") }, "admin").is_ok());
+        assert!(hub.create_plan(mv("s4", &hub), "admin").is_ok());
+        // What the machine said is stored with its other capabilities, and an older daemon's poll says nothing.
+        assert_eq!(hub.read_machines().unwrap().into_iter().find(|m| m.id == a.id).unwrap().caps.unwrap().no_archive, ["opencode"]);
+        let cannot = Caps { no_archive: vec!["claude-code".into()], ..caps_archive() };
+        let old: Caps = serde_json::from_str(r#"{"v":1,"ops":["push"],"enabled":true}"#).unwrap();
+        assert!(old.no_archive.is_empty());
+
+        // The move planned before: its archive step, queued once the pull is done, is
+        // blocked by the poll of the machine that says it cannot.
+        let rev = put_copy(&hub, &a, None);
+        let archive = early.steps[2].id.clone();
+        push_ok(&hub, &a, &early, &rev);
+        hub.claim(&b, &early.steps[1].id).unwrap();
+        hub.report(&b, &early.steps[1].id, done(Code::Ok, None)).unwrap();
+        assert!(hub.inbox(&a, cannot).unwrap().iter().all(|w| w.op != Op::Archive), "not offered");
+        let blocked = hub.command(&archive).unwrap();
+        assert_eq!((blocked.state, blocked.code), (State::Blocked, Some(Code::Unsupported)));
+        assert!(blocked.detail.unwrap().contains("cannot archive claude-code sessions"));
     }
 
     #[test]

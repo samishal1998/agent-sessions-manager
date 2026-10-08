@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use super::actions::{self, key};
 use super::client::Remote;
 use super::commands::{Caps, Code, Op, PROTOCOL, Report, Work};
+use crate::adapter::AgentRead as _;
 use super::manifest::{files_hash, valid_id, valid_sha};
 use super::state::{SyncState, Tracked};
 use super::store::Head;
@@ -94,7 +95,11 @@ impl Config {
     /// What this machine tells the hub on every poll.
     pub fn caps(&self) -> Caps {
         let ops = if self.enabled { self.allow.clone() } else { Vec::new() };
-        Caps { v: PROTOCOL, ops, enabled: self.enabled }
+        // From the adapters that are really here (an OpenCode 2.x store has no
+        // archive), so the hub can refuse a move away from this machine when
+        // it is planned instead of after the copy was made.
+        let no_archive = if self.enabled { cannot_archive_here() } else { Vec::new() };
+        Caps { v: PROTOCOL, ops, enabled: self.enabled, no_archive }
     }
 }
 
@@ -225,6 +230,11 @@ fn in_archive_store(agent: AgentKind, id: &str) -> bool {
 /// everywhere. `found` is the session as listed, `in_store` whether the
 /// archive store holds it.
 fn archived_here(found: Option<&Session>, in_store: bool) -> Option<Report> {
+    archived_here_with(found, in_store, can_archive_here)
+}
+
+/// [`archived_here`], given what this machine can archive.
+fn archived_here_with(found: Option<&Session>, in_store: bool, can_archive: impl Fn(AgentKind) -> bool) -> Option<Report> {
     let archived = match found {
         Some(s) => s.status == SessionStatus::Archived,
         None => in_store,
@@ -308,6 +318,7 @@ fn run_pull(remote: &Remote, work: &Work) -> Result<Report, CoreError> {
         InstallOutcome::New => report(Code::Ok, format!("installed at {}", pulled.installed.project_root.display())),
         InstallOutcome::FastForward { .. } => report(Code::Ok, "brought up to date"),
         InstallOutcome::Replaced => report(Code::Ok, "overwritten with the hub's copy; the old one was backed up first"),
+        InstallOutcome::Renamed => report(Code::Ok, "renamed to match the hub's copy; the old titles were saved first"),
         InstallOutcome::InSync => report(Code::AlreadyApplied, "this machine already had that revision"),
         InstallOutcome::Ahead => report(Code::Ahead, "this machine has more than the revision being pulled"),
         InstallOutcome::Diverged => report(Code::Diverged, "both machines continued the session; nothing was changed"),
@@ -319,6 +330,23 @@ fn run_pull(remote: &Remote, work: &Work) -> Result<Report, CoreError> {
 /// hub asks it too before it plans a move.
 pub fn can_archive(agent: AgentKind) -> bool {
     super::bundle::restorable(agent) && crate::adapter::Adapter::capabilities_for(agent).archive
+}
+
+/// [`can_archive`] for what is installed HERE: the adapter that really owns
+/// the store says (OpenCode 2.x has no archive; the planning view cannot
+/// know which OpenCode a machine has).
+fn can_archive_here(agent: AgentKind) -> bool {
+    super::bundle::restorable(agent)
+        && ops::adapter_for(agent).map_or_else(|| crate::adapter::Adapter::capabilities_for(agent).archive, |a| a.capabilities().archive)
+}
+
+/// The agents present on this machine whose sessions it cannot archive.
+fn cannot_archive_here() -> Vec<String> {
+    crate::adapter::Adapter::available()
+        .iter()
+        .filter(|a| !a.capabilities().archive)
+        .map(|a| a.kind().as_str().to_string())
+        .collect()
 }
 
 /// Why this session may not be archived here, whatever the hub asked: the
@@ -427,7 +455,7 @@ fn run_archive(remote: &Remote, work: &Work) -> Result<Report, CoreError> {
         key: &k,
         found: found.as_ref(),
         in_store: in_archive_store(work.agent, &work.session),
-        can_archive: can_archive(work.agent),
+        can_archive: can_archive_here(work.agent),
         tracked: tracked.as_ref(),
     };
     archive_step(
@@ -794,12 +822,19 @@ mod tests {
         let (mut s, _) = synced(dir.path(), AgentKind::OpenCode);
         // Listed, flagged archived (OpenCode's way).
         s.status = SessionStatus::Archived;
-        let r = archived_here(Some(&s), false).expect("blocked");
+        let r = archived_here_with(Some(&s), false, can_archive).expect("blocked");
         assert_eq!(r.code, Code::ArchivedHere);
         assert!(!r.code.succeeded());
         assert_eq!(
             r.detail.as_deref(),
             Some("this machine has that session archived; asm unarchive it there, then retry. Nothing else was changed.")
+        );
+        // Where the installed agent cannot unarchive (OpenCode 2.x has no archive at all), the
+        // advice is to restore it in the agent, not a command that would fail.
+        let r = archived_here_with(Some(&s), false, |_| false).expect("blocked");
+        assert_eq!(
+            r.detail.as_deref(),
+            Some("this machine has that session archived; restore it in opencode there, then retry. Nothing else was changed.")
         );
         assert_eq!(serde_json::to_string(&r.code).unwrap(), "\"archived_here\"");
         // Not listed, held by asm's archive store (Claude's way).
@@ -850,6 +885,7 @@ mod tests {
         assert!(!c.enabled);
         assert!(!c.allows(Op::Push) && !c.allows(Op::Pull));
         assert!(c.caps().ops.is_empty(), "off reports no operations");
+        assert!(c.caps().no_archive.is_empty(), "nor any limits");
         let on = Config { enabled: true, allow: vec!["pull".into()] };
         assert!(on.allows(Op::Pull) && !on.allows(Op::Push));
         assert_eq!(on.caps().ops, vec!["pull".to_string()]);

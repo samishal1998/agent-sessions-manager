@@ -95,7 +95,8 @@ fn layout(agent: AgentKind) -> (&'static [&'static str], &'static [&'static str]
         }
         AgentKind::Codex => (&["rollout.jsonl", "thread.json"], &[]),
         AgentKind::JCode => (&["snapshot.json", "snapshot.bak", "journal.jsonl"], &[]),
-        AgentKind::OpenCode => (&["rows.json"], &["session_diff"]),
+        // `rows.json`: 1.x database rows; `transfer.json`: 2.x session documents.
+        AgentKind::OpenCode => (&["rows.json", "transfer.json"], &["session_diff"]),
         AgentKind::Antigravity => (&["conversation.db", "cache.json"], &["brain"]),
     }
 }

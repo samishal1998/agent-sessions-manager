@@ -14,6 +14,10 @@ pub(super) fn export_ir(
     adapter: &OpenCodeAdapter,
     session: &Session,
 ) -> Result<IrSession, CoreError> {
+    // (An unmigrated 1.x row in a 2.x database is read as 1.x.)
+    if adapter.is_v2() && !super::is_unmigrated_row(session) {
+        return super::v2::export_ir(adapter, session);
+    }
     let conn = Connection::open_with_flags(
         adapter.db(),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -147,6 +151,11 @@ fn build(session: &Session, raw: Vec<RawMessage>) -> IrSession {
         messages.push(IrMessage { role, timestamp, parts, source_id: Some(message_id), extensions });
     }
 
+    ir_session(session, messages)
+}
+
+/// The session envelope around already-converted messages (shared by 1.x and 2.x).
+pub(super) fn ir_session(session: &Session, messages: Vec<IrMessage>) -> IrSession {
     IrSession {
         ir_version: IR_VERSION,
         source: IrProvenance {

@@ -46,9 +46,30 @@ pub(super) fn guard_not_busy(adapter: &OpenCodeAdapter) -> Result<(), CoreError>
     Ok(())
 }
 
+/// `SESSION_TABLES` for the store `conn` is open on. A 2.x store has its own
+/// `session_message` (the messages themselves, keyed to `session_v2`), which
+/// the 1.x code must never delete from or copy as if it were 1.18's.
+pub(super) fn session_tables(conn: &Connection) -> Vec<&'static str> {
+    let v2 = table_exists(conn, "session_v2");
+    SESSION_TABLES.into_iter().filter(|t| !(v2 && *t == "session_message")).collect()
+}
+
+/// Open the store for the 1.x SQL below. Refuses a store that is not there
+/// (opening would create an empty one) and a 2.x store, whose rows a running
+/// service owns: callers decide the generation first, and this is the last
+/// word if they were wrong.
 pub(super) fn open_rw(adapter: &OpenCodeAdapter) -> Result<Connection, CoreError> {
-    Connection::open(adapter.db())
-        .map_err(|e| CoreError::Sqlite { db: adapter.db().to_path_buf(), source: Box::new(e) })
+    if !adapter.db().is_file() {
+        return Err(CoreError::StoreNotFound { path: adapter.db().to_path_buf() });
+    }
+    let conn = Connection::open(adapter.db())
+        .map_err(|e| CoreError::Sqlite { db: adapter.db().to_path_buf(), source: Box::new(e) })?;
+    if table_exists(&conn, "session_v2") {
+        return Err(CoreError::Invalid {
+            msg: "this is an OpenCode 2.x store; the 1.x write path will not touch it. Nothing was changed".into(),
+        });
+    }
+    Ok(conn)
 }
 
 fn sql_err(adapter: &OpenCodeAdapter) -> impl Fn(rusqlite::Error) -> CoreError + '_ {
@@ -80,7 +101,7 @@ pub(super) fn backup_session_rows(
     for target in ids {
         let mut dump = serde_json::Map::new();
         dump.insert("session".into(), Value::Array(super::super::dump_rows(conn, "session", "id", target)));
-        for table in SESSION_TABLES {
+        for table in session_tables(conn) {
             if table_exists(conn, table) {
                 dump.insert(
                     table.into(),
@@ -228,7 +249,7 @@ pub(super) fn delete(
     for target in targets.iter().rev() {
         // Child rows go explicitly, so the backup above and this list agree
         // on what a session is, whatever the connection's foreign-key mode.
-        for table in SESSION_TABLES {
+        for table in session_tables(&conn) {
             if table_exists(&conn, table) {
                 conn.execute(
                     &format!("DELETE FROM {table} WHERE session_id = ?1"),
@@ -255,5 +276,5 @@ pub(super) fn delete(
         return Err(CoreError::Invalid { msg: format!("session {id} not found in store") });
     }
     removed.push(adapter.db().to_path_buf());
-    Ok(DeleteReport { backup_dir: Some(backup), removed })
+    Ok(DeleteReport { backup_dir: Some(backup), removed, note: None })
 }

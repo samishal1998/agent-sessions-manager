@@ -34,18 +34,55 @@ pub(super) fn sessions(
     }
 
     let conn = open_ro(adapter)?;
-    let sizes = session_sizes(&conn);
+    // 2.x keeps sessions in `session_v2` with the same columns this reads
+    // (plus `time_suspended`, the only signal that a turn is in flight).
+    let v2 = adapter.is_v2();
+    // Asked only if a row turns out to be claimed: proving a service is up
+    // costs a request.
+    let service = std::cell::OnceCell::new();
+    let mut sessions = if v2 {
+        let mut found = read_table(adapter, &conn, filter, "session_v2", "", true, &session_sizes(&conn, true), &service)?;
+        // A 2.x database keeps the 1.x tables it migrates from, and sessions
+        // OpenCode has not copied yet exist only there: list them too (read
+        // only; asm changes nothing in such a store), so nothing is hidden.
+        // Their messages are the 1.x `message` and `part` rows.
+        if matches!(super::unmigrated(adapter.db()), Ok(n) if n > 0) {
+            let only_there = "WHERE NOT EXISTS (SELECT 1 FROM session_v2 v WHERE v.id = s.id)";
+            found.extend(read_table(adapter, &conn, filter, "session", only_there, false, &session_sizes(&conn, false), &service)?);
+        }
+        found
+    } else {
+        read_table(adapter, &conn, filter, "session", "", false, &session_sizes(&conn, false), &service)?
+    };
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
+    Ok(sessions)
+}
+
+/// The sessions of one table (`session_v2`, or 1.x's `session`, optionally
+/// narrowed by `condition`). `v2` says it has the 2.x columns and meaning.
+#[allow(clippy::too_many_arguments)]
+fn read_table(
+    adapter: &OpenCodeAdapter,
+    conn: &Connection,
+    filter: &SessionFilter,
+    table: &str,
+    condition: &str,
+    v2: bool,
+    sizes: &HashMap<String, u64>,
+    service: &std::cell::OnceCell<Option<u32>>,
+) -> Result<Vec<Session>, CoreError> {
+    let suspended = if v2 { "s.time_suspended" } else { "NULL" };
     let sql_err =
         |e: rusqlite::Error| CoreError::Sqlite { db: adapter.db().to_path_buf(), source: Box::new(e) };
 
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT s.id, s.parent_id, s.slug, s.directory, s.title, s.version, s.agent,
                     s.model, s.cost, s.tokens_input, s.tokens_output, s.tokens_cache_read,
                     s.tokens_cache_write, s.time_created, s.time_updated, s.time_archived,
-                    p.worktree
-             FROM session s LEFT JOIN project p ON p.id = s.project_id",
-        )
+                    p.worktree, {suspended} AS time_suspended
+             FROM {table} s LEFT JOIN project p ON p.id = s.project_id {condition}",
+        ))
         .map_err(sql_err)?;
 
     let rows = stmt
@@ -66,10 +103,11 @@ pub(super) fn sessions(
             let time_updated: Option<i64> = row.get("time_updated")?;
             let time_archived: Option<i64> = row.get("time_archived")?;
             let worktree: Option<String> = row.get("worktree")?;
+            let time_suspended: Option<i64> = row.get("time_suspended")?;
             Ok((
                 id, parent, slug, directory, title, version, model_json, cost,
                 tokens_input, tokens_output, tokens_cache_read, tokens_cache_write,
-                time_created, time_updated, time_archived, worktree,
+                time_created, time_updated, time_archived, worktree, time_suspended,
             ))
         })
         .map_err(sql_err)?;
@@ -79,7 +117,7 @@ pub(super) fn sessions(
         let (
             id, parent, slug, directory, title, version, model_json, cost,
             tokens_input, tokens_output, tokens_cache_read, tokens_cache_write,
-            time_created, time_updated, time_archived, worktree,
+            time_created, time_updated, time_archived, worktree, time_suspended,
         ) = row.map_err(sql_err)?;
 
         if parent.is_some() && !filter.include_children {
@@ -96,7 +134,17 @@ pub(super) fn sessions(
             continue;
         }
 
-        let status = if time_archived.is_some() {
+        // 2.x claims a session (`time_suspended`) while a turn runs and
+        // releases it when the turn settles; a claim whose server is gone is
+        // an interrupted turn waiting to resume, not a live session.
+        let running = if time_suspended.is_some() { *service.get_or_init(|| super::v2::service_pid(adapter)) } else { None };
+        // 2.0.25 ignores `time_archived` (nothing sets it but a migration or
+        // an import, and nothing filters on it), so on a 2.x store it does
+        // not make a session archived: one archived in 1.x would show as
+        // archived here, with no way to ever unarchive it.
+        let status = if running.is_some() {
+            SessionStatus::Live { pid: running }
+        } else if time_archived.is_some() && !v2 {
             SessionStatus::Archived
         } else {
             SessionStatus::Idle
@@ -109,13 +157,13 @@ pub(super) fn sessions(
                 native_id: id,
                 location: SessionLocation::SqliteRow {
                     db: adapter.db().to_path_buf(),
-                    table: "session".to_string(),
+                    table: table.to_string(),
                 },
             },
             title,
             slug,
             project_root: PathBuf::from(project_root),
-            git_branch: None, // workspace table (which models branches) is unused at 1.17.x
+            git_branch: None, // 1.17.x: workspace table unused; 2.x: workspace.binding is provider-specific JSON
             created: time_created.map(from_millis),
             updated: time_updated.map(from_millis),
             model: model_json.as_deref().and_then(model_id),
@@ -136,7 +184,6 @@ pub(super) fn sessions(
         }
     }
 
-    sessions.sort_by_key(|s| std::cmp::Reverse(s.updated));
     Ok(sessions)
 }
 
@@ -160,9 +207,10 @@ fn model_id(json: &str) -> Option<String> {
 /// not bytes — the cast to BLOB is what makes this a byte count. Real
 /// transcripts are a fraction of a percent multibyte, so the difference is
 /// small but always in the same direction.
-fn session_sizes(conn: &Connection) -> HashMap<String, u64> {
+fn session_sizes(conn: &Connection, v2: bool) -> HashMap<String, u64> {
     let mut sizes: HashMap<String, u64> = HashMap::new();
-    for table in ["message", "part"] {
+    let tables: &[&str] = if v2 { &["session_message"] } else { &["message", "part"] };
+    for table in tables {
         let sql = format!(
             "SELECT session_id, SUM(LENGTH(CAST(COALESCE(data, '') AS BLOB))) \
              FROM {table} GROUP BY session_id"

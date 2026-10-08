@@ -1,4 +1,4 @@
-//! OpenCode over the hub.
+//! OpenCode 1.x over the hub (2.x bundles are `hub_v2`).
 //!
 //! Built by reading the rows directly, not by `opencode export`: measured
 //! against 1.18.31, export writes to the store on every call, and it also
@@ -81,7 +81,57 @@ fn watermark(conn: &Connection, root: &str) -> String {
 
 pub(crate) fn fingerprint(adapter: &OpenCodeAdapter, session: &Session) -> Option<String> {
     let conn = super::super::open_ro(adapter.db()).ok()?;
-    Some(watermark(&conn, &session.handle.native_id))
+    // A store that cannot be read as either generation has no fingerprint:
+    // the caller skips this pass instead of treating the session as changed
+    // (or, worse, as gone).
+    match adapter.schema() {
+        // Not migrated yet: nothing to push (a 2.x machine cannot take 1.x rows).
+        super::Schema::V2 if super::is_unmigrated_row(session) => None,
+        super::Schema::V2 => watermark_v2(&conn, &session.handle.native_id),
+        super::Schema::V1 => Some(watermark(&conn, &session.handle.native_id)),
+        _ => None,
+    }
+}
+
+/// The 2.x counterpart of [`watermark`]: the session and its subagents, the
+/// session rows but where each is filed and what only a viewing or a claim
+/// touches, and each one's message count and newest `time_updated` (a tool
+/// call streamed into an assistant row rewrites it in place). `None` when
+/// the store cannot be read just now, or has no such session: a failed query
+/// must not look like "no sessions".
+fn watermark_v2(conn: &Connection, root: &str) -> Option<String> {
+    let mut ids: Vec<String> = conn
+        .prepare(
+            "WITH RECURSIVE tree(id) AS (SELECT ?1 UNION SELECT s.id FROM session_v2 s JOIN tree t ON s.parent_id = t.id)
+             SELECT id FROM tree",
+        )
+        .and_then(|mut stmt| stmt.query_map([root], |r| r.get(0))?.collect::<Result<Vec<String>, _>>())
+        .ok()?;
+    ids.sort();
+    let mut parts = Vec::new();
+    for id in ids {
+        let mut row = super::super::dump_rows(conn, "session_v2", "id", &id);
+        if row.is_empty() {
+            // The root is not a session, or the row cannot be read.
+            return None;
+        }
+        for object in row.iter_mut().filter_map(Value::as_object_mut) {
+            for ignored in PER_MACHINE.iter().chain(&["time_viewed", "time_suspended", "resume_attempts"]) {
+                object.remove(*ignored);
+            }
+        }
+        parts.push(format!("{id}:{}", Value::Array(row)));
+        parts.push(
+            conn.query_row(
+                "SELECT COUNT(*) || ':' || COALESCE(MAX(time_updated), 0) || ':' || COALESCE(MAX(seq), 0)
+                 FROM session_message WHERE session_id = ?1",
+                [&id],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()?,
+        );
+    }
+    Some(format!("tree2:{}", fsutil::sha256_hex(parts.join("\n").as_bytes())))
 }
 
 /// Every row of a session and its descendants, by table, as JSON.
@@ -90,7 +140,7 @@ fn dump_tree(conn: &Connection, root: &str) -> Map<String, Value> {
     for id in write::with_descendants(conn, root) {
         let mut dump = Map::new();
         dump.insert("session".into(), Value::Array(super::super::dump_rows(conn, "session", "id", &id)));
-        for table in TABLES {
+        for table in write::session_tables(conn) {
             if write::table_exists(conn, table) {
                 dump.insert(table.into(), Value::Array(super::super::dump_rows(conn, table, "session_id", &id)));
             }
@@ -101,6 +151,20 @@ fn dump_tree(conn: &Connection, root: &str) -> Map<String, Value> {
 }
 
 pub(crate) fn collect(adapter: &OpenCodeAdapter, session: &Session) -> Result<Bundle, CoreError> {
+    // Reading, so a 2.x store still migrating is fine; one that cannot be
+    // read as either generation is not: the 1.x queries on it would come
+    // back empty and be pushed as the session.
+    match adapter.schema() {
+        super::Schema::V2 if super::is_unmigrated_row(session) => {
+            return Err(CoreError::Invalid {
+                msg: format!("session {} has not been migrated by OpenCode 2.x yet; start OpenCode once, then push it", session.handle.native_id),
+            });
+        }
+        super::Schema::V2 => return super::hub_v2::collect(adapter, session),
+        super::Schema::V1 => {}
+        super::Schema::Unknown => return Err(OpenCodeAdapter::uninspectable()),
+        _ => return Err(CoreError::StoreNotFound { path: adapter.db().to_path_buf() }),
+    }
     let conn = super::super::open_ro(adapter.db())?;
     let root = &session.handle.native_id;
     // One read snapshot for the watermark and every row, so they agree with
@@ -273,7 +337,7 @@ fn write_tree(
     let mut ids: Vec<&str> = local_ids.iter().map(String::as_str).collect();
     ids.extend(hub.keys().map(String::as_str));
     for id in &ids {
-        for table in TABLES {
+        for table in write::session_tables(&tx) {
             if write::table_exists(&tx, table) {
                 tx.execute(&format!("DELETE FROM {table} WHERE session_id = ?1"), [id])?;
             }
@@ -282,7 +346,7 @@ fn write_tree(
     }
     for dump in hub.values() {
         // Sessions first, then what hangs off them.
-        for table in std::iter::once("session").chain(TABLES) {
+        for table in std::iter::once("session").chain(write::session_tables(&tx)) {
             for row in dump.get(table).and_then(Value::as_array).into_iter().flatten() {
                 let Some(row) = row.as_object() else { continue };
                 let mut row = row.clone();
@@ -365,6 +429,37 @@ pub(crate) fn install(
     project_dir: Option<&Path>,
     base: Option<&Base>,
 ) -> Result<Installed, CoreError> {
+    // Which generation this machine's OpenCode is decides how a bundle is
+    // installed, and a bundle of the other generation cannot be. Decided once,
+    // and refused outright for a store that cannot be inspected or is still
+    // migrating. A store that does not exist yet (the first pull onto a
+    // machine) has no schema to read, so the installed binary says.
+    let schema = adapter.write_schema()?;
+    let bundle_v2 = manifest.extra.get("generation").and_then(Value::as_str) == Some(super::hub_v2::GENERATION);
+    let installed = adapter.cli().version();
+    let binary_v2 = installed.as_deref().is_some_and(|v| v.starts_with("2."));
+    if schema == super::Schema::V1 && binary_v2 {
+        // The 1.x install runs `opencode import` flagless, which 2.x reads
+        // as something else; and the store is not 2.x's yet either.
+        return Err(super::v1_store_with_v2_binary());
+    }
+    let machine_v2 = match schema {
+        super::Schema::V2 => true,
+        super::Schema::Absent => binary_v2,
+        _ => false,
+    };
+    if bundle_v2 != machine_v2 {
+        return Err(super::hub_v2::wrong_generation(
+            manifest.agent_version.as_deref(),
+            bundle_v2,
+            machine_v2,
+            installed.as_deref(),
+            schema == super::Schema::Absent,
+        ));
+    }
+    if bundle_v2 {
+        return super::hub_v2::install(adapter, manifest, blob, project_dir, base);
+    }
     manifest.validate().map_err(|msg| CoreError::Invalid { msg })?;
     let id = &manifest.id;
     for sha in manifest.blob_shas() {

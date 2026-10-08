@@ -96,13 +96,13 @@ pub fn fingerprint(session: &Session) -> String {
     match &session.handle.location {
         // Transcripts are append-only, so size plus mtime is decisive.
         SessionLocation::JsonlFile { path } => format!("file:{}", stat(path)),
-        SessionLocation::SqliteRow { db, .. } => {
+        SessionLocation::SqliteRow { db, table } => {
             // `session.time_updated` LAGS: measured against the real store,
             // message rows carry a `time_updated` newer than their
             // session's on the busiest sessions, so trusting the session
             // row alone silently loses streamed tool output from the index.
             // Ask the message table instead.
-            match message_watermark(db, &session.handle.native_id) {
+            match message_watermark(db, table, &session.handle.native_id) {
                 Some((count, max_updated)) => format!("rows:{count}:{max_updated}:{updated_ms}"),
                 // No message table (Antigravity keeps one database per
                 // conversation). New steps land in the WAL, and in the
@@ -140,15 +140,27 @@ fn stat(path: &std::path::Path) -> String {
 }
 
 /// (message count, newest message timestamp) for a row-backed session.
-fn message_watermark(db: &std::path::Path, session_id: &str) -> Option<(i64, i64)> {
+fn message_watermark(db: &std::path::Path, session_table: &str, session_id: &str) -> Option<(i64, i64)> {
     let conn = rusqlite::Connection::open_with_flags(
         db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .ok()?;
+    // OpenCode 1.x keeps messages in `message`, 2.x in `session_message`. A
+    // 2.x database keeps its 1.x tables after migrating, with the old
+    // messages frozen in them, so the table follows the schema (the same
+    // test as everywhere else), not whichever exists.
+    // A session still only in the 1.x tables (not migrated yet) has its
+    // messages in `message`, schema or no.
+    let table = match crate::adapter::opencode::schema_of(&conn).ok()? {
+        crate::adapter::opencode::Schema::V2 if session_table != "session" => "session_message",
+        _ => "message",
+    };
     conn.query_row(
-        "SELECT COUNT(*), COALESCE(MAX(MAX(COALESCE(time_updated,0), COALESCE(time_created,0))), 0)
-         FROM message WHERE session_id = ?1",
+        &format!(
+            "SELECT COUNT(*), COALESCE(MAX(MAX(COALESCE(time_updated,0), COALESCE(time_created,0))), 0)
+             FROM {table} WHERE session_id = ?1"
+        ),
         [session_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )

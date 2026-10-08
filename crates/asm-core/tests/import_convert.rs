@@ -15,6 +15,22 @@ use asm_core::import::{ImportMode, ImportOpts};
 use asm_core::ir::{ExtBag, IrMessage, IrPart, IrProvenance, IrRole, IrSession, PortablePath};
 use asm_core::model::{AgentKind, Usage};
 
+/// These tests exercise the 1.x path. Whether a store (or one that does not
+/// exist yet) is imported as 1.x or 2.x depends on the `opencode` installed,
+/// so they run with one that says it is 1.x, whatever is on this machine.
+fn opencode_1x(db: impl Into<std::path::PathBuf>) -> OpenCodeAdapter {
+    use std::os::unix::fs::PermissionsExt;
+    static BIN: std::sync::OnceLock<(tempfile::TempDir, std::path::PathBuf)> = std::sync::OnceLock::new();
+    let (_, bin) = BIN.get_or_init(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("opencode");
+        std::fs::write(&bin, "#!/bin/sh\n[ \"$1\" = --version ] && echo 'opencode v1.17.18'\nexit 0\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (dir, bin)
+    });
+    OpenCodeAdapter::with_db(db).with_binary(bin)
+}
+
 fn sample_ir(source: AgentKind) -> IrSession {
     let ts = |s: &str| s.parse::<jiff::Timestamp>().ok();
     IrSession {
@@ -108,7 +124,7 @@ fn dry_opts(mode: ImportMode) -> ImportOpts {
 #[test]
 fn claude_to_opencode_document_shape() {
     let ir = sample_ir(AgentKind::ClaudeCode);
-    let adapter = OpenCodeAdapter::with_db("/nonexistent/opencode.db");
+    let adapter = opencode_1x("/nonexistent/opencode.db");
     let outcome = adapter.import_ir(&ir, &dry_opts(ImportMode::Full)).unwrap();
     let doc: Value = serde_json::from_str(outcome.dry_run_artifact.as_deref().unwrap()).unwrap();
 
@@ -250,7 +266,7 @@ fn seed_mode_produces_handoff_document() {
 #[test]
 fn import_ids_are_deterministic_across_runs() {
     let ir = sample_ir(AgentKind::ClaudeCode);
-    let adapter = OpenCodeAdapter::with_db("/nonexistent/opencode.db");
+    let adapter = opencode_1x("/nonexistent/opencode.db");
     let a = adapter.import_ir(&ir, &dry_opts(ImportMode::Full)).unwrap();
     let b = adapter.import_ir(&ir, &dry_opts(ImportMode::Full)).unwrap();
     assert_eq!(
@@ -264,7 +280,7 @@ fn import_ids_are_deterministic_across_runs() {
 /// the message rows that prove the import actually completed.
 fn store_with_target(db: &Path, ir: &IrSession, with_message: bool) -> String {
     let expected_id = {
-        let adapter = OpenCodeAdapter::with_db(db);
+        let adapter = opencode_1x(db);
         let dry = adapter.import_ir(ir, &dry_opts(ImportMode::Full)).unwrap();
         dry.target.unwrap().native_id
     };
@@ -272,6 +288,7 @@ fn store_with_target(db: &Path, ir: &IrSession, with_message: bool) -> String {
     conn.execute_batch(&format!(
         "CREATE TABLE session (id TEXT PRIMARY KEY);
          CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT);
+         CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT);
          INSERT INTO session VALUES ('{expected_id}');"
     ))
     .unwrap();
@@ -291,7 +308,7 @@ fn opencode_in_sync_when_the_session_was_actually_imported() {
     let ir = sample_ir(AgentKind::ClaudeCode);
     store_with_target(&db, &ir, true);
 
-    let adapter = OpenCodeAdapter::with_db(&db);
+    let adapter = opencode_1x(&db);
     let outcome = adapter
         .import_ir(&ir, &ImportOpts { mode: ImportMode::Full, project: None, dry_run: false })
         .unwrap();
@@ -308,7 +325,7 @@ fn a_bare_session_row_is_not_mistaken_for_a_completed_import() {
     let ir = sample_ir(AgentKind::ClaudeCode);
     store_with_target(&db, &ir, false);
 
-    let adapter = OpenCodeAdapter::with_db(&db);
+    let adapter = opencode_1x(&db);
     let result = adapter
         .import_ir(&ir, &ImportOpts { mode: ImportMode::Full, project: None, dry_run: false });
 

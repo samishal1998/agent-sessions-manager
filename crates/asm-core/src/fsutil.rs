@@ -89,10 +89,16 @@ fn unique() -> String {
     format!("{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
+/// How many times (10 ms apart) a lock that looks held is looked at again.
+#[cfg(unix)]
+const HELD_RETRIES: u32 = 20;
+
 /// An exclusive flock on `path` (created if missing, never truncated or
 /// removed), or `None` while another process holds it. Released when the
 /// file is dropped, or however the process ends. Codex and Antigravity mark
-/// a session in use this way; asm takes the same lock to write one.
+/// a session in use this way; asm takes the same lock to write one. A lock
+/// that looks held is looked at again for about 200 ms before it is believed
+/// (see the loop).
 pub fn lock_exclusive(path: &Path) -> Result<Option<fs::File>, CoreError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| CoreError::io(parent, e))?;
@@ -106,15 +112,28 @@ pub fn lock_exclusive(path: &Path) -> Result<Option<fs::File>, CoreError> {
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
-        // Safety: flock on a descriptor this function owns.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        // A flock belongs to the open file description, not to the process,
+        // so a child forked by another thread of this process holds a copy of
+        // a descriptor we just dropped until it execs. That lasts a few
+        // milliseconds; a real holder (another program) lasts. Look again for
+        // a short while before saying it is held.
+        let mut waited = 0;
+        loop {
+            // Safety: flock on a descriptor this function owns.
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                break;
+            }
             let e = std::io::Error::last_os_error();
             // Only "someone holds it" means held; a filesystem that cannot
             // lock at all (NFS without lockd) is an error to show as such.
-            return match e.kind() {
-                std::io::ErrorKind::WouldBlock => Ok(None),
-                _ => Err(CoreError::io(path, e)),
-            };
+            if e.kind() != std::io::ErrorKind::WouldBlock {
+                return Err(CoreError::io(path, e));
+            }
+            if waited == HELD_RETRIES {
+                return Ok(None);
+            }
+            waited += 1;
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
     Ok(Some(file))
@@ -191,6 +210,37 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A flock belongs to the open file description, and a child forked by
+    /// another thread holds a copy of the descriptor until it execs (a few
+    /// milliseconds). Taking the lock again just after dropping it must not
+    /// report it held because of that.
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_just_dropped_is_not_held_by_a_child_forked_meanwhile() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("x.lock");
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let spawner = {
+            let (stop, cwd) = (stop.clone(), dir.path().to_path_buf());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = std::process::Command::new("true").current_dir(&cwd).status();
+                }
+            })
+        };
+        let mut held = 0;
+        for _ in 0..400 {
+            match lock_exclusive(&path).unwrap() {
+                Some(lock) => drop(lock),
+                None => held += 1,
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        spawner.join().unwrap();
+        assert_eq!(held, 0, "the lock was reported held {held} times by a descriptor nobody owns");
+    }
 
     #[test]
     fn write_atomic_replaces_and_leaves_no_sibling() {

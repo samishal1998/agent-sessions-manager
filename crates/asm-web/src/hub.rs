@@ -287,6 +287,28 @@ struct InboxQuery {
     v: Option<u32>,
     ops: Option<String>,
     enabled: Option<u8>,
+    /// Agents the machine cannot archive (an older daemon sends none).
+    no_archive: Option<String>,
+}
+
+/// What a machine's poll says it can do. Only the operations and agents this
+/// hub knows are kept.
+fn caps_of(q: InboxQuery) -> Caps {
+    let ops: Vec<String> = q
+        .ops
+        .unwrap_or_default()
+        .split(',')
+        .filter(|o| asm_core::hub::commands::OPS.iter().any(|k| k.as_str() == *o))
+        .map(String::from)
+        .collect();
+    let no_archive: Vec<String> = q
+        .no_archive
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(asm_core::model::AgentKind::parse)
+        .map(|a| a.as_str().to_string())
+        .collect();
+    Caps { v: q.v.unwrap_or(1), ops, enabled: q.enabled == Some(1), no_archive }
 }
 
 /// A machine asks for its commands and says what it can do. Only the
@@ -296,14 +318,7 @@ async fn inbox(
     Extension(machine): Extension<Machine>,
     axum::extract::Query(q): axum::extract::Query<InboxQuery>,
 ) -> Response {
-    let ops: Vec<String> = q
-        .ops
-        .unwrap_or_default()
-        .split(',')
-        .filter(|o| asm_core::hub::commands::OPS.iter().any(|k| k.as_str() == *o))
-        .map(String::from)
-        .collect();
-    let caps = Caps { v: q.v.unwrap_or(1), ops, enabled: q.enabled == Some(1) };
+    let caps = caps_of(q);
     match blocking(move || state.hub.inbox(&machine, caps)).await {
         Ok(work) => Json(work).into_response(),
         Err(e) => hub_error(e),
@@ -818,6 +833,23 @@ mod tests {
                 assert_eq!(status, StatusCode::UNAUTHORIZED, "{method} {uri} with {cred:?}");
             }
         }
+    }
+
+    /// The poll says which agents the machine cannot archive; an older
+    /// daemon says nothing, and what the hub does not know is dropped.
+    #[test]
+    fn a_poll_reports_what_the_machine_cannot_archive() {
+        let q = |no_archive: Option<&str>| InboxQuery {
+            v: Some(1),
+            ops: Some("push,pull,archive,bogus".into()),
+            enabled: Some(1),
+            no_archive: no_archive.map(String::from),
+        };
+        let caps = caps_of(q(Some("opencode,not-an-agent,claude-code")));
+        assert_eq!(caps.ops, ["push", "pull", "archive"]);
+        assert_eq!(caps.no_archive, ["opencode", "claude-code"]);
+        assert!(caps_of(q(None)).no_archive.is_empty(), "an older daemon");
+        assert!(caps_of(q(Some(""))).no_archive.is_empty());
     }
 
     /// Remote control through the door that matters: a machine asks and

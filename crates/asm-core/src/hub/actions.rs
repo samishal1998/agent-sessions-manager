@@ -466,6 +466,7 @@ pub fn pull_all(
                 InstallOutcome::Replaced => {
                     ItemOutcome::Ok { note: "updated, the older copy backed up".into() }
                 }
+                InstallOutcome::Renamed => ItemOutcome::Ok { note: "renamed to match".into() },
             },
             Err(e) => ItemOutcome::Failed { error: e.to_string() },
         };

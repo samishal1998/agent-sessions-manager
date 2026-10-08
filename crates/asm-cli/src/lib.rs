@@ -813,6 +813,9 @@ fn list(filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
     for problem in problems {
         eprintln!("asm: could not read {problem}");
     }
+    for note in ops::store_notes() {
+        eprintln!("asm: {note}");
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&sessions)?);
         return Ok(());
@@ -973,6 +976,9 @@ fn delete(query: &str, yes: bool, filter: &SessionFilter) -> anyhow::Result<()> 
         println!("Backed up to {}.", backup.display());
     }
     println!("Deleted {} ({} paths/stores touched).", session.short_id(), report.removed.len());
+    if let Some(note) = &report.note {
+        println!("{note}.");
+    }
     Ok(())
 }
 
@@ -1326,6 +1332,9 @@ fn pull(
         ),
         InstallOutcome::Replaced => println!(
             "Updated {label} from {from}: the older copy here was backed up and replaced."
+        ),
+        InstallOutcome::Renamed => println!(
+            "Updated {label} from {from}: renamed to match (the old titles were saved first); nothing else differed."
         ),
         InstallOutcome::InSync => println!("{label} is already in sync with {from}."),
         InstallOutcome::Ahead => {

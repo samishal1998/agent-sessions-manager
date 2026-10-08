@@ -5,8 +5,9 @@
 //! afterwards, and the restored session is exported to IR from there. Claude
 //! Code, jcode and Codex use their own install function (read and found to
 //! write inside the adapter root only, no env, no child process); Antigravity's
-//! transcript is placed directly; OpenCode's bundled rows are read as data,
-//! because its install runs `opencode import`. Nothing leaves the scratch dir.
+//! transcript is placed directly; OpenCode's bundled rows (1.x) or session
+//! documents (2.x) are read as data, because its install runs `opencode
+//! import`. Nothing leaves the scratch dir.
 
 use std::path::PathBuf;
 
@@ -60,6 +61,8 @@ pub fn render(hub: &Hub, agent: &str, id: &str, limit: usize) -> Result<Transcri
         AgentKind::JCode => "snapshot.json",
         AgentKind::Codex => "rollout.jsonl",
         AgentKind::Antigravity => ANTIGRAVITY_TRANSCRIPT,
+        // 1.x bundles hold database rows, 2.x ones session documents.
+        AgentKind::OpenCode if manifest.files.iter().any(|f| f.path == V2_TRANSCRIPT) => V2_TRANSCRIPT,
         AgentKind::OpenCode => "rows.json",
     };
     manifest.files.retain(|f| f.path == keep);
@@ -83,6 +86,14 @@ pub fn render(hub: &Hub, agent: &str, id: &str, limit: usize) -> Result<Transcri
     };
 
     let mut ir = match manifest.agent {
+        AgentKind::OpenCode if keep == V2_TRANSCRIPT => {
+            let path = blob_of(V2_TRANSCRIPT)?;
+            let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).map_err(|e| CoreError::io(&path, e))?)
+                .map_err(|e| CoreError::Invalid { msg: format!("{V2_TRANSCRIPT} is unreadable: {e}") })?;
+            let tree = doc.pointer(&format!("/sessions/{id}")).filter(|t| t.is_object());
+            let tree = tree.ok_or_else(|| CoreError::Invalid { msg: format!("{V2_TRANSCRIPT} has no such session") })?;
+            crate::adapter::opencode::v2::ir_from_transfer(tree)
+        }
         AgentKind::OpenCode => {
             let path = blob_of("rows.json")?;
             let doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).map_err(|e| CoreError::io(&path, e))?)
@@ -135,6 +146,9 @@ pub fn render(hub: &Hub, agent: &str, id: &str, limit: usize) -> Result<Transcri
     }
     Ok(TranscriptView { available: true, truncated: Some(truncated), ir: Some(ir), reason: None })
 }
+
+/// An OpenCode 2.x bundle's file: `{sessions: {<id>: {info, messages}}}`.
+const V2_TRANSCRIPT: &str = "transfer.json";
 
 const ANTIGRAVITY_TRANSCRIPT: &str = "brain/.system_generated/logs/transcript.jsonl";
 
@@ -388,5 +402,32 @@ mod tests {
         assert_eq!(ir.title.as_deref(), Some("Retry schema"));
         let t = texts(&ir);
         assert!(t.find("question zero").unwrap() < t.find("answer one").unwrap(), "ordered by time: {t}");
+    }
+
+    #[test]
+    fn opencode_2x_renders_from_its_session_documents() {
+        let doc = json!({ "generation": "opencode-v2", "root": ID, "sessions": { ID: {
+            "info": { "id": ID, "title": "Two point oh", "location": { "directory": "/home/a/x" },
+                      "model": { "id": "m", "providerID": "p" }, "time": { "created": 1, "updated": 2 } },
+            "messages": [
+                { "id": "msg_1", "type": "user", "time": { "created": 10 }, "text": "question zero" },
+                { "id": "msg_2", "type": "assistant", "time": { "created": 20, "completed": 21 }, "agent": "build",
+                  "content": [ { "type": "text", "text": "answer one" },
+                               { "type": "tool", "id": "c1", "name": "shell", "time": { "created": 20 },
+                                 "state": { "status": "completed", "input": { "command": "ls" }, "content": [{ "type": "text", "text": "a.txt" }] } } ] },
+                { "id": "msg_3", "type": "idle", "time": { "created": 30 }, "outcome": "succeeded" },
+            ],
+        } } });
+        let (d, hub) = hub_with(
+            "opencode",
+            json!({ "generation": "opencode-v2" }),
+            &[("transfer.json", serde_json::to_vec(&doc).unwrap())],
+        );
+        let ir = render_clean(&d, &hub, "opencode");
+        assert_eq!(ir.messages.len(), 2, "the idle marker is not a message");
+        assert_eq!(ir.title.as_deref(), Some("Two point oh"));
+        let t = texts(&ir);
+        assert!(t.find("question zero").unwrap() < t.find("answer one").unwrap(), "{t}");
+        assert!(ir.messages[1].parts.iter().any(|p| matches!(p, crate::ir::IrPart::ToolResult { output, .. } if output == "a.txt")));
     }
 }

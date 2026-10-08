@@ -169,12 +169,13 @@ fn handle(request: Request) -> Response {
         }
         Request::Delete(session) => match ops::delete(&session) {
             Ok(report) => Response::Done(format!(
-                "deleted {} (backup: {})",
+                "deleted {} (backup: {}){}",
                 session.short_id(),
                 report
                     .backup_dir
                     .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| "none".into())
+                    .unwrap_or_else(|| "none".into()),
+                report.note.map(|n| format!(". {n}")).unwrap_or_default()
             )),
             Err(e) => Response::Error(e.to_string()),
         },
@@ -417,6 +418,7 @@ fn pull_one(agent: asm_core::model::AgentKind, id: String, dir: Option<&std::pat
                     InstallOutcome::New => "new",
                     InstallOutcome::FastForward { .. } => "updated",
                     InstallOutcome::Replaced => "replaced, backed up",
+                    InstallOutcome::Renamed => "renamed",
                     _ => "ahead",
                 }
             ),

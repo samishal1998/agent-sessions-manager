@@ -15,6 +15,13 @@ use super::OpenCodeAdapter;
 
 impl AgentLive for OpenCodeAdapter {
     fn send_command(&self, session: &Session, message: &str) -> Option<std::process::Command> {
+        // 2.x: `run` is a flagless command, which with no service running
+        // starts one that resumes interrupted turns, and its event output
+        // has not been checked. Nothing to run.
+        // (Any store that is not known to be 1.x, an uninspectable one too.)
+        if self.schema() != super::Schema::V1 {
+            return None;
+        }
         // Launched through `sh -c 'exec "$0" "$@"'` rather than directly.
         //
         // Executed straight from a non-shell parent, `opencode run` finishes

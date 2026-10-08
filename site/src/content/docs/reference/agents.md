@@ -12,18 +12,18 @@ description: What asm can do with each agent's sessions, where they live, and wh
 | Resume | yes | yes | yes | yes | yes |
 | Export to Session IR | yes | yes | yes | yes | yes |
 | Rename | yes | yes | yes | no | no |
-| Archive / unarchive | yes | yes | yes | no | no |
+| Archive / unarchive | yes | yes (1.x only) | yes | no | no |
 | Delete | yes | yes | yes | no | no |
-| Move to another directory | yes | yes | no | no | no |
+| Move to another directory | yes | yes (1.x only) | no | no | no |
 | Import **from** (source) | yes | yes | yes | yes | yes |
 | Import **into** (target) | yes | yes | no | no | no |
-| Send a message into a session | yes | yes | no | yes | yes |
+| Send a message into a session | yes | yes (1.x only) | no | yes | yes |
 | Back up to a hub | yes | yes | yes | yes | yes |
 | Restore from a hub | yes | yes | yes | same path | yes |
-| Read/import verified against | 2.1.234 | 1.17.18 | 0.78.0 | 0.151.0 | 1.1.16 |
-| Hub restore verified against | 2.1.278 | 1.18.31 | 0.83.0 | 0.151.0 | 1.1.22 |
+| Read/import verified against | 2.1.234 | 1.17.18; 2.0.25 (read, rename, delete; import accepted, resume not exercised) | 0.78.0 | 0.151.0 | 1.1.16 |
+| Hub restore verified against | 2.1.278 | 1.18.31; 2.0.25 (same major version only) | 0.83.0 | 0.151.0 | 1.1.22 |
 
-`asm doctor --json` reports each agent's capabilities, and the web UI greys out what an agent cannot do, so the limits are visible rather than discovered by error. `asm doctor` also warns when an installed version has drifted from the verified one.
+`asm doctor --json` reports each agent's capabilities, and the web UI greys out what an agent cannot do, so the limits are visible rather than discovered by error. Importing a session into an agent warns when the installed version has drifted from the verified one (`asm doctor` does not check this). OpenCode is verified once per major version: an installed 2.x is compared with 2.0.25, a 1.x with 1.17.18. For 2.0.25 "verified" means the real binary accepted the import and the session read back from its store; resuming an imported session was not exercised.
 
 ## Where each agent keeps its sessions
 
@@ -35,7 +35,24 @@ description: What asm can do with each agent's sessions, where they live, and wh
 | Codex | `~/.codex/state_5.sqlite` (the `threads` table) and `sessions/` rollouts | `CODEX_HOME` |
 | Antigravity | `~/.gemini/antigravity-cli/` (`conversations/`, `brain/`, `cache/`) | `ASM_ANTIGRAVITY_ROOT` |
 
-OpenCode's database is read with the schema of OpenCode 1.x (`session`, `message`, `part`). OpenCode 2.x keeps sessions in `session_v2`/`session_message`, which asm does not read yet: such a store is skipped as if the agent were not installed.
+asm reads both schemas of OpenCode's database, told apart each time it looks: 1.x (`session`, `message`, `part`) and 2.x (`session_v2`, `session_message`). A database with neither is skipped as if the agent were not installed.
+
+**OpenCode 2.x.** Listing, `show`, search, `export`, resume (`opencode -s <id>`), the TUI/web transcripts, rename, delete, import into OpenCode and the hub all work; archive, unarchive, move and `send` do not.
+
+| On a 2.x store | |
+|---|---|
+| Rename, delete, import into OpenCode | Done by running `opencode` (`api session.update`, `session delete`, `session import`), never by editing the database: 2.x rebuilds its tables from an event log that a running service owns. |
+| Refused while a turn runs | Any change to a session that a turn has claimed, or that has input queued, is refused, saying which: a turn that is running, work that is queued, or "an unfinished turn from an OpenCode that is no longer running; start OpenCode once to finish or abandon it, then retry". A delete checks the session's subagents too. |
+| Delete | Writes a backup first, and makes sure it is on disk (private to you, everything stored, even an abandoned partial turn): one `opencode session import`-able JSON document per session of the tree (`00-<id>.json`, the root first) and a `manifest.json` naming each session's directory, under `<data>/backups/opencode/<id>/<timestamp>/`. To restore, run `opencode session import <file> --directory <directory>` for each, in order. If a session appeared or a turn started while the backup was being made, nothing is deleted. |
+| Archive, unarchive | `OpenCode 2.x has no archive`: 2.0.25 has no way to archive a session, in its CLI, its API or its events (a session archived in 1.x lists as an ordinary one). A remote-control **move** away from such a machine is refused when it is planned: the machine reports that it cannot archive OpenCode, and a send does the job. |
+| Move to another directory | Refused: the only way is a request queued for a persistent server, and a one-shot run would leave the session claimed with nothing to run it. |
+| `send` | Not offered: the event vocabulary of `run --format json` has not been checked against 2.x. |
+| Hub push and pull | Work between machines on the same major version. A 1.x bundle is database rows and a 2.x one is session documents: pulling one onto the other is refused in words. A pulled session carries its permissions, metadata, agent and model exactly as pushed, so pull only from machines you control. See [Restore, per agent](/hub/restore/). |
+| Sessions OpenCode has not migrated yet | OpenCode 2.x copies 1.x sessions into its new tables in the background and leaves the old ones behind. While some are not copied, `asm doctor` and `asm list` say how many ("N sessions in this OpenCode database have not been migrated by OpenCode 2.x yet; start OpenCode once"), asm still lists them (read from the old tables, read-only; they cannot be pushed to a hub), and it refuses every change to the store (rename, delete, import, a hub pull) until they are migrated. A database asm cannot inspect at that moment is never changed either. |
+
+asm runs `opencode` for these with `--standalone` (a private server for that one request, which leaves nothing running) unless `$XDG_STATE_HOME/opencode/service.json` names a service that is really up, in which case it talks to that one. "Really up" is not just a live pid: the url in the file must answer `/api/info` on loopback with that pid, as OpenCode's own client requires, so a stale file whose pid another process has since taken is ignored. It never runs a flagless command without such a service: that would start a background service, whose boot resumes sessions an earlier service left claimed, which is a model call nobody asked for. A service that dies in the instant between asm checking and asking is the one gap in that. Only `service.json` is known: OpenCode builds of a custom release channel register in `service-<channel>.json`, which asm does not read, so for them asm always stands alone and shows their running turns as idle.
+
+Two smaller limits: a 2.x session has no git branch in the listing, and a session is reported as running only while the OpenCode background service that holds its turn is up (a turn run with `opencode --standalone` shows as idle). See [OpenCode 2.x](/reference/agent-formats/#opencode-2x) for the layout and the formats.
 
 ## Why the gaps are gaps
 

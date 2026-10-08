@@ -31,6 +31,19 @@ pub fn list_sessions_partial(filter: &SessionFilter) -> (Vec<Session>, Vec<Strin
     (sessions, problems)
 }
 
+/// What a listing should say about the stores beyond their sessions: one
+/// line each, for the frontend to show once (an OpenCode 2.x database that
+/// still has sessions to migrate lists only the migrated ones).
+pub fn store_notes() -> Vec<String> {
+    Adapter::available()
+        .into_iter()
+        .filter_map(|a| match a {
+            Adapter::OpenCode(opencode) => opencode.store_note(),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Sessions as each agent's store gives them up, for a frontend that shows
 /// them arriving. Returns what could not be read rather than failing: one
 /// broken store should not leave the list empty.
@@ -224,6 +237,11 @@ pub fn doctor() -> Result<DoctorReport, CoreError> {
             // One database per conversation, never written by asm, so no
             // divergence and no shared lock to contend for.
             Adapter::Antigravity(_) => {}
+            // 2.x does not use the 1.x lock directory: what is left in it is
+            // not about this store, and busy sessions are found per session.
+            Adapter::OpenCode(opencode) if opencode.is_v2() => {
+                warnings.extend(opencode.store_note());
+            }
             Adapter::OpenCode(opencode) => {
                 for lock in opencode.locks() {
                     if lock.held {

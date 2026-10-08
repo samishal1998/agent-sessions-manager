@@ -222,6 +222,9 @@ pub enum InstallOutcome {
     /// It was here and behind, and is kept as rows rather than a log: the
     /// older copy was backed up and replaced by the hub's.
     Replaced,
+    /// It was here and differed from the hub's only in titles; the titles
+    /// were changed (the old ones saved first) and nothing else was touched.
+    Renamed,
     InSync,
     /// This machine has more than the hub; push it.
     Ahead,

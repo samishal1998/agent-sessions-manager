@@ -124,5 +124,5 @@ pub(super) fn delete(
         removed.push(path.clone());
     }
     invalidate_picker_cache(adapter);
-    Ok(DeleteReport { backup_dir: Some(backup), removed })
+    Ok(DeleteReport { backup_dir: Some(backup), removed, note: None })
 }
