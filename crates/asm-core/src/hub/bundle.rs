@@ -212,7 +212,7 @@ pub(crate) fn with_base(content: InstallOutcome, local: &str, hub: &str, base: O
 }
 
 /// How a pull changed this machine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case", tag = "result")]
 pub enum InstallOutcome {
     /// The session was not here; it is now.
@@ -232,7 +232,7 @@ pub enum InstallOutcome {
     Diverged,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Installed {
     pub outcome: InstallOutcome,
     pub project_root: PathBuf,

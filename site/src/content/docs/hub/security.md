@@ -25,6 +25,15 @@ The hub speaks HTTP and **you** provide TLS: run it on a tailnet or LAN you trus
 
 Agent names, session ids (`[A-Za-z0-9._-]{1,128}`), blob hashes (64 hex digits) and every file name in a manifest against a per-agent whitelist — a manifest name is never used as a path component. Uploads are hashed while written and discarded on mismatch, and a size cap applies per file.
 
+## Peers
+
+[Peer mode](/hub/peers/) moves a session straight into another machine's agent store, so its trust model is different from the hub's, and it is opt-in on both transports.
+
+- **An HTTP peer is a hub started with `--peer`.** Without the flag the `/hub/v1/peer/*` routes do not exist. With it, any machine holding a credential for that hub can install sessions into **the hub host's own agent stores** and read every session there — the hub is no longer only an archive. Turn it on only on a machine whose agents you want other machines to write into, and `asm hub revoke` a machine to shut it out of both the archive and the peer routes.
+- **An ssh peer trusts whoever has shell access**, as the machine already did: `asm hub receive` and `asm hub send` run as the ssh user and can do nothing that user could not do by hand. asm adds no credential of its own on this path; the ssh key is the credential.
+- **What arrives is checked, not trusted.** The bundle is unpacked into a private scratch directory under asm's data dir, and only `manifest.json` and regular files at `blobs/<sha256>` whose contents hash to their name are accepted — a symlink, a stray file or a wrong hash refuses the whole bundle. The manifest goes through the same validation a hub applies (session id, per-agent file whitelist, no path components, nothing beneath a symlink entry), and the install is the same code a hub pull runs, with the same refusals: a running session, an id already present in two places, a directory that is not where the session is filed, a copy that diverged. A `--peer` hub also applies its `--max-file-mb` cap to the whole bundle.
+- **`peers.json` is `0600`** and holds an HTTP peer's credential beside its URL; an ssh peer stores only the host.
+
 ## What it does not do
 
 - **It is one person's hub.** Every joined machine can read every session on it, and sessions contain whatever your agents saw: source code, command output, possibly secrets.

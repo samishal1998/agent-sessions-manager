@@ -36,7 +36,7 @@ struct RemoteFile {
 pub struct Remote {
     pub url: String,
     pub machine: Machine,
-    credential: String,
+    pub(super) credential: String,
     /// Ask quickly and do not retry: for checking on the hub, not for
     /// moving data through it.
     pub quick: bool,
@@ -47,14 +47,15 @@ pub struct Response {
     pub body: Vec<u8>,
 }
 
-enum Body<'a> {
+pub(super) enum Body<'a> {
     None,
     Json(Vec<u8>),
+    /// Streamed with `-T`, which makes the request a PUT.
     File(&'a Path),
 }
 
 #[derive(Clone, Copy)]
-enum Profile {
+pub(super) enum Profile {
     /// Small requests: bounded, and retried when the hub is briefly away.
     Control,
     /// Blob transfers reach hundreds of megabytes, so no wall-clock limit —
@@ -160,7 +161,7 @@ pub fn plain_http_is_private(url: &str) -> bool {
 /// One request. The response body goes to `save_to` when given — a
 /// download, written by curl straight to disk — and is otherwise read back
 /// into the returned `Response`.
-fn run_curl(
+pub(super) fn run_curl(
     url: &str,
     credential: Option<&str>,
     method: &str,
@@ -273,7 +274,7 @@ fn error_text(response: &Response) -> String {
         .unwrap_or_else(|| String::from_utf8_lossy(&response.body).chars().take(300).collect())
 }
 
-fn expect(response: Response, ok: &[u16], what: &str) -> Result<Response, CoreError> {
+pub(super) fn expect(response: Response, ok: &[u16], what: &str) -> Result<Response, CoreError> {
     if ok.contains(&response.status) {
         return Ok(response);
     }
@@ -287,13 +288,21 @@ fn expect(response: Response, ok: &[u16], what: &str) -> Result<Response, CoreEr
     })
 }
 
-fn parse<T: serde::de::DeserializeOwned>(response: &Response, what: &str) -> Result<T, CoreError> {
+pub(super) fn parse<T: serde::de::DeserializeOwned>(response: &Response, what: &str) -> Result<T, CoreError> {
     serde_json::from_slice(&response.body)
         .map_err(|e| invalid(format!("{what}: the hub's reply was not understood: {e}")))
 }
 
 /// Exchange a join token for this machine's own credential, and remember it.
 pub fn join(url: &str, token: &str, name: &str, insecure_http: bool) -> Result<Remote, CoreError> {
+    let remote = exchange(url, token, name, insecure_http)?;
+    remote.save()?;
+    Ok(remote)
+}
+
+/// The join exchange alone: a credential for this machine, remembered by
+/// the caller (`join` keeps it as the hub; a peer keeps it in `peers.json`).
+pub(super) fn exchange(url: &str, token: &str, name: &str, insecure_http: bool) -> Result<Remote, CoreError> {
     let url = normalize_url(url)?;
     if url.starts_with("http://") && !insecure_http && !plain_http_is_private(&url) {
         return Err(invalid(format!(
@@ -320,9 +329,7 @@ pub fn join(url: &str, token: &str, name: &str, insecure_http: bool) -> Result<R
     }
     let response = expect(response, &[201], "joining the hub")?;
     let joined: Joined = parse(&response, "joining the hub")?;
-    let remote = Remote { url, machine: joined.machine, credential: joined.credential, quick: false };
-    remote.save()?;
-    Ok(remote)
+    Ok(Remote { url, machine: joined.machine, credential: joined.credential, quick: false })
 }
 
 /// Whether this machine has joined a hub at all, apart from whether the

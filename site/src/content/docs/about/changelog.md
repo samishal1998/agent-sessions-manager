@@ -5,6 +5,10 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
+## 0.14.0 — 2026-10-09
+
+- **Peer mode: move a session between two machines with no hub.** `asm peer add <name> ssh://[user@]host` (or the URL of an `asm hub serve --peer`), then `asm push <session> --to <name>` and `asm pull <session> --from <name>`; `asm peer sessions <name>` lists what the other machine has. The session crosses as the same bundle a push uploads, packed into one tar stream by the system `tar`, and the receiving end installs it the way a pull does: identical copies are left alone, a copy that extends the other is applied (appended, or replaced after a backup, or only renamed, per agent), and two copies that both changed are refused with nothing written. There is no history on this path — no revisions, no sync record, no `--force` — so it is for two machines that already reach each other; the hub remains the answer for more machines, a NAT or a sleeping laptop. Over ssh, asm runs `ssh host asm …` and needs `asm` on the PATH of a non-interactive shell there (the error says so when it is not). Over HTTP, `asm hub serve --peer` adds three routes behind the usual machine credential that read and write the hub host's own agent stores; without `--peer` they do not exist. Verified on one Linux machine with the two ends in separate homes and a stand-in `ssh`; a real remote host and macOS tar were not tried. See [Peers](/hub/peers/).
+
 ## 0.13.1 — 2026-10-09
 
 - **Joining a hub again no longer makes a second machine.** A machine now tells the hub who it is (a salted hash of the OS machine id), and a hub that sees the same identity keeps the record and id and issues a new credential. A machine that already joined several times is recognised by its last credential, and its stale same-name records (unseen for an hour) are dropped. Two machines that merely share a name stay separate.

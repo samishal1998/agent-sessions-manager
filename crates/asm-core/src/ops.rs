@@ -367,7 +367,23 @@ pub fn resolve_ref(query: &str, filter: &SessionFilter) -> Result<Session, Resol
         _ => query,
     };
 
-    let sessions = list_sessions(&filter)?;
+    resolve_among(list_sessions(&filter)?, query, id_query)
+}
+
+/// `resolve_ref` over a listing already in hand — another machine's, say.
+/// The query is matched whole against ids and names; an `agent:` prefix
+/// only narrows the listing, so it is stripped here too.
+pub fn resolve_in(sessions: Vec<Session>, query: &str) -> Result<Session, ResolveError> {
+    let agent = query.split_once(':').and_then(|(agent, rest)| Some((AgentKind::parse(agent)?, rest)));
+    match agent {
+        Some((agent, rest)) => {
+            resolve_among(sessions.into_iter().filter(|s| s.handle.agent == agent).collect(), query, rest)
+        }
+        None => resolve_among(sessions, query, query),
+    }
+}
+
+fn resolve_among(sessions: Vec<Session>, query: &str, id_query: &str) -> Result<Session, ResolveError> {
     // An id prefix, or the memorable name the agent itself uses — jcode
     // calls a session "hog", never `session_hog_1787…`, and its own
     // `--resume` takes that name.

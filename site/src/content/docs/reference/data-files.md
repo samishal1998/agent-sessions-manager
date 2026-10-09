@@ -13,10 +13,11 @@ asm writes only inside its own directory — `$XDG_DATA_HOME/asm` (default `~/.l
 | `hub-client.json` | This machine's hub URL, machine id and **credential** (mode `0600`). | Deleting it un-joins the machine. |
 | `machine-uid` | This machine's identity for hubs, only where the OS has no machine id of its own. | A new identity: the hub sees a new machine on the next join. |
 | `hub-state.json` | Per session, the last revision agreed with the hub and the local fingerprint at that time. | Yes, but every session then shows **Not compared** until pulled or pushed. |
+| `peers.json` | The [peers](/hub/peers/) this machine knows: name and `ssh://` host, or URL, machine id and **credential** for an HTTP peer (mode `0600`). | Deleting it forgets every peer; an HTTP peer keeps the credential it issued until `asm hub revoke` there. |
 | `daemon/daemon.lock` | Held by a running daemon. | Harmless; recreated. |
 | `daemon/status.json` | What the daemon last reported. | Yes. |
 | `daemon/daemon.log` | Output of `asm daemon start`. | Yes. |
-| `tmp/` | curl's request and reply files (mode `0700`). | Yes, when nothing is running. |
+| `tmp/` | curl's request and reply files, and a peer transfer's bundle while it is packed or unpacked (mode `0700`). | Yes, when nothing is running. |
 | `hub/` | **On a hub machine:** the hub's store. | **No.** |
 
 ## On a hub

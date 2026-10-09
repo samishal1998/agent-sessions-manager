@@ -38,6 +38,7 @@ Then [keep it current with the daemon](/hub/daemon/), or hand a single session o
 
 - [Set up a hub](/hub/setup/) — installing, binding, joining, TLS.
 - [How sync decides](/hub/sync/) — states, revisions, divergence.
+- [Peers](/hub/peers/) — two machines that reach each other can skip the hub for one session.
 - [Restore, per agent](/hub/restore/) — what each agent's pull does.
 - [The daemon](/hub/daemon/) — automatic pushing, status, running as a service.
 - [Remote control](/hub/control/) — ask another machine to push or pull a session, and follow the result.

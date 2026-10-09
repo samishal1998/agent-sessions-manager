@@ -33,6 +33,10 @@ pub struct HubState {
     pub hub: Hub,
     /// Largest single file the hub accepts.
     pub max_blob: u64,
+    /// Whether the `/hub/v1/peer/*` routes exist: with them, a joined
+    /// machine installs sessions into this host's own agent stores and
+    /// takes sessions out of them. Off unless `asm hub serve --peer`.
+    pub peer: bool,
 }
 
 type Shared = Arc<HubState>;
@@ -148,7 +152,18 @@ async fn authenticate(State(state): State<Shared>, mut request: Request, next: N
 }
 
 pub fn router(state: Shared) -> axum::Router {
+    // Peer transfers write into this host's agents; the routes exist only
+    // when asked for, so a plain hub cannot be made to.
+    let peer = if state.peer {
+        axum::Router::new()
+            .route("/hub/v1/peer/sessions", get(peer_sessions))
+            .route("/hub/v1/peer/send/{agent}/{id}", get(peer_send))
+            .route("/hub/v1/peer/receive", axum::routing::put(peer_receive))
+    } else {
+        axum::Router::new()
+    };
     axum::Router::new()
+        .merge(peer)
         // The one route open to anyone: it gets no more body than a join
         // needs, so an unauthenticated caller cannot make the hub buffer
         // the 64 MiB the routes below allow.
@@ -505,10 +520,17 @@ async fn get_blob(State(state): State<Shared>, Path(sha): Path<String>) -> Respo
         Ok(path) => path,
         Err(e) => return hub_error(e),
     };
-    // Streamed from disk through a bounded channel — the upload path in
-    // reverse — so a blob of hundreds of megabytes never sits in memory.
+    file_body(path, ())
+}
+
+/// A file as a response, streamed from disk through a bounded channel — the
+/// upload path in reverse — so a blob of hundreds of megabytes never sits in
+/// memory. `hold` lives until the file has been read: a scratch directory
+/// the file is in, say.
+fn file_body<T: Send + 'static>(path: std::path::PathBuf, hold: T) -> Response {
     let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(8);
     tokio::task::spawn_blocking(move || {
+        let _hold = hold;
         let mut file = match std::fs::File::open(&path) {
             Ok(f) => f,
             Err(e) => {
@@ -599,18 +621,86 @@ async fn put_blob(
     }
 }
 
+/// Everything under the peer routes acts on this host's own agent stores,
+/// so a refusal is the core's sentence, not a hub store error.
+fn core_error(e: asm_core::CoreError) -> Response {
+    error(StatusCode::BAD_REQUEST, e)
+}
+
+/// What this host has, as `asm list --json` here would say.
+async fn peer_sessions() -> Response {
+    match blocking(move || Ok(asm_core::ops::list_sessions(&Default::default())?)).await {
+        Ok(sessions) => Json(sessions).into_response(),
+        Err(e) => hub_error(e),
+    }
+}
+
+/// One of this host's sessions as a bundle tar, for `asm pull --from`.
+async fn peer_send(Path((agent, id)): Path<(String, String)>) -> Response {
+    // A session that is not here is a 400 with the sentence, not a 404: to
+    // the client, 404 means the hub has no peer routes at all.
+    let packed = blocking(move || {
+        let session = asm_core::ops::resolve_ref(&format!("{agent}:{id}"), &Default::default())
+            .map_err(|e| asm_core::CoreError::Invalid { msg: e.to_string() })?;
+        Ok(asm_core::hub::peer::pack(&session)?)
+    })
+    .await;
+    match packed {
+        Ok(packed) => {
+            let tar = packed.tar.clone();
+            file_body(tar, packed)
+        }
+        Err(HubError::Core(e)) => core_error(e),
+        Err(e) => hub_error(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct ReceiveQuery {
+    project_dir: Option<std::path::PathBuf>,
+}
+
+/// A bundle tar from `asm push --to`, installed into this host's agent
+/// store. Streamed to a scratch file first, like a blob upload.
+async fn peer_receive(
+    State(state): State<Shared>,
+    axum::extract::Query(q): axum::extract::Query<ReceiveQuery>,
+    body: Body,
+) -> Response {
+    let limit = state.max_blob;
+    let (tx, rx) = tokio::sync::mpsc::channel::<std::io::Result<Bytes>>(8);
+    let installer = tokio::task::spawn_blocking(move || {
+        let mut reader = ChannelReader { rx, buf: Bytes::new() };
+        asm_core::hub::peer::receive(&mut reader, limit, q.project_dir.as_deref())
+    });
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(std::io::Error::other);
+        let failed = chunk.is_err();
+        if tx.send(chunk).await.is_err() || failed {
+            break;
+        }
+    }
+    drop(tx);
+    match installer.await {
+        Ok(Ok(installed)) => Json(installed).into_response(),
+        Ok(Err(e)) => core_error(e),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
 async fn shutdown() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
 /// Serve the hub at `<data>/hub` until interrupted.
-pub fn run(host: &str, port: u16, max_blob: u64) -> anyhow::Result<()> {
+pub fn run(host: &str, port: u16, max_blob: u64, peer: bool) -> anyhow::Result<()> {
     let root = Hub::default_root().context("cannot determine asm's data directory")?;
     let hub = Hub::open(&root).with_context(|| format!("cannot open the hub store at {}", root.display()))?;
     let token = hub.join_token()?;
     let admin = hub.admin_enabled();
     let addr = crate::resolve_bind(host, port)?;
-    let state = Arc::new(HubState { hub, max_blob });
+    let state = Arc::new(HubState { hub, max_blob, peer });
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
@@ -629,6 +719,9 @@ pub fn run(host: &str, port: u16, max_blob: u64) -> anyhow::Result<()> {
             eprintln!("  admin      http://{}/admin  (token: `asm hub admin-token`)", crate::display_addr(&addr));
         } else {
             eprintln!("  admin      off — `asm hub admin-token` turns on the admin page");
+        }
+        if peer {
+            eprintln!("  peer       on — joined machines can `asm push --to` into this machine's agents and `asm pull --from` them");
         }
         if addr.ip().is_loopback() {
             eprintln!(
@@ -653,10 +746,47 @@ mod tests {
     use axum::http::Request as HttpRequest;
     use tower::ServiceExt;
 
+    /// The peer routes read and write this process's agent stores, so every
+    /// store this process could find is pointed at a scratch directory
+    /// before any router exists. Once per process, which is what makes it
+    /// safe to set.
+    fn isolate() -> &'static std::path::Path {
+        static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        DIR.get_or_init(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            for (var, sub) in [
+                ("HOME", "home"),
+                ("ASM_DATA_DIR", "asm"),
+                ("XDG_DATA_HOME", "xdg-data"),
+                ("XDG_CONFIG_HOME", "xdg-config"),
+                ("XDG_STATE_HOME", "xdg-state"),
+                ("XDG_CACHE_HOME", "xdg-cache"),
+                ("CLAUDE_CONFIG_DIR", "claude"),
+                ("CODEX_HOME", "codex"),
+                ("JCODE_HOME", "jcode"),
+                ("ASM_ANTIGRAVITY_ROOT", "antigravity"),
+            ] {
+                std::fs::create_dir_all(root.join(sub)).unwrap();
+                // Safety: set once per test process, before concurrent readers.
+                unsafe { std::env::set_var(var, root.join(sub)) };
+            }
+            dir
+        })
+        .path()
+    }
+
     fn app() -> (tempfile::TempDir, Shared, axum::Router) {
+        app_with(false)
+    }
+
+    /// A peer's cap is wider: the smallest tar is 10 KiB of blocks.
+    fn app_with(peer: bool) -> (tempfile::TempDir, Shared, axum::Router) {
+        isolate();
         let dir = tempfile::tempdir().unwrap();
         let hub = Hub::open(&dir.path().join("hub")).unwrap();
-        let state = Arc::new(HubState { hub, max_blob: 4096 });
+        let max_blob = if peer { 64 * 1024 } else { 4096 };
+        let state = Arc::new(HubState { hub, max_blob, peer });
         let router = router(state.clone());
         (dir, state, router)
     }
@@ -1160,6 +1290,92 @@ mod tests {
         let (status, v) = send(&app, "POST", "/hub/v1/commands", Some(&admin), Body::from(alone)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(v["error"].as_str().unwrap().contains("a step of a move"), "{v}");
+    }
+
+    /// The peer routes: absent on a plain hub, behind a credential with
+    /// `--peer`, and then a real transfer both ways against the isolated
+    /// Claude store — sent as a tar, deleted, received back as new.
+    #[tokio::test]
+    async fn peer_routes_exist_only_with_peer_and_move_a_session_both_ways() {
+        let id = "7f3a1c88-2d4e-4b91-9a05-6c7e8f201b43";
+        let routes = ["/hub/v1/peer/sessions", "/hub/v1/peer/send/claude-code/x"];
+        let (_d, state, plain) = app();
+        let cred = credential(&plain, &state).await;
+        for uri in routes {
+            assert_eq!(send(&plain, "GET", uri, Some(&cred), Body::empty()).await.0, StatusCode::NOT_FOUND, "{uri} on a plain hub");
+        }
+        assert_eq!(send(&plain, "PUT", "/hub/v1/peer/receive", Some(&cred), Body::from("x")).await.0, StatusCode::NOT_FOUND);
+
+        let (_d, state, app) = app_with(true);
+        let cred = credential(&app, &state).await;
+        for uri in routes {
+            assert_eq!(send(&app, "GET", uri, None, Body::empty()).await.0, StatusCode::UNAUTHORIZED, "{uri}");
+        }
+        assert_eq!(send(&app, "PUT", "/hub/v1/peer/receive", None, Body::from("x")).await.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(send(&app, "PUT", "/hub/v1/peer/receive", Some("asmc_garbage"), Body::from("x")).await.0, StatusCode::UNAUTHORIZED);
+
+        // Seed one session in the isolated Claude store, under a project
+        // directory that exists.
+        let root = isolate();
+        let project = root.join("home/code/app");
+        std::fs::create_dir_all(&project).unwrap();
+        let project = project.canonicalize().unwrap();
+        let enc = asm_core::adapter::claude::encode_project_dir(project.to_str().unwrap());
+        let store = root.join("claude/projects").join(&enc);
+        std::fs::create_dir_all(&store).unwrap();
+        let transcript = store.join(format!("{id}.jsonl"));
+        let line = |kind: &str, i: u8, text: &str| {
+            let content = if kind == "user" { json!(text) } else { json!([{ "type": "text", "text": text }]) };
+            format!(
+                "{}\n",
+                json!({ "type": kind, "cwd": project, "sessionId": id, "uuid": format!("u{i}"),
+                        "parentUuid": i.checked_sub(1).map(|p| format!("u{p}")),
+                        "timestamp": format!("2026-10-09T10:00:0{i}Z"),
+                        "message": { "role": kind, "content": content } })
+            )
+        };
+        std::fs::write(&transcript, line("user", 0, "hello peer") + &line("assistant", 1, "hello back")).unwrap();
+
+        let (status, v) = send(&app, "GET", "/hub/v1/peer/sessions", Some(&cred), Body::empty()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(v[0]["ref"]["native_id"].as_str(), Some(id), "{v}");
+
+        let response = app
+            .clone()
+            .oneshot(
+                HttpRequest::get(format!("/hub/v1/peer/send/claude-code/{id}"))
+                    .header("authorization", format!("Bearer {cred}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let tar = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(tar.len() > 1024, "a tar, not an error");
+        let (status, v) = send(&app, "GET", "/hub/v1/peer/send/claude-code/nope", Some(&cred), Body::empty()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "a 404 would read as 'no --peer' to the client");
+        assert!(v["error"].as_str().unwrap().contains("no session matches"), "{v}");
+
+        // The same bytes back: the copy here is identical, so nothing
+        // changes; with the copy gone, it is installed anew.
+        let put = |body: Bytes| send(&app, "PUT", "/hub/v1/peer/receive", Some(&cred), Body::from(body));
+        let (status, v) = put(tar.clone()).await;
+        assert_eq!((status, v["outcome"]["result"].as_str()), (StatusCode::OK, Some("in_sync")), "{v}");
+        std::fs::remove_file(&transcript).unwrap();
+        let (status, v) = put(tar.clone()).await;
+        assert_eq!((status, v["outcome"]["result"].as_str()), (StatusCode::OK, Some("new")), "{v}");
+        assert!(transcript.is_file(), "installed into the isolated store");
+        assert_eq!(v["project_root"].as_str(), Some(project.to_str().unwrap()));
+
+        // Garbage is refused with a sentence, not a 500; a tar over the
+        // cap is refused too.
+        let (status, v) = put(Bytes::from_static(b"not a tar")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("could not be unpacked"), "{v}");
+        let (status, v) = put(Bytes::from(vec![0u8; 70_000])).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("larger than"), "{v}");
     }
 
     #[tokio::test]

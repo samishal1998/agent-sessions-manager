@@ -207,6 +207,15 @@ enum Command {
         /// brings it back), to continue it on another machine with `asm pull`.
         #[arg(long = "move")]
         move_away: bool,
+        /// Send one session straight to this peer (`asm peer add`) instead
+        /// of the hub. It is installed there like a pull, and refused if both
+        /// copies changed. Not with --all, --force or --move.
+        #[arg(long, value_name = "PEER")]
+        to: Option<String>,
+        /// With --to: where to put the session on the peer, when this
+        /// machine's path does not exist there.
+        #[arg(long, requires = "to")]
+        project_dir: Option<PathBuf>,
     },
     /// Keep pushing this machine's sessions to the hub, each once it has been
     /// still for an interval. Pulls only what `asm control enable` lets the hub
@@ -231,10 +240,18 @@ enum Command {
         /// here.
         #[arg(long)]
         project_dir: Option<PathBuf>,
+        /// Take the session from this peer (`asm peer add`) instead of the
+        /// hub. Not with --all.
+        #[arg(long, value_name = "PEER")]
+        from: Option<String>,
     },
     /// See what is on the hub, beside what is here.
     #[command(subcommand)]
     Remote(RemoteCommand),
+    /// Other machines to move a session to or from directly, with no hub
+    /// between: over ssh, or an `asm hub serve --peer`.
+    #[command(subcommand)]
+    Peer(PeerCommand),
     /// Ask other machines to push or pull a session through the hub, and let
     /// this one be asked (off until `asm control enable`).
     #[command(subcommand)]
@@ -328,6 +345,25 @@ enum HubCommand {
         /// Largest single file the hub accepts, in MiB.
         #[arg(long, default_value_t = 4096)]
         max_file_mb: u64,
+        /// Also be a peer: let joined machines `asm push --to` sessions
+        /// straight into this machine's own agent stores, and `asm pull
+        /// --from` them. Off by default, because a hub is an archive and
+        /// should not write into its host's agents unless told to.
+        #[arg(long)]
+        peer: bool,
+    },
+    /// The receiving end of `asm push --to` over ssh: a bundle on stdin,
+    /// installed here, the outcome as JSON on stdout.
+    #[command(hide = true)]
+    Receive {
+        #[arg(long)]
+        project_dir: Option<PathBuf>,
+    },
+    /// The sending end of `asm pull --from` over ssh: the session as a
+    /// bundle on stdout.
+    #[command(hide = true)]
+    Send {
+        r#ref: String,
     },
     /// Print the command that joins another machine to this hub.
     Token {
@@ -361,12 +397,51 @@ enum RemoteCommand {
     Machines,
 }
 
+#[derive(Subcommand)]
+enum PeerCommand {
+    /// Remember a peer. `ssh://[user@]host` runs asm there over ssh (keys
+    /// loaded, host known: nothing is prompted). An http(s):// URL is an
+    /// `asm hub serve --peer`, joined with the token `asm hub token` prints
+    /// there, read from $ASM_JOIN_TOKEN.
+    Add {
+        /// What to call it in `--to` and `--from`.
+        name: String,
+        /// ssh://[user@]host, or http(s)://host:port.
+        address: String,
+        /// `-` reads the join token from stdin. A token given here is
+        /// visible to every user of this machine while asm runs.
+        #[arg(long)]
+        token: Option<String>,
+        /// How this machine is named to an HTTP peer (default: its hostname).
+        #[arg(long = "as", value_name = "MACHINE")]
+        machine: Option<String>,
+        /// Allow plain HTTP to an address outside loopback, a private LAN
+        /// or a VPN. Every transcript would cross the network unencrypted.
+        #[arg(long)]
+        insecure_http: bool,
+    },
+    /// Forget a peer. An HTTP peer keeps the credential it issued until
+    /// `asm hub revoke` there.
+    Remove {
+        /// The name given to `asm peer add`.
+        name: String,
+    },
+    /// The peers this machine knows.
+    List,
+    /// The sessions on a peer, as `asm list` there would show them
+    /// (--agent narrows them).
+    Sessions {
+        /// The name given to `asm peer add`.
+        peer: String,
+    },
+}
+
 /// A frontend the binary should launch after argument parsing (the CLI
 /// crate stays free of TUI/web dependencies).
 pub enum Frontend {
     Tui,
     Serve { host: String, port: u16 },
-    Hub { host: String, port: u16, max_file_bytes: u64 },
+    Hub { host: String, port: u16, max_file_bytes: u64, peer: bool },
 }
 
 pub fn run() -> anyhow::Result<Option<Frontend>> {
@@ -384,15 +459,25 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
     match cli.command.unwrap_or(default_command) {
         Command::Tui => return Ok(Some(Frontend::Tui)),
         Command::Serve { port, host } => return Ok(Some(Frontend::Serve { host, port })),
-        Command::Hub(HubCommand::Serve { port, host, max_file_mb }) => {
+        Command::Hub(HubCommand::Serve { port, host, max_file_mb, peer }) => {
             let max_file_bytes = max_file_mb.saturating_mul(1024 * 1024);
-            return Ok(Some(Frontend::Hub { host, port, max_file_bytes }));
+            return Ok(Some(Frontend::Hub { host, port, max_file_bytes, peer }));
         }
+        // The ssh ends of a peer transfer run on machines that may never
+        // have been a hub: dispatched before `hub()` opens a store here.
+        Command::Hub(HubCommand::Receive { project_dir }) => hub_receive(project_dir.as_deref()),
+        Command::Hub(HubCommand::Send { r#ref }) => hub_send(&r#ref),
         Command::Hub(command) => hub(command, cli.json),
         Command::Join { url, token, name, insecure_http } => {
             join(&url, token.as_deref(), name.as_deref(), insecure_http, cli.json)
         }
-        Command::Push { refs, all, force, move_away } => {
+        Command::Push { refs, all, force, move_away, to: Some(peer), project_dir } => {
+            if all || force || move_away {
+                bail!("--to sends one session to a peer as it is; --all, --force and --move are for the hub");
+            }
+            push_to(&peer, &refs, project_dir.as_deref(), &filter, cli.json)
+        }
+        Command::Push { refs, all, force, move_away, to: None, .. } => {
             push(&refs, all, force, move_away, &filter, cli.json)
         }
         Command::Daemon { action: Some(action), .. } => match action {
@@ -414,10 +499,18 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
                 eprintln!("{line}")
             })?)
         }
-        Command::Pull { r#ref, all, project_dir } => {
+        Command::Pull { r#ref, all, project_dir, from: Some(peer) } => {
+            if all {
+                bail!("--from takes one session from a peer; --all is for the hub");
+            }
+            let Some(query) = r#ref else { bail!("name the session to pull from {peer}") };
+            pull_from(&peer, &query, project_dir.as_deref(), cli.json)
+        }
+        Command::Pull { r#ref, all, project_dir, from: None } => {
             pull(r#ref.as_deref(), all, project_dir.as_deref(), &filter, cli.json)
         }
         Command::Remote(command) => remote(command, &filter, cli.json),
+        Command::Peer(command) => peer(command, &filter, cli.json),
         Command::Control(command) => control_cmd::run(command, cli.json),
         Command::List => list(&filter, cli.json),
         Command::Projects { worktrees } => projects(cli.json, worktrees),
@@ -1117,7 +1210,9 @@ fn hub_store() -> anyhow::Result<asm_core::hub::store::Hub> {
 fn hub(command: HubCommand, json: bool) -> anyhow::Result<()> {
     let store = hub_store()?;
     match command {
-        HubCommand::Serve { .. } => unreachable!("dispatched as a frontend"),
+        HubCommand::Serve { .. } | HubCommand::Receive { .. } | HubCommand::Send { .. } => {
+            unreachable!("dispatched before the store is opened")
+        }
         HubCommand::Token { rotate } => {
             let token = if rotate { store.rotate_join_token()? } else { store.join_token()? };
             if json {
@@ -1166,21 +1261,29 @@ fn hub(command: HubCommand, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn join(url: &str, token: Option<&str>, name: Option<&str>, insecure_http: bool, json: bool) -> anyhow::Result<()> {
-    let token = match token {
+/// The join token: `--token -` reads it from stdin, else $ASM_JOIN_TOKEN.
+fn join_token(token: Option<&str>) -> anyhow::Result<String> {
+    match token {
         Some("-") => {
             let mut line = String::new();
             std::io::stdin().read_line(&mut line).context("reading the join token from stdin")?;
-            line.trim().to_string()
+            Ok(line.trim().to_string())
         }
-        Some(token) => token.to_string(),
+        Some(token) => Ok(token.to_string()),
         None => std::env::var("ASM_JOIN_TOKEN")
-            .context("set ASM_JOIN_TOKEN to the token `asm hub token` prints, or pass --token -")?,
-    };
-    let name = name
-        .map(String::from)
+            .context("set ASM_JOIN_TOKEN to the token `asm hub token` prints, or pass --token -"),
+    }
+}
+
+fn machine_name(name: Option<&str>) -> anyhow::Result<String> {
+    name.map(String::from)
         .or_else(asm_core::process::hostname)
-        .context("could not tell this machine's name; pass --name")?;
+        .context("could not tell this machine's name; pass --name")
+}
+
+fn join(url: &str, token: Option<&str>, name: Option<&str>, insecure_http: bool, json: bool) -> anyhow::Result<()> {
+    let token = join_token(token)?;
+    let name = machine_name(name)?;
     let remote = asm_core::hub::client::join(url, &token, &name, insecure_http)?;
     if json {
         return print_json(&serde_json::json!({ "url": remote.url, "machine": remote.machine }));
@@ -1286,7 +1389,6 @@ fn pull(
     filter: &SessionFilter,
     json: bool,
 ) -> anyhow::Result<()> {
-    use asm_core::hub::bundle::InstallOutcome;
     let remote = asm_core::hub::client::load()?;
     let query = match (query, all) {
         (Some(query), false) => query,
@@ -1314,6 +1416,30 @@ fn pull(
         _ => bail!("name the session to pull, or pass --all"),
     };
     let pulled = asm_core::hub::actions::pull(&remote, query, project_dir)?;
+    report_pulled(
+        &pulled,
+        "the hub's copy",
+        "`asm push` it",
+        "`asm push --force` makes this machine's copy the head; the other stays on the hub as a revision",
+        json,
+    )
+}
+
+fn session_label(pulled: &asm_core::hub::actions::Pulled) -> String {
+    format!("{} {}", pulled.agent, asm_core::model::short_id_of(pulled.agent, &pulled.id, pulled.slug.as_deref()))
+}
+
+/// Say what a pull did to this machine — from the hub or from a peer — and
+/// how to resume. The two differ only in what to do when this copy is ahead
+/// (`ahead`) or the two diverged (`diverged`).
+fn report_pulled(
+    pulled: &asm_core::hub::actions::Pulled,
+    theirs: &str,
+    ahead: &str,
+    diverged: &str,
+    json: bool,
+) -> anyhow::Result<()> {
+    use asm_core::hub::bundle::InstallOutcome;
     if json {
         print_json(&pulled)?;
         if pulled.installed.outcome == InstallOutcome::Diverged {
@@ -1322,7 +1448,7 @@ fn pull(
         return Ok(());
     }
     let from = pulled.from.as_deref().unwrap_or("the hub");
-    let label = format!("{} {}", pulled.agent, asm_core::model::short_id_of(pulled.agent, &pulled.id, pulled.slug.as_deref()));
+    let label = session_label(pulled);
     let project = pulled.installed.project_root.display();
     match pulled.installed.outcome {
         InstallOutcome::New => println!("Installed {label} from {from} in {project}."),
@@ -1338,12 +1464,11 @@ fn pull(
         ),
         InstallOutcome::InSync => println!("{label} is already in sync with {from}."),
         InstallOutcome::Ahead => {
-            println!("{label} here is ahead of the hub's copy; nothing changed. `asm push` it.")
+            println!("{label} here is ahead of {theirs}; nothing changed. {ahead}.")
         }
         InstallOutcome::Diverged => bail!(
             "{label} has been continued both here and on {from} since they last synced, so \
-             neither copy contains the other. Nothing was changed. `asm push --force` \
-             makes this machine's copy the head; the other stays on the hub as a revision"
+             neither copy contains the other. Nothing was changed. {diverged}"
         ),
     }
     if pulled.installed.outcome != InstallOutcome::Ahead
@@ -1353,6 +1478,137 @@ fn pull(
         let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy()).collect();
         println!("Resume with: cd {project} && {} {}", cmd.get_program().to_string_lossy(), args.join(" "));
     }
+    Ok(())
+}
+
+/// What a diverged pair of copies can do without a hub: nothing automatic.
+const PEER_DIVERGED: &str = "A peer transfer never replaces a copy: `asm archive` the copy you do not \
+                             want on one side and transfer again, or sync both machines through a hub";
+
+fn push_to(
+    peer_name: &str,
+    refs: &[String],
+    project_dir: Option<&std::path::Path>,
+    filter: &SessionFilter,
+    json: bool,
+) -> anyhow::Result<()> {
+    use asm_core::hub::bundle::InstallOutcome;
+    let [query] = refs else { bail!("--to sends one session; name it") };
+    let peer = asm_core::hub::peer::get(peer_name)?;
+    let session = resolve(query, filter)?;
+    let sent = asm_core::hub::peer::push_to(&peer, &session, project_dir)?;
+    if json {
+        print_json(&sent)?;
+        if sent.installed.outcome == InstallOutcome::Diverged {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    let label = session_label(&sent);
+    let project = sent.installed.project_root.display();
+    match sent.installed.outcome {
+        InstallOutcome::New => println!("Sent {label} to {peer_name}: installed in {project} there."),
+        InstallOutcome::FastForward { appended } => println!(
+            "Updated {label} on {peer_name}: {} of new conversation appended.",
+            asm_core::fmt::human_bytes(appended)
+        ),
+        InstallOutcome::Replaced => {
+            println!("Updated {label} on {peer_name}: the older copy there was backed up and replaced.")
+        }
+        InstallOutcome::Renamed => println!(
+            "Updated {label} on {peer_name}: renamed to match (the old titles were saved first); nothing else differed."
+        ),
+        InstallOutcome::InSync => println!("{peer_name} already has exactly this copy of {label}."),
+        InstallOutcome::Ahead => println!(
+            "{peer_name}'s copy of {label} is ahead of this one; nothing changed. `asm pull --from {peer_name}` it."
+        ),
+        InstallOutcome::Diverged => bail!(
+            "{label} has been continued both here and on {peer_name} since the two last agreed, so \
+             neither copy contains the other. Nothing was changed. {PEER_DIVERGED}"
+        ),
+    }
+    Ok(())
+}
+
+fn pull_from(peer_name: &str, query: &str, project_dir: Option<&std::path::Path>, json: bool) -> anyhow::Result<()> {
+    let peer = asm_core::hub::peer::get(peer_name)?;
+    let pulled = asm_core::hub::peer::pull_from(&peer, query, project_dir)?;
+    report_pulled(
+        &pulled,
+        &format!("{peer_name}'s copy"),
+        &format!("`asm push --to {peer_name}` it"),
+        PEER_DIVERGED,
+        json,
+    )
+}
+
+fn peer(command: PeerCommand, filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
+    use asm_core::hub::peer;
+    let shown = |p: &peer::Peer| serde_json::json!({ "name": p.name, "address": p.address() });
+    match command {
+        PeerCommand::Add { name, address, token, machine, insecure_http } => {
+            // The token is read only when the address needs one: an ssh peer
+            // must not fail for want of a token it would never use.
+            let token = if address.starts_with("http") { Some(join_token(token.as_deref())?) } else { None };
+            let added = peer::add(&name, &address, token.as_deref(), &machine_name(machine.as_deref())?, insecure_http)?;
+            if json {
+                return print_json(&shown(&added));
+            }
+            println!("Added peer {} at {}.", added.name, added.address());
+            println!("Send a session with `asm push <session> --to {}`; `asm peer sessions {}` lists what is there.", added.name, added.name);
+        }
+        PeerCommand::Remove { name } => {
+            let removed = peer::remove(&name)?;
+            if json {
+                return print_json(&shown(&removed));
+            }
+            println!("Removed peer {} ({}).", removed.name, removed.address());
+        }
+        PeerCommand::List => {
+            let peers = peer::list()?;
+            if json {
+                return print_json(&peers.iter().map(shown).collect::<Vec<_>>());
+            }
+            if peers.is_empty() {
+                println!("No peers. `asm peer add <name> ssh://[user@]host` adds one.");
+            }
+            for p in &peers {
+                println!("{}  {}", p.name, p.address());
+            }
+        }
+        PeerCommand::Sessions { peer: name } => {
+            let mut sessions = peer::sessions(&peer::get(&name)?)?;
+            if let Some(agent) = filter.agent {
+                sessions.retain(|s| s.handle.agent == agent);
+            }
+            if json {
+                return print_json(&sessions);
+            }
+            if sessions.is_empty() {
+                println!("No sessions on {name}.");
+                return Ok(());
+            }
+            format::session_table(&sessions);
+        }
+    }
+    Ok(())
+}
+
+/// `asm hub receive`: the ssh end of `asm push --to`. Only the outcome goes
+/// to stdout, as JSON, since the caller parses it.
+fn hub_receive(project_dir: Option<&std::path::Path>) -> anyhow::Result<()> {
+    let installed = asm_core::hub::peer::receive(&mut std::io::stdin().lock(), u64::MAX, project_dir)?;
+    println!("{}", serde_json::to_string(&installed)?);
+    Ok(())
+}
+
+/// `asm hub send`: the ssh end of `asm pull --from`. Only the tar goes to
+/// stdout.
+fn hub_send(query: &str) -> anyhow::Result<()> {
+    let session = resolve(query, &SessionFilter::default())?;
+    let packed = asm_core::hub::peer::pack(&session)?;
+    let mut tar = std::fs::File::open(&packed.tar)?;
+    std::io::copy(&mut tar, &mut std::io::stdout().lock())?;
     Ok(())
 }
 
@@ -1409,5 +1665,25 @@ mod tests {
         assert!(parse(&["pull", "--all", "--agent", "codex", "--project", "/x"]).is_ok());
         assert!(parse(&["pull", "7f3a1c88", "--all"]).is_err());
         assert!(parse(&["pull", "--all", "--project-dir", "/x"]).is_err());
+    }
+
+    /// A peer transfer names one peer and, for a push, may say where the
+    /// session goes there; the ssh ends of it are commands but not help.
+    #[test]
+    fn peer_transfers_parse_and_the_ssh_ends_are_hidden() {
+        assert!(matches!(parse(&["push", "7f3a", "--to", "desk"]).unwrap().command, Some(Command::Push { to: Some(_), .. })));
+        assert!(parse(&["push", "7f3a", "--to", "desk", "--project-dir", "/x"]).is_ok());
+        assert!(parse(&["push", "7f3a", "--project-dir", "/x"]).is_err(), "--project-dir on a push is for --to");
+        assert!(matches!(parse(&["pull", "7f3a", "--from", "desk"]).unwrap().command, Some(Command::Pull { from: Some(_), .. })));
+        assert!(parse(&["peer", "add", "desk", "ssh://me@desk"]).is_ok());
+        assert!(parse(&["peer", "sessions", "desk", "--agent", "codex"]).is_ok());
+        assert!(parse(&["hub", "serve", "--peer"]).is_ok());
+        assert!(parse(&["hub", "receive", "--project-dir", "/x"]).is_ok());
+        assert!(parse(&["hub", "send", "claude-code:7f3a"]).is_ok());
+        let help = match Cli::try_parse_from(["asm", "hub", "--help"]) {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("--help is an error that prints"),
+        };
+        assert!(help.contains("serve") && !help.contains("receive"), "{help}");
     }
 }

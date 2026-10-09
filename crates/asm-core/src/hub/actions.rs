@@ -24,13 +24,14 @@ pub(super) fn key(agent: AgentKind, id: &str) -> String {
     format!("{agent}:{id}")
 }
 
-fn scratch_dir(prefix: &str) -> Result<PathBuf, CoreError> {
+pub(super) fn scratch_dir(prefix: &str) -> Result<PathBuf, CoreError> {
     let dir = paths::tmp_dir()?.join(format!("{prefix}-{}", random_hex(8)?));
     std::fs::create_dir_all(&dir).map_err(|e| CoreError::io(&dir, e))?;
     Ok(dir)
 }
 
 /// Removes a scratch directory however the operation using it ends.
+#[derive(Debug)]
 pub(crate) struct Scratch(pub(crate) PathBuf);
 impl Drop for Scratch {
     fn drop(&mut self) {
@@ -39,7 +40,7 @@ impl Drop for Scratch {
 }
 
 /// A project's git origin, asked of git once per directory per run.
-fn origin_of(root: &Path, origins: &mut HashMap<PathBuf, Option<String>>) -> Option<String> {
+pub(super) fn origin_of(root: &Path, origins: &mut HashMap<PathBuf, Option<String>>) -> Option<String> {
     if root.as_os_str().is_empty() {
         return None;
     }
@@ -52,7 +53,7 @@ fn project_key(root: &Path, origins: &mut HashMap<PathBuf, Option<String>>) -> S
     origin_of(root, origins).unwrap_or_else(|| PortablePath::from_path(root).0)
 }
 
-fn manifest_for(
+pub(super) fn manifest_for(
     session: &Session,
     bundle: &Bundle,
     parent: Option<String>,
@@ -544,34 +545,7 @@ pub fn pull_head_rev(
         }),
         None => None,
     };
-    let base = base.as_ref();
-    let installed = match agent {
-        AgentKind::ClaudeCode => {
-            let adapter = crate::adapter::claude::ClaudeAdapter::default_store()
-                .ok_or_else(|| invalid("cannot locate the Claude Code store"))?;
-            crate::adapter::claude::hub::install(&adapter, manifest, &blob, project_dir, base)?
-        }
-        AgentKind::Antigravity => {
-            let adapter = crate::adapter::antigravity::AntigravityAdapter::default_store()
-                .ok_or_else(|| invalid("cannot locate the Antigravity store"))?;
-            crate::adapter::antigravity::hub::install(&adapter, manifest, &blob, project_dir, base)?
-        }
-        AgentKind::Codex => {
-            let adapter = crate::adapter::codex::CodexAdapter::default_store()
-                .ok_or_else(|| invalid("cannot locate the Codex store"))?;
-            crate::adapter::codex::hub::install(&adapter, manifest, &blob, project_dir, base)?
-        }
-        AgentKind::JCode => {
-            let adapter = crate::adapter::jcode::JCodeAdapter::default_store()
-                .ok_or_else(|| invalid("cannot locate the jcode store"))?;
-            crate::adapter::jcode::hub::install(&adapter, manifest, &blob, project_dir, base)?
-        }
-        AgentKind::OpenCode => {
-            let adapter = crate::adapter::opencode::OpenCodeAdapter::default_store()
-                .ok_or_else(|| invalid("cannot locate the OpenCode store"))?;
-            crate::adapter::opencode::hub::install(&adapter, manifest, &blob, project_dir, base)?
-        }
-    };
+    let installed = super::peer::install_bundle(manifest, &blob, project_dir, base.as_ref())?;
 
     if installed.outcome != InstallOutcome::Diverged {
         // Recorded after installing, from the installed file: an install

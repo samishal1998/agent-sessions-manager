@@ -74,6 +74,7 @@ export default defineConfig({
             { slug: 'hub/restore' },
             { slug: 'hub/daemon' },
             { slug: 'hub/control' },
+            { slug: 'hub/peers' },
             { slug: 'hub/admin' },
             { slug: 'hub/security' },
           ],

@@ -24,6 +24,7 @@ pub mod control;
 pub mod daemon;
 pub mod identity;
 pub mod manifest;
+pub mod peer;
 pub mod state;
 pub mod store;
 pub mod transcript;
