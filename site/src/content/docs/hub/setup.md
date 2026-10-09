@@ -87,6 +87,14 @@ asm hub token --rotate      # retire the join token; joined machines keep access
 
 The hub keeps only a hash of each credential, so `revoke` removes one laptop without rotating the rest. For a web page that does the same and more, see [Administering the hub](/hub/admin/).
 
+### Joining again
+
+Joining a hub you have already joined is safe: the machine keeps its record and its id, gets a new credential, and the old one stops working. asm recognises the machine by an identity it derives from the operating system's machine id (`/etc/machine-id` on Linux, the platform UUID on macOS), salted and hashed so the hub never sees the raw value. Where the OS has none, asm makes one once and keeps it in `machine-uid` in its data directory. Set `ASM_MACHINE_UID` to override it, for example on VMs cloned from one image, which would otherwise share an identity.
+
+A machine that registered several times with an older asm is recognised by presenting its last credential when it joins again (sent only to the hub that issued it). Its older records under the same name, unseen for an hour, are dropped. A name alone never merges two machines: two laptops that share a name stay two machines.
+
+What this machine has synced is remembered per hub and per machine identity, not per registration, so joining again does not make synced sessions show *Not compared*.
+
 ## Limits
 
 `asm hub serve --max-file-mb 4096` caps the largest single file the hub accepts (default 4 GiB). Uploads stream to disk and are verified by hash before they are kept, so a transcript of hundreds of megabytes costs the hub a few megabytes of memory.

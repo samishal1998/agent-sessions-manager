@@ -303,7 +303,13 @@ pub fn join(url: &str, token: &str, name: &str, insecure_http: bool) -> Result<R
              you accept that"
         )));
     }
-    let body = serde_json::to_vec(&serde_json::json!({ "token": token, "name": name })).unwrap();
+    // The last registration's credential goes only to the hub that issued it:
+    // it is how that hub recognises this machine rather than adding another.
+    let previous = load().ok().filter(|r| r.url == url).map(|r| r.credential);
+    let uid = super::identity::machine_uid();
+    let body =
+        serde_json::to_vec(&serde_json::json!({ "token": token, "name": name, "uid": uid, "previous": previous }))
+            .unwrap();
     let response =
         run_curl(&format!("{url}/hub/v1/join"), None, "POST", Body::Json(body), Profile::Once, None)?;
     if response.status == 401 {

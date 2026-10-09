@@ -69,6 +69,7 @@ const push = computed(() => {
   if (props.hub && !props.hub.connected) return { ok: false, label: 'The hub cannot be reached' }
   if (!r) return { ok: true, label: 'Push to hub' }
   if (r.state === 'in_sync') return { ok: false, label: 'Already on the hub' }
+  if (r.state === 'untracked') return { ok: false, label: 'Pull first to compare: this machine has no record of syncing it' }
   if (r.action === 'pull') return { ok: false, label: 'Pull first: the hub has a newer copy' }
   if (r.state === 'diverged') return { ok: false, label: 'Diverged: resolve with `asm push --force`' }
   return { ok: true, label: r.state === 'local' ? 'Push: not on the hub yet' : 'Push: changed since the last sync' }

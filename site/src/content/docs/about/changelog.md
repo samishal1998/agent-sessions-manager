@@ -5,6 +5,11 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
+## 0.13.1 — 2026-10-09
+
+- **Joining a hub again no longer makes a second machine.** A machine now tells the hub who it is (a salted hash of the OS machine id), and a hub that sees the same identity keeps the record and id and issues a new credential. A machine that already joined several times is recognised by its last credential, and its stale same-name records (unseen for an hour) are dropped. Two machines that merely share a name stay separate.
+- **Re-registering no longer shows synced sessions as "Pull first".** The sync record was keyed on the machine id the hub issued, so every `asm join` reset it and every session became *Not compared*. It is now kept per hub and machine identity, and an existing record carries over. A *Not compared* session says so instead of claiming the hub has a newer copy.
+
 ## 0.13.0 — 2026-10-08
 
 - **OpenCode 2.x sessions: read, rename, delete, import, and the hub.** OpenCode 2.x moved sessions to `session_v2` and `session_message` (rebuilt from an event log); asm now reads both that and the 1.x schema, so `asm list`, `show`, `search`, `projects`, `export`, the transcripts in the TUI and web UI, and the search index work for a 2.x store, with subagents (children) and the usage totals. A session is shown as running while the OpenCode background service holds its turn. (2.0.25 ignores `time_archived`, so a session archived in 1.x lists as an ordinary one.)

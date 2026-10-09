@@ -22,6 +22,7 @@ pub mod client;
 pub mod commands;
 pub mod control;
 pub mod daemon;
+pub mod identity;
 pub mod manifest;
 pub mod state;
 pub mod store;

@@ -280,6 +280,13 @@ async fn admin_log(State(state): State<Shared>) -> Response {
 struct JoinBody {
     token: String,
     name: String,
+    /// The joining box's identity; an older client sends none.
+    #[serde(default)]
+    uid: Option<String>,
+    /// The credential of this machine's last registration, which proves it
+    /// owns that record.
+    #[serde(default)]
+    previous: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -422,7 +429,7 @@ async fn plan_retry(State(state): State<Shared>, Extension(Actor(by)): Extension
 }
 
 async fn join(State(state): State<Shared>, Json(body): Json<JoinBody>) -> Response {
-    match blocking(move || state.hub.join(&body.token, &body.name)).await {
+    match blocking(move || state.hub.join_as(&body.token, &body.name, body.uid.as_deref(), body.previous.as_deref())).await {
         Ok(joined) => (StatusCode::CREATED, Json(joined)).into_response(),
         Err(e) => hub_error(e),
     }

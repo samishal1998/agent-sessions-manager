@@ -68,6 +68,11 @@ pub(super) struct MachineRecord {
     joined: Timestamp,
     #[serde(default)]
     last_seen: Option<Timestamp>,
+    /// The box this record is for (see `identity`): a second `join` from it
+    /// takes this record over rather than adding another. Records from
+    /// before it existed have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    uid: Option<String>,
     /// What the machine last said about remote control (see `commands`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) caps: Option<super::commands::Caps>,
@@ -316,6 +321,22 @@ impl Hub {
 
     /// Exchange the join token for a credential of this machine's own.
     pub fn join(&self, token: &str, name: &str) -> Result<Joined, HubError> {
+        self.join_as(token, name, None, None)
+    }
+
+    /// `join`, for a box that says who it is. The same `uid` joining again
+    /// keeps its record and id and gets a new credential. So does a box
+    /// that proves a record is its own by presenting that record's previous
+    /// credential, which is how a machine registered before identities
+    /// existed is recognised; its older registrations under the same name,
+    /// unseen for an hour, are then dropped. A name alone proves nothing.
+    pub fn join_as(
+        &self,
+        token: &str,
+        name: &str,
+        uid: Option<&str>,
+        previous: Option<&str>,
+    ) -> Result<Joined, HubError> {
         let expected = self.read_hub_file()?.join_token;
         if !ct_eq(&sha256(token), &sha256(&expected)) {
             return Err(HubError::Unauthorized);
@@ -324,23 +345,63 @@ impl Hub {
         if !valid_name(name) {
             return Err(HubError::BadRequest("machine name must be 1-64 printable characters".into()));
         }
+        if uid.is_some_and(|u| !super::identity::valid_uid(u)) {
+            return Err(HubError::BadRequest("machine identity must be 32 lowercase hex characters".into()));
+        }
         let credential = format!("asmc_{}", random_hex(32)?);
-        let record = MachineRecord {
-            id: random_hex(8)?,
-            name: name.to_string(),
-            credential_sha256: hex(&sha256(&credential)),
-            joined: Timestamp::now(),
-            last_seen: Some(Timestamp::now()),
-            caps: None,
-        };
+        let now = Timestamp::now();
+        let new_id = random_hex(8)?;
         let _guard = self.lock.lock().unwrap();
         let mut machines = self.read_machines()?;
+        let mut keep = uid.and_then(|u| machines.iter().position(|m| m.uid.as_deref() == Some(u)));
+        if keep.is_none()
+            && uid.is_some()
+            && let Some(previous) = previous
+        {
+            let presented = sha256(previous);
+            keep = machines.iter().position(|m| m.uid.is_none() && ct_eq(&presented, &decode_hex(&m.credential_sha256)));
+        }
+        if let Some(k) = keep {
+            let (kept, kept_name) = (machines[k].id.clone(), name.to_string());
+            let stale = |m: &MachineRecord| {
+                m.id != kept
+                    && m.uid.is_none()
+                    && m.name == kept_name
+                    && now.duration_since(m.last_seen.unwrap_or(m.joined)).as_secs() >= 3600
+            };
+            machines.retain(|m| !stale(m));
+            keep = machines.iter().position(|m| m.id == kept);
+        }
         // A command names a machine by id or by name, and an id wins: a name
         // equal to another machine's id would be unreachable.
-        if machines.iter().any(|m| m.id == name) {
+        if machines.iter().enumerate().any(|(i, m)| m.id == name && Some(i) != keep) {
             return Err(HubError::BadRequest("that name is another machine's id; pick another".into()));
         }
-        machines.push(record.clone());
+        let record = match keep {
+            Some(i) => {
+                let m = &mut machines[i];
+                m.name = name.to_string();
+                m.credential_sha256 = hex(&sha256(&credential));
+                m.last_seen = Some(now);
+                if uid.is_some() {
+                    m.uid = uid.map(String::from);
+                }
+                m.clone()
+            }
+            None => {
+                let record = MachineRecord {
+                    id: new_id,
+                    name: name.to_string(),
+                    credential_sha256: hex(&sha256(&credential)),
+                    joined: now,
+                    last_seen: Some(now),
+                    uid: uid.map(String::from),
+                    caps: None,
+                };
+                machines.push(record.clone());
+                record
+            }
+        };
         self.write_machines(&machines)?;
         Ok(Joined { machine: Machine::from(&record), credential })
     }
@@ -963,6 +1024,67 @@ mod tests {
         let path = hub.blob_path(sha);
         let when = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
         fs::File::options().write(true).open(path).unwrap().set_modified(when).unwrap();
+    }
+
+    const U1: &str = "0123456789abcdef0123456789abcdef";
+    const U2: &str = "fedcba9876543210fedcba9876543210";
+
+    /// Joining again from the same box keeps one record and its id; the old
+    /// credential stops working and the new one does.
+    #[test]
+    fn the_same_box_joining_again_is_one_machine() {
+        let (_d, hub) = hub();
+        let token = hub.join_token().unwrap();
+        let first = hub.join_as(&token, "laptop", Some(U1), None).unwrap();
+        let again = hub.join_as(&token, "renamed", Some(U1), None).unwrap();
+        assert_eq!(first.machine.id, again.machine.id);
+        let all = hub.machines().unwrap();
+        assert_eq!((all.len(), all[0].name.as_str(), all[0].joined), (1, "renamed", first.machine.joined));
+        assert!(matches!(hub.authenticate(&first.credential), Err(HubError::Unauthorized)));
+        assert_eq!(hub.authenticate(&again.credential).unwrap().id, first.machine.id);
+        // Another box with the same name is another machine; a bad identity is refused.
+        let other = hub.join_as(&token, "renamed", Some(U2), None).unwrap();
+        assert_ne!(other.machine.id, first.machine.id);
+        assert_eq!(hub.machines().unwrap().len(), 2);
+        assert!(matches!(hub.join_as(&token, "x", Some("nope"), None), Err(HubError::BadRequest(_))));
+    }
+
+    /// A machine that registered several times before identities existed:
+    /// presenting its last credential makes that record its own, and its
+    /// stale twins go. Another machine of the same name, even one with no
+    /// identity yet, is not touched, and neither is a recent twin.
+    #[test]
+    fn earlier_registrations_collapse_into_one() {
+        let (_d, hub) = hub();
+        let token = hub.join_token().unwrap();
+        let old: Vec<_> = (0..3).map(|_| hub.join(&token, "box").unwrap()).collect();
+        let namesake = hub.join(&token, "box").unwrap();
+        let elsewhere = hub.join(&token, "other").unwrap();
+        // Age the first two twins by a day; the rest were seen just now.
+        let mut records = hub.read_machines().unwrap();
+        let day = Timestamp::now() - std::time::Duration::from_secs(86_400);
+        for m in records.iter_mut().take(2) {
+            m.last_seen = Some(day);
+            m.joined = day;
+        }
+        hub.write_machines(&records).unwrap();
+
+        // Without proof a name adopts nothing.
+        let stranger = hub.join_as(&token, "box", Some(U2), None).unwrap();
+        assert_eq!(hub.machines().unwrap().len(), 6);
+        assert!(hub.authenticate(&old[2].credential).is_ok());
+
+        let joined = hub.join_as(&token, "box", Some(U1), Some(&old[2].credential)).unwrap();
+        assert_eq!(joined.machine.id, old[2].machine.id);
+        let ids: Vec<_> = hub.machines().unwrap().into_iter().map(|m| m.id).collect();
+        assert_eq!(ids.len(), 4, "the two stale twins are gone: {ids:?}");
+        for kept in [&joined.machine.id, &namesake.machine.id, &elsewhere.machine.id, &stranger.machine.id] {
+            assert!(ids.contains(kept));
+        }
+        assert!(hub.authenticate(&namesake.credential).is_ok());
+        assert!(matches!(hub.authenticate(&old[0].credential), Err(HubError::Unauthorized)));
+        assert!(matches!(hub.authenticate(&old[2].credential), Err(HubError::Unauthorized)));
+        assert!(hub.authenticate(&joined.credential).is_ok());
     }
 
     /// Nothing is administrable until an admin token exists, and only that
