@@ -78,6 +78,27 @@ pub(crate) fn collect(adapter: &ClaudeAdapter, session: &Session) -> Result<Bund
     })
 }
 
+/// How the transcript here relates to the hub's, by the comparison `install`
+/// makes of them (`bundle::prefix_outcome`) and without writing anything.
+/// Only the hub's transcript is fetched.
+pub(crate) fn relate(
+    session: &Session,
+    manifest: &Manifest,
+    blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
+) -> Result<Option<bundle::Relation>, CoreError> {
+    let entry = manifest
+        .files
+        .iter()
+        .find(|f| f.path == "transcript.jsonl")
+        .and_then(|f| f.sha256.as_deref())
+        .ok_or_else(|| CoreError::Invalid { msg: "bundle has no transcript".into() })?;
+    let src = blob(entry)?;
+    let incoming = canonical_transcript(&fs::read(&src).map_err(|e| CoreError::io(&src, e))?);
+    let path = transcript_of(session)?;
+    let local = canonical_transcript(&fs::read(path).map_err(|e| CoreError::io(path, e))?);
+    Ok(bundle::Relation::of(bundle::prefix_outcome(&local, &incoming)))
+}
+
 /// Every copy of this id in any project directory. More than one already
 /// breaks Claude Code's cross-project resume for it.
 fn find_transcripts(root: &Path, id: &str) -> Vec<PathBuf> {
@@ -390,21 +411,19 @@ fn update(
     }
     let local = canonical_transcript(&raw);
 
-    let outcome = if local == incoming {
-        InstallOutcome::InSync
-    } else if incoming.starts_with(&local) {
-        let delta = &incoming[local.len()..];
-        // One write, so a reader never sees half of the new records.
-        let mut file = fs::OpenOptions::new()
-            .append(true)
-            .open(path)
-            .map_err(|e| CoreError::io(path, e))?;
-        file.write_all(delta).map_err(|e| CoreError::io(path, e))?;
-        InstallOutcome::FastForward { appended: delta.len() as u64 }
-    } else if local.starts_with(incoming) {
-        InstallOutcome::Ahead
-    } else {
-        return finish(InstallOutcome::Diverged, path.to_path_buf(), id);
+    let outcome = match bundle::prefix_outcome(&local, incoming) {
+        InstallOutcome::FastForward { appended } => {
+            let delta = &incoming[local.len()..];
+            // One write, so a reader never sees half of the new records.
+            let mut file = fs::OpenOptions::new()
+                .append(true)
+                .open(path)
+                .map_err(|e| CoreError::io(path, e))?;
+            file.write_all(delta).map_err(|e| CoreError::io(path, e))?;
+            InstallOutcome::FastForward { appended }
+        }
+        InstallOutcome::Diverged => return finish(InstallOutcome::Diverged, path.to_path_buf(), id),
+        other => other,
     };
 
     // The marker before the sidecars: if a sidecar fails, the appended
@@ -631,6 +650,44 @@ mod tests {
         a.append("a continued");
         assert_eq!(pull(&b, &push(&a), None).unwrap().outcome, InstallOutcome::Diverged);
         assert_eq!(transcript_of_b(&b), ahead, "a divergence touches nothing");
+    }
+
+    /// `relate` says, without writing, what the install about to run finds:
+    /// the same, this copy ahead, the hub's ahead, or diverged.
+    #[test]
+    fn relating_says_what_an_install_finds_and_writes_nothing() {
+        use bundle::Relation::*;
+        let (a, b) = (Machine::new("proj-a"), Machine::new("proj-b"));
+        a.start(&["one"]);
+        let first = push(&a);
+        pull(&b, &first, Some(&b.project)).unwrap();
+
+        let relate_then_pull = |pushed: &(Manifest, HashMap<String, Vec<u8>>)| {
+            let scratch = tempfile::tempdir().unwrap();
+            let blob = |sha: &str| -> Result<PathBuf, CoreError> {
+                let path = scratch.path().join(sha);
+                fs::write(&path, &pushed.1[sha]).unwrap();
+                Ok(path)
+            };
+            let before = transcript_of_b(&b);
+            let related = relate(&b.session(), &pushed.0, &blob).unwrap();
+            assert_eq!(transcript_of_b(&b), before, "relating writes nothing");
+            let installed = pull(&b, pushed, None).unwrap().outcome;
+            assert_eq!(related, bundle::Relation::of(installed), "install found {installed:?}");
+            related
+        };
+        assert_eq!(relate_then_pull(&first), Some(Same));
+
+        a.append("two");
+        let hub_ahead = push(&a);
+        assert_eq!(relate_then_pull(&hub_ahead), Some(HubAhead));
+        assert_eq!(relate_then_pull(&hub_ahead), Some(Same), "and now it is");
+
+        b.append("b continued");
+        assert_eq!(relate_then_pull(&hub_ahead), Some(LocalAhead));
+
+        a.append("a continued");
+        assert_eq!(relate_then_pull(&push(&a)), Some(Diverged));
     }
 
     #[test]

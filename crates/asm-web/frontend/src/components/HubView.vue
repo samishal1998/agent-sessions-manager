@@ -197,11 +197,25 @@ const detailItems = computed(() => {
   if (r.on_hub) items.push({ key: 'hub', label: 'Hub copy', value: hubCopy(r) })
   else if (r.size != null) items.push({ key: 'size', label: 'Size here', value: bytes(r.size) })
   if (r.agent_version) items.push({ key: 'ver', label: 'Agent version', value: r.agent_version })
-  if (r.compare)
+  if (r.compare) {
+    const sizes = `${bytes(r.compare.local_size)} here, ${bytes(r.compare.hub_size)} on the hub`
+    const proven = {
+      same: 'the same conversation on both',
+      local_ahead: "this machine's copy goes on from the hub's",
+      hub_ahead: "the hub's copy goes on from this machine's",
+      diverged: 'each side has something the other lacks',
+    }[r.compare.relation]
+    // The two sizes cover different files, so on their own they never say which is ahead.
+    const guess = r.compare.lean
+      ? `; ${r.compare.lean === 'local' ? 'this machine' : 'the hub'} looks newer by time and size, which is only a guess`
+      : ''
     items.push({
       key: 'cmp', label: 'Compared',
-      value: `${bytes(r.compare.local_size)} here, ${bytes(r.compare.hub_size)} on the hub — they cover different files, so size does not say which is ahead; pulling does`,
+      value: proven
+        ? `${sizes} — read from the hub's copy: ${proven}`
+        : `${sizes} — not read from the hub's copy, and sizes do not say which side is ahead${guess}; pulling does`,
     })
+  }
   items.push({ key: 'rest', label: 'Restorable here', value: r.restorable ? 'yes' : 'no — backed up only' })
   return items
 })

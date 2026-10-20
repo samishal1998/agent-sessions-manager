@@ -10,6 +10,9 @@ use asm_core::model::Session;
 use asm_core::ops;
 
 pub enum Request {
+    /// Read every store. The answer also carries the projects and the
+    /// stores' health, worked out from what was just read rather than from
+    /// a listing apiece.
     Scan,
     LoadPreview(Box<Session>),
     Rename(Box<Session>, String),
@@ -20,14 +23,10 @@ pub enum Request {
     Move(Box<Session>, std::path::PathBuf),
     Import(Box<Session>, asm_core::model::AgentKind),
     Search(String),
-    /// The projects the list can be narrowed to — repositories with their
-    /// worktrees, the same grouping the CLI and the web UI show.
-    Projects,
     /// How this machine stands with the hub, given the sessions it has.
     Hub(Vec<Session>),
     /// Pull one session from the hub, into a directory if one was given.
     Pull(asm_core::model::AgentKind, String, Option<std::path::PathBuf>),
-    Doctor,
     /// One verb over a selected set. Sessions are resolved by the caller at
     /// the moment the action is confirmed, never by index.
     Bulk(Vec<Session>, asm_core::bulk::BulkAction),
@@ -51,6 +50,8 @@ pub enum Response {
     Preview(String, Vec<PreviewLine>),
     /// (query, hits)
     Hits(String, Vec<asm_core::index::SearchHit>),
+    /// The projects the list can be narrowed to — repositories with their
+    /// worktrees, the same grouping the CLI and the web UI show.
     Projects(Vec<asm_core::model::Project>),
     Hub(Box<asm_core::hub::actions::HubStatus>, Option<asm_core::hub::daemon::DaemonStatus>),
     /// A pull that did not land. `needs_dir` when the session's directory
@@ -127,11 +128,24 @@ pub fn spawn() -> Worker {
             // shows the first of them while the rest are still being read.
             if let Request::Scan = request {
                 let tx = resp_tx.clone();
+                let mut found = Vec::new();
                 let problems = ops::stream_sessions(&SessionFilter::default(), |_, batch| {
+                    found.extend(batch.iter().cloned());
                     // A closed channel means the TUI has gone; stop reading.
                     tx.send(Response::SessionBatch(batch)).is_ok()
                 });
                 if resp_tx.send(Response::ScanDone(problems)).is_err() {
+                    break;
+                }
+                // Store health is cheap and worth knowing without being
+                // asked for: duplicate ids and stale locks are exactly what
+                // a browser should surface. Both it and the projects are
+                // read off the sessions just listed — listing them again
+                // for each cost as much as the scan did, and everything
+                // asked of the worker in the meantime waited behind them.
+                if resp_tx.send(Response::Projects(projects_of(&found))).is_err()
+                    || resp_tx.send(health_of(&found)).is_err()
+                {
                     break;
                 }
                 continue;
@@ -188,34 +202,6 @@ fn handle(request: Request) -> Response {
             Response::Hub(Box::new(asm_core::hub::actions::hub_status(&sessions)), asm_core::hub::daemon::status().ok())
         }
         Request::Pull(agent, id, dir) => pull_one(agent, id, dir.as_deref()),
-        Request::Projects => match ops::list_projects() {
-            Ok(projects) => Response::Projects(projects),
-            Err(e) => Response::Error(e.to_string()),
-        },
-        Request::Doctor => match ops::doctor() {
-            Ok(report) => {
-                let mut lines = Vec::new();
-                let mut warnings = 0;
-                for agent in &report.agents {
-                    lines.push(format!(
-                        "{}: {} — {} sessions",
-                        agent.agent,
-                        if agent.store_found { "store ok" } else { "store missing" },
-                        agent.session_count
-                    ));
-                    lines.push(format!("  {}", agent.store_root.display()));
-                    for warning in &agent.warnings {
-                        warnings += 1;
-                        lines.push(format!("  ⚠ {warning}"));
-                    }
-                }
-                if lines.is_empty() {
-                    lines.push("No agent stores detected.".to_string());
-                }
-                Response::Doctor(lines, warnings)
-            }
-            Err(e) => Response::Error(e.to_string()),
-        },
         Request::Search(query) => match run_search(&query) {
             Ok(hits) => Response::Hits(query, hits),
             Err(e) => Response::Error(e.to_string()),
@@ -289,6 +275,96 @@ fn spawn_indexer(tx: Sender<Response>) -> Sender<()> {
         }
     });
     index_tx
+}
+
+/// How long a repository (or a list of its worktrees) is remembered. A
+/// rescan follows every action, and each one used to fork `git` again for
+/// every project directory; a worktree made in another terminal is seen
+/// within this long, or at once on `R`.
+const GIT_MEMORY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What git said about a directory, and when.
+struct Remembered<V> {
+    ttl: std::time::Duration,
+    entries: std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, (std::time::Instant, V)>>,
+}
+
+impl<V: Clone> Remembered<V> {
+    fn new(ttl: std::time::Duration) -> Self {
+        Remembered { ttl, entries: Default::default() }
+    }
+
+    /// The answer for `dir`, asking only if none is remembered. The lock is
+    /// not held while asking: that is a process spawn.
+    fn get(&self, dir: &std::path::Path, ask: impl FnOnce() -> V) -> V {
+        if let Some((at, value)) = self.entries.lock().unwrap().get(dir)
+            && at.elapsed() < self.ttl
+        {
+            return value.clone();
+        }
+        let value = ask();
+        self.entries
+            .lock()
+            .unwrap()
+            .insert(dir.to_path_buf(), (std::time::Instant::now(), value.clone()));
+        value
+    }
+
+    fn forget_all(&self) {
+        self.entries.lock().unwrap().clear();
+    }
+}
+
+static REPOS: std::sync::LazyLock<Remembered<Option<asm_core::git::Repo>>> =
+    std::sync::LazyLock::new(|| Remembered::new(GIT_MEMORY));
+static WORKTREES: std::sync::LazyLock<Remembered<Vec<asm_core::git::Worktree>>> =
+    std::sync::LazyLock::new(|| Remembered::new(GIT_MEMORY));
+
+/// Ask git again about everything: for a rescan the user asked for.
+pub fn forget_git() {
+    REPOS.forget_all();
+    WORKTREES.forget_all();
+}
+
+fn projects_of(sessions: &[Session]) -> Vec<asm_core::model::Project> {
+    ops::group_projects(
+        sessions,
+        |dir| REPOS.get(dir, || asm_core::git::repo_of(dir)),
+        |root| WORKTREES.get(root, || asm_core::git::worktrees(root).unwrap_or_default()),
+    )
+}
+
+/// The health overlay's lines for the stores as they stand, with the
+/// number of warnings among them. Session counts are the scan's own.
+fn health_of(sessions: &[Session]) -> Response {
+    let counted = |adapter: &asm_core::adapter::Adapter| {
+        use asm_core::adapter::AgentRead;
+        Ok(sessions.iter().filter(|s| s.handle.agent == adapter.kind()).count())
+    };
+    match ops::doctor_with(counted) {
+        Ok(report) => {
+            let mut lines = Vec::new();
+            let mut warnings = 0;
+            for agent in &report.agents {
+                lines.push(format!(
+                    "{}: {} — {} sessions",
+                    agent.agent,
+                    if agent.store_found { "store ok" } else { "store missing" },
+                    agent.session_count
+                ));
+                lines.push(format!("  {}", agent.store_root.display()));
+                for warning in &agent.warnings {
+                    warnings += 1;
+                    lines.push(format!("  ⚠ {warning}"));
+                }
+            }
+            if lines.is_empty() {
+                lines.push("No agent stores detected.".to_string());
+            }
+            Response::Doctor(lines, warnings)
+        }
+        Err(e) => Response::Error(e.to_string()),
+    }
 }
 
 /// Search reads what the indexer has written so far; it never refreshes,
@@ -428,5 +504,41 @@ fn pull_one(agent: asm_core::model::AgentKind, id: String, dir: Option<&std::pat
             let needs_dir = message.contains("--project-dir");
             Response::PullFailed { agent, id, message, needs_dir }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::path::Path;
+    use std::time::Duration;
+
+    /// Asked twice, git is asked once: the answer is what a scan used to
+    /// fork a process for, for every project directory.
+    #[test]
+    fn a_remembered_answer_is_not_asked_for_again() {
+        let memory = Remembered::<u32>::new(Duration::from_secs(60));
+        let asked = Cell::new(0);
+        let ask = |answer| {
+            asked.set(asked.get() + 1);
+            answer
+        };
+        assert_eq!(memory.get(Path::new("/a"), || ask(1)), 1);
+        assert_eq!(memory.get(Path::new("/a"), || ask(2)), 1, "the first answer stands");
+        assert_eq!(memory.get(Path::new("/b"), || ask(3)), 3, "per directory");
+        assert_eq!(asked.get(), 2);
+
+        // Forgotten on request (a rescan the user asked for).
+        memory.forget_all();
+        assert_eq!(memory.get(Path::new("/a"), || ask(4)), 4);
+        assert_eq!(asked.get(), 3);
+    }
+
+    #[test]
+    fn an_old_answer_is_asked_for_again() {
+        let memory = Remembered::<u32>::new(Duration::ZERO);
+        assert_eq!(memory.get(Path::new("/a"), || 1), 1);
+        assert_eq!(memory.get(Path::new("/a"), || 2), 2, "worktrees made since are seen");
     }
 }

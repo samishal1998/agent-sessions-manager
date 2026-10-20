@@ -347,6 +347,58 @@ fn an_older_copy_is_replaced_after_a_backup_and_a_changed_one_never_is() {
     assert!(pull(&adapter_b, &full, &blobs, Some(&elsewhere), None).unwrap_err().to_string().contains("already here"));
 }
 
+/// `relate` says, without writing or running `opencode`, what the install
+/// about to run finds: behind, the same, ahead, diverged.
+#[test]
+fn relating_says_what_an_install_finds_and_writes_nothing() {
+    use crate::hub::bundle::Relation::*;
+    let (Some(a), Some(b)) = (Isolated::new(), Isolated::new()) else { return };
+    let (dir_a, dir_b) = (a.path("proj/a"), b.path("proj/b"));
+    seed(&a, &dir_a);
+    let (adapter_a, adapter_b) = (a.adapter(), b.adapter());
+    let blobs = a.path("blobs");
+    let (full, _) = manifest_and_blobs(&adapter_a, ROOT, &dir_a, &blobs);
+    let relate_then_pull = |adapter: &OpenCodeAdapter, env: &Isolated, manifest: &Manifest| {
+        let before = tree(env, ROOT);
+        let related = hub::relate(adapter, &session(adapter, ROOT), manifest, &|sha| Ok(blobs.join(sha))).unwrap();
+        assert_eq!(tree(env, ROOT), before, "relating writes nothing");
+        let installed = pull(adapter, manifest, &blobs, None, None).unwrap().outcome;
+        assert_eq!(related, crate::hub::bundle::Relation::of(installed), "install found {installed:?}");
+        related
+    };
+
+    // B holds an earlier part of it: the root's first messages, as A wrote them.
+    let mut early = tree(&a, ROOT)[0].clone();
+    early["messages"].as_array_mut().unwrap().truncate(3);
+    import(&b, &early, &dir_b);
+    assert_eq!(relate_then_pull(&adapter_b, &b, &full), Some(HubAhead));
+    assert_eq!(relate_then_pull(&adapter_b, &b, &full), Some(Same), "and after the replace it is");
+
+    // B goes on from there; the hub's copy is the old one.
+    let mut docs = tree(&b, ROOT);
+    docs[0]["messages"].as_array_mut().unwrap().push(json!({"id": "msg_b99", "type": "user", "time": {"created": 1760000010000_i64}, "text": "more"}));
+    adapter_b.delete(&session(&adapter_b, ROOT)).unwrap();
+    for doc in &docs {
+        import(&b, doc, &dir_b);
+    }
+    assert_eq!(relate_then_pull(&adapter_b, &b, &full), Some(LocalAhead));
+
+    // A went on with a message of its own as well.
+    let mut docs = tree(&a, ROOT);
+    docs[0]["messages"].as_array_mut().unwrap().push(json!({"id": "msg_a99", "type": "user", "time": {"created": 1760000011000_i64}, "text": "from A"}));
+    adapter_a.delete(&session(&adapter_a, ROOT)).unwrap();
+    for doc in &docs {
+        import(&a, doc, &dir_a);
+    }
+    let (moved_on, _) = manifest_and_blobs(&adapter_a, ROOT, &dir_a, &blobs);
+    assert_eq!(relate_then_pull(&adapter_b, &b, &moved_on), Some(Diverged));
+
+    // A 1.x bundle means nothing to this 2.x store.
+    let mut v1 = full.clone();
+    v1.extra = Value::Null;
+    assert_eq!(hub::relate(&adapter_b, &session(&adapter_b, ROOT), &v1, &|sha| Ok(blobs.join(sha))).unwrap(), None);
+}
+
 /// The other machine only renamed it: the titles are applied with a rename.
 /// The session is not deleted and imported again (which would rebuild its
 /// project, slug and message numbering for the sake of a title).

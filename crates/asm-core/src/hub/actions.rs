@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use jiff::Timestamp;
 use serde::Serialize;
 
-use super::bundle::{self, Bundle, InstallOutcome, Installed, Source};
+use super::bundle::{self, Bundle, InstallOutcome, Installed, Relation, Source};
 use super::client::{PutOutcome, Remote};
 use super::manifest::{Manifest, SCHEMA, files_hash, valid_id};
 use super::state::{SyncState, Tracked};
@@ -609,12 +609,24 @@ pub enum SyncAction {
 }
 
 impl RowState {
+    /// Where a session stands once its content has shown which side is ahead.
+    fn of_relation(relation: Relation) -> RowState {
+        match relation {
+            Relation::Same => RowState::InSync,
+            Relation::LocalAhead => RowState::Ahead,
+            Relation::HubAhead => RowState::Behind,
+            Relation::Diverged => RowState::Diverged,
+        }
+    }
+
     pub fn action(self) -> Option<SyncAction> {
         match self {
             RowState::InSync => None,
             RowState::Ahead | RowState::Local => Some(SyncAction::Push),
             // Untracked is "pull" because pulling is what finds out: it
             // says in sync, ahead, newer or diverged, and records the base.
+            // (A listing reads a small hub copy itself, and then the row is
+            // not Untracked but Ahead, Behind or Diverged.)
             RowState::Behind | RowState::Remote | RowState::Untracked => Some(SyncAction::Pull),
             RowState::Diverged => Some(SyncAction::Resolve),
         }
@@ -711,8 +723,32 @@ pub struct RowDetail {
 pub enum Shallow {
     /// Same conversation: nothing to push or pull.
     Identical,
-    /// Different. Which side is ahead needs the content: a pull says.
+    /// Different. Which side is ahead needs the content: `Compare::relation`
+    /// has it when the hub's copy was read.
     Differs,
+}
+
+/// A guess at which side is newer, from the two copies' `updated` times and
+/// sizes when both point the same way. ADVISORY: it is never a decision. The
+/// times are each machine's own clock and the sizes cover different files, so
+/// it only says what to look at first, and it never changes a row's state or
+/// what the row offers to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Lean {
+    Local,
+    Hub,
+}
+
+/// `Local` when this machine's copy was updated after the hub's and is not
+/// smaller; `Hub` the other way round; `None` when a time is missing, the
+/// times are equal, or the size points against the time.
+fn lean_of(local_updated: Option<Timestamp>, hub_updated: Option<Timestamp>, local_size: u64, hub_size: u64) -> Option<Lean> {
+    match local_updated?.cmp(&hub_updated?) {
+        std::cmp::Ordering::Greater if local_size >= hub_size => Some(Lean::Local),
+        std::cmp::Ordering::Less if hub_size >= local_size => Some(Lean::Hub),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -720,6 +756,13 @@ pub struct Compare {
     pub verdict: Shallow,
     pub local_size: u64,
     pub hub_size: u64,
+    /// Which side is ahead, proven by reading the hub's copy and comparing it
+    /// the way a pull would. `None` when it was not read (the hub's copy is
+    /// over the size a listing reads, the agent has no such comparison, the
+    /// hub did not answer), and then nothing is known beyond `verdict`.
+    pub relation: Option<Relation>,
+    /// Only when `relation` is `None`: the advisory guess, see [`Lean`].
+    pub lean: Option<Lean>,
 }
 
 /// Sessions compared per listing. Each is read and hashed once, then
@@ -727,10 +770,21 @@ pub struct Compare {
 /// over a few listings instead of stalling the first.
 const COMPARE_BUDGET: usize = 25;
 
+/// The largest hub copy a listing downloads to say which side is ahead of an
+/// uncompared session: only the one file the agent compares (the transcript),
+/// but a listing may meet 25 of them, so it stays small. A larger one is left
+/// at "Differs" until it is compared on its own.
+const RELATE_LISTING_MAX: u64 = 2 * 1024 * 1024;
+
+/// The same for one session asked about by name (the web's Compare button).
+const RELATE_COMPARE_MAX: u64 = 256 * 1024 * 1024;
+
 /// Results already worked out, one per session: the same pair of copies gives
 /// the same answer until either side changes, and a changed one replaces the
-/// entry rather than adding to it.
-type CompareCache = std::sync::Mutex<HashMap<String, (String, Compare)>>;
+/// entry rather than adding to it. The flag says the hub's copy was read, or
+/// could never be, so the answer is final; without it the entry only stands
+/// for a caller that would not read the hub's copy either.
+type CompareCache = std::sync::Mutex<HashMap<String, (String, Compare, bool)>>;
 
 fn compare_cache() -> &'static CompareCache {
     static CACHE: std::sync::OnceLock<CompareCache> = std::sync::OnceLock::new();
@@ -746,10 +800,14 @@ fn pair_key(session: &Session, head: &Head) -> (String, String) {
     )
 }
 
-/// A result worked out before, if neither side has changed since.
-fn cached_compare(session: &Session, head: &Head) -> Option<Compare> {
+/// A result worked out before, if neither side has changed since, and it is
+/// one this caller would reach too: either the hub's copy was read, or it is
+/// over what the caller reads (`cap`), so reading again could not add to it.
+fn cached_compare(session: &Session, head: &Head, cap: u64) -> Option<Compare> {
     let (k, pair) = pair_key(session, head);
-    compare_cache().lock().ok()?.get(&k).filter(|(p, _)| *p == pair).map(|(_, c)| *c)
+    let cache = compare_cache().lock().ok()?;
+    let (p, found, settled) = cache.get(&k)?;
+    (*p == pair && (*settled || head.total_size > cap)).then_some(*found)
 }
 
 /// The shallow verdict from what both sides recorded. Only equal identities
@@ -769,8 +827,30 @@ fn compared_label(state: RowState, compare: Option<Compare>) -> &'static str {
 }
 
 fn compared_hint(state: RowState, compare: Option<Compare>) -> &'static str {
-    match (state, compare.map(|c| c.verdict)) {
-        (RowState::Untracked, Some(Shallow::Differs)) => {
+    let found = compare.and_then(|c| c.relation);
+    let lean = compare.and_then(|c| c.lean);
+    match (state, found, lean, compare.map(|c| c.verdict)) {
+        // Read from the hub's copy, not from a record of the last sync.
+        (RowState::Ahead, Some(Relation::LocalAhead), ..) => {
+            "This machine's copy goes on from the hub's: the hub has an earlier part of it. Push it."
+        }
+        (RowState::Behind, Some(Relation::HubAhead), ..) => {
+            "The hub's copy goes on from this machine's: this machine has an earlier part of it. Pull it."
+        }
+        (RowState::Diverged, Some(Relation::Diverged), ..) => {
+            "Each side has something the other lacks. `asm push --force` makes this copy the head; \
+             `asm pull <id>` says more."
+        }
+        // Unproven: only a guess from times and sizes, said to be one.
+        (RowState::Untracked, _, Some(Lean::Local), _) => {
+            "The two copies differ. This machine's copy looks newer (updated later than the hub's, and not smaller), \
+             but that is only a guess. Pull it to confirm: nothing changes if this copy is ahead."
+        }
+        (RowState::Untracked, _, Some(Lean::Hub), _) => {
+            "The two copies differ. The hub's copy looks newer (updated later than this machine's, and not smaller), \
+             but that is only a guess. Pull it to confirm."
+        }
+        (RowState::Untracked, _, _, Some(Shallow::Differs)) => {
             "The two copies differ, and which is ahead takes the content to tell. Pull it: a hub copy that extends yours is applied, a copy that is ahead of the hub's can then be pushed, and one that moved on both sides is reported as diverged."
         }
         _ => state.hint(),
@@ -780,36 +860,138 @@ fn compared_hint(state: RowState, compare: Option<Compare>) -> &'static str {
 /// Read this machine's copy and compare it with the hub's head. Identical
 /// copies are recorded as synced, exactly as a push or pull would have.
 /// A size is a hint, never a verdict: only `Identical` is a proof.
-pub fn compare_session(state: &mut SyncState, session: &Session, head: &Head) -> Result<Compare, CoreError> {
-    if let Some(found) = cached_compare(session, head) {
+///
+/// A copy that differs has the hub's copy read (the one file the agent
+/// compares, up to [`RELATE_COMPARE_MAX`]) and related to this one by the same
+/// comparison a pull makes, so the answer says which side is ahead. A copy
+/// found ahead is recorded the way a pull records one, so a push from here has
+/// the hub's revision as its parent. When the hub's copy cannot be read the
+/// answer is the shallow one, not an error.
+pub fn compare_session(
+    remote: &Remote,
+    state: &mut SyncState,
+    session: &Session,
+    head: &Head,
+) -> Result<Compare, CoreError> {
+    compare_within(remote, state, session, head, RELATE_COMPARE_MAX, &std::cell::Cell::new(false))
+}
+
+/// `compare_session`, reading the hub's copy only up to `cap` bytes.
+/// `unreachable` is set when a request to the hub failed, so a listing can stop
+/// asking one that is not answering.
+fn compare_within(
+    remote: &Remote,
+    state: &mut SyncState,
+    session: &Session,
+    head: &Head,
+    cap: u64,
+    unreachable: &std::cell::Cell<bool>,
+) -> Result<Compare, CoreError> {
+    if let Some(found) = cached_compare(session, head, cap) {
         return Ok(found);
     }
     let (k, pair) = pair_key(session, head);
     let fingerprint = bundle::fingerprint(session);
     let bundle = bundle::collect(session)?;
-    let found = Compare {
+    let local_size = bundle.files.iter().map(|f| f.entry.size).sum();
+    let mut found = Compare {
         verdict: verdict_of(&bundle.canonical, &head.manifest.canonical),
-        local_size: bundle.files.iter().map(|f| f.entry.size).sum(),
+        local_size,
         hub_size: head.total_size,
+        relation: None,
+        lean: None,
     };
-    if found.verdict == Shallow::Identical {
-        // Recording is what makes this permanent, but the answer is true
-        // whether or not it could be written (a read-only data dir): the
-        // cache below keeps it from being worked out again each listing.
+    // Recording is what makes this permanent, but the answer is true
+    // whether or not it could be written (a read-only data dir): the
+    // cache below keeps it from being worked out again each listing.
+    let record_synced = |state: &mut SyncState| {
         let _ = state.record(
             &k,
             Tracked {
                 hub_rev: head.rev.clone(),
                 canonical: bundle.canonical.clone(),
-                fingerprint,
+                fingerprint: fingerprint.clone(),
                 files: files_hash(bundle.files.iter().map(|f| &f.entry)),
             },
         );
+    };
+    // Whether the hub's copy was read, or could never be: the answer is then final.
+    let mut settled = false;
+    if found.verdict == Shallow::Identical {
+        record_synced(state);
+        found.relation = Some(Relation::Same);
+        settled = true;
+    } else if head.total_size <= cap && !unreachable.get() {
+        // ponytail: a blob download has no wall-clock limit, only a floor on
+        // throughput (client::Profile::Transfer), and `history` is always the
+        // Control profile (60 s, 3 retries) even for a quick `hub_status`. A
+        // hub that lists sessions but stalls on these can hold one listing for
+        // a minute or more before `unreachable` stops the rest; the size cap
+        // keeps that rare. A deadline on both if it is seen.
+        if let Ok((relation, hub_files)) = read_hub_copy(remote, session, head, unreachable) {
+            settled = true;
+            found.relation = relation;
+            match relation {
+                Some(Relation::Same) => record_synced(state),
+                // Exactly what a pull records for a copy that is ahead: the
+                // hub's revision and conversation, no fingerprint (so the
+                // next push looks at this copy), the hub's files. A push
+                // from here then names that revision as its parent.
+                Some(Relation::LocalAhead) => {
+                    let recorded = state.record(
+                        &k,
+                        Tracked {
+                            hub_rev: head.rev.clone(),
+                            canonical: head.manifest.canonical.clone(),
+                            fingerprint: String::new(),
+                            files: files_hash(&hub_files),
+                        },
+                    );
+                    // Without the record a push is refused as unknown, so
+                    // "needs push" would be advice that cannot be followed.
+                    if recorded.is_err() {
+                        found.relation = None;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if found.relation.is_none() {
+        found.lean = lean_of(session.updated, head.manifest.updated, local_size, head.total_size);
     }
     if let Ok(mut c) = compare_cache().lock() {
-        c.insert(k, (pair, found));
+        c.insert(k, (pair, found, settled));
     }
     Ok(found)
+}
+
+/// The hub's copy of a session related to this machine's, and the files that
+/// copy holds. Reads only what the agent's comparison needs.
+fn read_hub_copy(
+    remote: &Remote,
+    session: &Session,
+    head: &Head,
+    unreachable: &std::cell::Cell<bool>,
+) -> Result<(Option<Relation>, Vec<super::manifest::FileEntry>), CoreError> {
+    let (agent, id) = (head.manifest.agent, &head.manifest.id);
+    let history = remote
+        .history(agent.as_str(), id)
+        .inspect_err(|_| unreachable.set(true))?
+        .ok_or_else(|| invalid(format!("{} is no longer on the hub", key(agent, id))))?;
+    if history.head != head.rev {
+        return Err(invalid(format!("{} moved on the hub while it was being compared", key(agent, id))));
+    }
+    let scratch = Scratch(scratch_dir("compare")?);
+    let blob = |sha: &str| -> Result<PathBuf, CoreError> {
+        let path = scratch.0.join(sha);
+        if !path.is_file() {
+            remote.get_blob(sha, &path).inspect_err(|_| unreachable.set(true))?;
+        }
+        Ok(path)
+    };
+    let relation = bundle::relate(session, &history.manifest, &blob)?;
+    Ok((relation, history.manifest.files))
 }
 
 /// Every session on this machine and on the hub, grouped by project. The
@@ -818,6 +1000,7 @@ pub fn remote_list(remote: &Remote, local: &[Session]) -> Result<Vec<Row>, CoreE
     let heads = remote.heads()?;
     let mut state = SyncState::load(remote)?;
     let mut budget = COMPARE_BUDGET;
+    let unreachable = std::cell::Cell::new(false);
     let mut origins = HashMap::new();
     let by_key: HashMap<String, &Session> =
         local.iter().map(|s| (key(s.handle.agent, &s.handle.native_id), s)).collect();
@@ -834,16 +1017,19 @@ pub fn remote_list(remote: &Remote, local: &[Session]) -> Result<Vec<Row>, CoreE
             (Some(s), None) => {
                 // Both sides have it and this machine never compared them:
                 // look, rather than leave the question to a pull. Anything
-                // already worked out is free; new reads are budgeted.
-                let found = cached_compare(s, head).or_else(|| {
+                // already worked out is free; new reads are budgeted. A small
+                // hub copy is read too, to say which side is ahead; once the
+                // hub fails to answer, none is.
+                let found = cached_compare(s, head, RELATE_LISTING_MAX).or_else(|| {
                     (budget > 0).then(|| {
                         budget -= 1;
-                        compare_session(&mut state, s, head).ok()
+                        compare_within(remote, &mut state, s, head, RELATE_LISTING_MAX, &unreachable).ok()
                     })?
                 });
                 compare = found;
                 match found {
                     Some(c) if c.verdict == Shallow::Identical => RowState::InSync,
+                    Some(Compare { relation: Some(relation), .. }) => RowState::of_relation(relation),
                     _ => RowState::Untracked,
                 }
             }
@@ -1131,12 +1317,114 @@ mod tests {
     fn a_shallow_compare_proves_only_equality() {
         assert_eq!(verdict_of("a", "a"), Shallow::Identical);
         assert_eq!(verdict_of("a", "b"), Shallow::Differs);
-        let looked = Some(Compare { verdict: Shallow::Differs, local_size: 1, hub_size: 2 });
+        let looked = Some(Compare { verdict: Shallow::Differs, local_size: 1, hub_size: 2, relation: None, lean: None });
         assert_eq!(compared_label(RowState::Untracked, looked), "Differs");
         assert_eq!(compared_label(RowState::Untracked, None), "Not compared");
         // Only an uncompared session is renamed by having been looked at.
         assert_eq!(compared_label(RowState::Behind, looked), "Needs pull");
         assert_ne!(compared_hint(RowState::Untracked, looked), RowState::Untracked.hint());
+    }
+
+    fn looked(relation: Option<Relation>, lean: Option<Lean>) -> Option<Compare> {
+        Some(Compare { verdict: Shallow::Differs, local_size: 1, hub_size: 2, relation, lean })
+    }
+
+    /// A lean needs a time and a size that point the same way, and is a guess:
+    /// it is never a state, and no state's action depends on it.
+    #[test]
+    fn a_lean_needs_time_and_size_to_agree() {
+        let at = |s: &str| Some(s.parse::<Timestamp>().unwrap());
+        let (old, new) = (at("2026-09-01T00:00:00Z"), at("2026-09-15T00:00:00Z"));
+        // Local newer and larger, or the same size.
+        assert_eq!(lean_of(new, old, 10, 5), Some(Lean::Local));
+        assert_eq!(lean_of(new, old, 5, 5), Some(Lean::Local));
+        // Newer but smaller: the size points against the time.
+        assert_eq!(lean_of(new, old, 4, 5), None);
+        // The hub's the newer and the larger.
+        assert_eq!(lean_of(old, new, 5, 10), Some(Lean::Hub));
+        assert_eq!(lean_of(old, new, 10, 5), None);
+        // The same time, or a time missing on either side.
+        assert_eq!(lean_of(old, old, 10, 5), None);
+        assert_eq!(lean_of(None, old, 10, 5), None);
+        assert_eq!(lean_of(new, None, 10, 5), None);
+    }
+
+    /// What the content proved names the row's state; what is only guessed
+    /// leaves the state, its label and its action alone and changes the words.
+    #[test]
+    fn a_proof_sets_the_state_and_a_guess_only_the_hint() {
+        use RowState::*;
+        assert_eq!(RowState::of_relation(Relation::Same), InSync);
+        assert_eq!(RowState::of_relation(Relation::LocalAhead), Ahead);
+        assert_eq!(RowState::of_relation(Relation::HubAhead), Behind);
+        assert_eq!(RowState::of_relation(Relation::Diverged), Diverged);
+
+        // Proven: the row is Ahead, Behind or Diverged, labelled as those are,
+        // and says it was read from the hub's copy.
+        for (state, relation, said) in [
+            (Ahead, Relation::LocalAhead, "goes on from the hub's"),
+            (Behind, Relation::HubAhead, "goes on from this machine's"),
+            (Diverged, Relation::Diverged, "Each side has something"),
+        ] {
+            let c = looked(Some(relation), None);
+            assert_eq!(compared_label(state, c), state.label());
+            assert!(compared_hint(state, c).contains(said), "{state:?}");
+        }
+
+        // Guessed: still "Differs", still a pull, and the hint says it is a guess.
+        let local = looked(None, Some(Lean::Local));
+        let hub = looked(None, Some(Lean::Hub));
+        let unknown = looked(None, None);
+        for c in [local, hub, unknown] {
+            assert_eq!(compared_label(Untracked, c), "Differs");
+        }
+        assert_eq!(Untracked.action(), Some(SyncAction::Pull));
+        assert!(compared_hint(Untracked, local).contains("This machine's copy looks newer"));
+        assert!(compared_hint(Untracked, local).contains("only a guess"));
+        assert!(compared_hint(Untracked, hub).contains("The hub's copy looks newer"));
+        assert!(compared_hint(Untracked, unknown).contains("takes the content to tell"));
+        // Nothing but a lean on an uncompared session is reworded.
+        assert_eq!(compared_hint(InSync, local), InSync.hint());
+        assert_eq!(compared_hint(Untracked, None), Untracked.hint());
+    }
+
+    #[test]
+    fn a_comparison_serializes_what_it_proved_and_what_it_guessed() {
+        let json = serde_json::to_value(looked(Some(Relation::LocalAhead), None).unwrap()).unwrap();
+        assert_eq!(json["verdict"], "differs");
+        assert_eq!(json["relation"], "local_ahead");
+        assert!(json["lean"].is_null());
+        let json = serde_json::to_value(looked(None, Some(Lean::Hub)).unwrap()).unwrap();
+        assert!(json["relation"].is_null());
+        assert_eq!(json["lean"], "hub");
+    }
+
+    /// A result stands for a caller that would not read the hub's copy
+    /// either; one that would read it is not answered from a result that did
+    /// not. A copy that was read, or never could be, is final.
+    #[test]
+    fn a_remembered_comparison_is_reused_only_when_asking_again_could_not_add_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        std::fs::write(&path, "{}\n").unwrap();
+        let session = bundle::session_at(AgentKind::ClaudeCode, "cache-test", crate::model::SessionLocation::JsonlFile { path });
+        let mut hub = head(AgentKind::ClaudeCode, "cache-test", None);
+        hub.rev = "rev-1".into();
+        hub.total_size = 5 * 1024 * 1024;
+        let (k, pair) = pair_key(&session, &hub);
+        let put = |pair: &str, settled: bool| {
+            compare_cache().lock().unwrap().insert(k.clone(), (pair.to_string(), looked(None, None).unwrap(), settled));
+        };
+
+        put(&pair, false);
+        assert!(cached_compare(&session, &hub, RELATE_LISTING_MAX).is_some(), "over what a listing reads");
+        assert!(cached_compare(&session, &hub, RELATE_COMPARE_MAX).is_none(), "but the explicit compare reads it");
+        put(&pair, true);
+        assert!(cached_compare(&session, &hub, RELATE_COMPARE_MAX).is_some(), "read once, final");
+        // Either side moved on: a different pair, a different answer.
+        put("some-other-pair", true);
+        assert!(cached_compare(&session, &hub, RELATE_LISTING_MAX).is_none());
+        compare_cache().lock().unwrap().remove(&k);
     }
 
     /// Every state says what to do about it, in words; two states never

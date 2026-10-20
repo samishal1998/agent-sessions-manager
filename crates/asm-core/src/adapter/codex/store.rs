@@ -4,7 +4,7 @@
 //! so it drives the listing; the filesystem is then swept for rollouts the
 //! database has not adopted, which codex hides but asm should not.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use jiff::Timestamp;
@@ -124,7 +124,7 @@ pub(super) fn sessions(
                     } else {
                         SessionStatus::Idle
                     },
-                    parent: children.iter().find(|(child, _)| *child == id).map(|(_, p)| p.clone()),
+                    parent: children.get(&id).cloned(),
                     agent_version: optional_str("cli_version"),
                     size_bytes: std::fs::metadata(&rollout).ok().map(|m| m.len()),
                 })
@@ -149,14 +149,14 @@ pub(super) fn sessions(
 }
 
 /// child id -> parent id, for the sessions codex spawned as subagents.
-fn spawned_children(conn: &Connection) -> Vec<(String, String)> {
+fn spawned_children(conn: &Connection) -> HashMap<String, String> {
     let Ok(mut stmt) =
         conn.prepare("SELECT child_thread_id, parent_thread_id FROM thread_spawn_edges")
     else {
-        return Vec::new();
+        return HashMap::new();
     };
     let Ok(rows) = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?))) else {
-        return Vec::new();
+        return HashMap::new();
     };
     rows.flatten().collect()
 }

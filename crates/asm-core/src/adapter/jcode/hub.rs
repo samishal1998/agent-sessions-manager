@@ -90,6 +90,38 @@ fn compare(local: &Value, hub: &Value) -> InstallOutcome {
     }
 }
 
+/// How the copy here relates to the hub's, by the comparison `install` makes
+/// of them (`compare`) and without writing anything. Only the hub's snapshot
+/// is fetched. `None` when there is no copy here, or either side holds turns
+/// jcode has not folded into its snapshot yet: the snapshot is then only half
+/// of that side's conversation, and comparing halves proves nothing.
+pub(crate) fn relate(
+    adapter: &JCodeAdapter,
+    session: &Session,
+    manifest: &Manifest,
+    blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
+) -> Result<Option<bundle::Relation>, CoreError> {
+    let id = &session.handle.native_id;
+    let sha = manifest
+        .files
+        .iter()
+        .find(|f| f.path == "snapshot.json")
+        .and_then(|f| f.sha256.as_deref())
+        .ok_or_else(|| CoreError::Invalid { msg: "bundle has no snapshot".into() })?;
+    let hub = read_json(&blob(sha)?)?;
+    if hub.get("id").and_then(Value::as_str) != Some(id.as_str()) {
+        return Err(CoreError::Invalid { msg: format!("the snapshot is not session {id}") });
+    }
+    let dest = adapter.sessions_dir().join(format!("{id}.json"));
+    if !dest.is_file()
+        || has_journal(&dest)
+        || manifest.files.iter().any(|f| f.path == "journal.jsonl" && f.size > 0)
+    {
+        return Ok(None);
+    }
+    Ok(bundle::Relation::of(compare(&read_json(&dest)?, &hub)))
+}
+
 /// Filed under `dir` here: jcode resumes a session in its `working_dir`.
 fn filed_at(mut snapshot: Value, dir: &Path) -> Vec<u8> {
     if let Some(object) = snapshot.as_object_mut() {
@@ -262,6 +294,63 @@ mod tests {
         assert_eq!(compare(&snapshot(&["one"], "/x", ""), &a), InstallOutcome::Replaced);
         assert_eq!(compare(&snapshot(&["one", "two", "three"], "/x", ""), &a), InstallOutcome::Ahead);
         assert_eq!(compare(&snapshot(&["one", "other"], "/x", ""), &a), InstallOutcome::Diverged);
+    }
+
+    /// `relate` says what `install` is about to find, and writes nothing.
+    #[test]
+    fn relating_says_what_an_install_finds_and_writes_nothing() {
+        use bundle::Relation::*;
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("notes");
+        std::fs::create_dir_all(&project).unwrap();
+        let adapter = JCodeAdapter::with_root(dir.path().join("jcode"));
+        let id = "session_otter_1790000000000_0123456789abcdef";
+        let hub_with = |texts: &[&str]| {
+            let bytes = serde_json::to_vec(&snapshot(texts, "/home/a/notes", "")).unwrap();
+            let sha = fsutil::sha256_hex(&bytes);
+            let path = dir.path().join(&sha);
+            std::fs::write(&path, &bytes).unwrap();
+            let manifest: Manifest = serde_json::from_value(json!({
+                "schema": crate::hub::manifest::SCHEMA, "agent": "jcode", "id": id,
+                "project_root": "/home/a/notes", "project_root_portable": "/home/a/notes",
+                "canonical": canonical_of(&snapshot(texts, "", "")),
+                "files": [{ "path": "snapshot.json", "sha256": sha, "size": bytes.len() }],
+            }))
+            .unwrap();
+            (manifest, path)
+        };
+        let pull = |hub: &(Manifest, PathBuf)| install(&adapter, &hub.0, &|_| Ok(hub.1.clone()), Some(&project), None);
+        pull(&hub_with(&["one", "two"])).unwrap();
+        let here = crate::hub::bundle::session_at(
+            crate::model::AgentKind::JCode,
+            id,
+            crate::model::SessionLocation::JsonlFile { path: adapter.sessions_dir().join(format!("{id}.json")) },
+        );
+
+        let relate_then_pull = |hub: &(Manifest, PathBuf)| {
+            let before = std::fs::read(adapter.sessions_dir().join(format!("{id}.json"))).unwrap();
+            let related = relate(&adapter, &here, &hub.0, &|_| Ok(hub.1.clone())).unwrap();
+            assert_eq!(std::fs::read(adapter.sessions_dir().join(format!("{id}.json"))).unwrap(), before, "relating writes nothing");
+            let installed = pull(hub).unwrap().outcome;
+            assert_eq!(related, bundle::Relation::of(installed), "install found {installed:?}");
+            related
+        };
+        assert_eq!(relate_then_pull(&hub_with(&["one", "two"])), Some(Same));
+        assert_eq!(relate_then_pull(&hub_with(&["one"])), Some(LocalAhead));
+        assert_eq!(relate_then_pull(&hub_with(&["one", "other"])), Some(Diverged));
+
+        // Behind: an install would replace this copy, after a backup in asm's
+        // data dir, which a unit test does not write to. `compare` is what it
+        // acts on.
+        let hub = hub_with(&["one", "two", "three"]);
+        let snapshot_here = adapter.sessions_dir().join(format!("{id}.json"));
+        assert_eq!(relate(&adapter, &here, &hub.0, &|_| Ok(hub.1.clone())).unwrap(), Some(HubAhead));
+        assert_eq!(compare(&read_json(&snapshot_here).unwrap(), &read_json(&hub.1).unwrap()), InstallOutcome::Replaced);
+
+        // Turns jcode has not folded into the snapshot: half a conversation,
+        // so nothing is said about it.
+        std::fs::write(journal_of(&snapshot_here), b"{}\n").unwrap();
+        assert_eq!(relate(&adapter, &here, &hub.0, &|_| Ok(hub.1.clone())).unwrap(), None);
     }
 
     #[test]

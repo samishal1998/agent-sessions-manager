@@ -210,10 +210,19 @@ pub struct AgentHealth {
 }
 
 pub fn doctor() -> Result<DoctorReport, CoreError> {
+    doctor_with(|adapter| Ok(adapter.sessions(&SessionFilter::default())?.len()))
+}
+
+/// `doctor`, with the session counts supplied. Counting is a full listing
+/// of the store, and a frontend that has just listed it already has the
+/// number.
+pub fn doctor_with(
+    session_count: impl Fn(&Adapter) -> Result<usize, CoreError>,
+) -> Result<DoctorReport, CoreError> {
     let mut agents = Vec::new();
     for adapter in Adapter::available() {
         let detect = adapter.detect();
-        let session_count = adapter.sessions(&SessionFilter::default())?.len();
+        let session_count = session_count(&adapter)?;
         let mut duplicate_session_ids = Vec::new();
         let mut warnings = Vec::new();
         match &adapter {

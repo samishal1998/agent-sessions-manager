@@ -119,6 +119,46 @@ fn sweeps_up_rollouts_the_database_has_not_adopted() {
     assert_eq!(sessions.len(), 2, "the stray notes.txt must not become a session");
 }
 
+/// A thread codex spawned from another is that thread's child: out of the
+/// default listing, in the full one with its parent named.
+#[test]
+fn a_spawned_thread_is_a_child_of_the_thread_that_spawned_it() {
+    let (dir, adapter, cwd) = store();
+    let conn = rusqlite::Connection::open(dir.path().join("state_5.sqlite")).unwrap();
+    let path = dir
+        .path()
+        .join(format!("sessions/2026/08/20/rollout-2026-08-20T19-34-40-{ORPHAN}.jsonl"));
+    conn.execute(
+        "INSERT INTO threads (id, rollout_path, created_at, updated_at, source, model_provider,
+             cwd, title, sandbox_policy, approval_mode)
+         VALUES (?1, ?2, 1787253280, 1787253300, 'exec', 'openai', ?3, 'Subagent', '{}', 'never')",
+        rusqlite::params![ORPHAN, path.display().to_string(), cwd],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status) VALUES (?1, ?2, 'done')",
+        rusqlite::params![TRACKED, ORPHAN],
+    )
+    .unwrap();
+    drop(conn);
+
+    let ids = |filter: &SessionFilter| -> Vec<(String, Option<String>)> {
+        let mut found: Vec<_> = adapter
+            .sessions(filter)
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.handle.native_id, s.parent))
+            .collect();
+        found.sort();
+        found
+    };
+    assert_eq!(ids(&SessionFilter::default()), vec![(TRACKED.to_string(), None)]);
+    let all = ids(&SessionFilter { include_children: true, ..SessionFilter::default() });
+    assert_eq!(all.len(), 2);
+    assert!(all.contains(&(ORPHAN.to_string(), Some(TRACKED.to_string()))), "{all:?}");
+    assert!(all.contains(&(TRACKED.to_string(), None)), "{all:?}");
+}
+
 #[test]
 fn a_short_id_separates_sessions_started_in_the_same_minute() {
     let (_dir, adapter, _cwd) = store();

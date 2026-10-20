@@ -455,7 +455,7 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             }
             if show_hub {
                 cells.push(Cell::from(match app.sync_of(s) {
-                    Some(state) => sync_span(state, app.hub_stale),
+                    Some(state) => sync_span(state, state.label(), app.hub_stale),
                     None => Span::styled("", theme::dim()),
                 }));
             }
@@ -807,8 +807,10 @@ fn status_line_of(app: &App) -> Line<'static> {
 }
 
 /// A session's place with the hub, as a glyph and the core's own words: the
-/// word carries it, the glyph and colour only help.
-fn sync_span(state: RowState, stale: bool) -> Span<'static> {
+/// word carries it, the glyph and colour only help. `label` is the state's own
+/// unless the hub's row says more, as an uncompared session found to differ
+/// does.
+fn sync_span(state: RowState, label: &str, stale: bool) -> Span<'static> {
     let (glyph, colour) = match state.action() {
         None => ("✓", theme::GOOD),
         Some(SyncAction::Push) => ("↑", theme::ACCENT),
@@ -818,7 +820,7 @@ fn sync_span(state: RowState, stale: bool) -> Span<'static> {
     let style = Style::default().fg(if state == RowState::InSync { theme::FAINT } else { colour });
     // A picture the hub has stopped refreshing is dimmed, never dropped.
     let style = if stale { style.add_modifier(Modifier::DIM) } else { style };
-    Span::styled(format!("{glyph} {}", state.label()), style)
+    Span::styled(format!("{glyph} {label}"), style)
 }
 
 /// How the hub is doing, in the corner of the status line: connection
@@ -937,7 +939,7 @@ fn draw_hub_view(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|r| {
             let mut cells = vec![
-                Cell::from(sync_span(r.state, app.hub_stale)),
+                Cell::from(sync_span(r.state, r.label, app.hub_stale)),
                 Cell::from(Span::styled(
                     r.agent.to_string(),
                     Style::default().fg(theme::agent(r.agent)),
@@ -1364,6 +1366,20 @@ mod tests {
         assert!(down.contains("hub unreachable"), "{down}");
         // The last picture survives the hub going quiet, marked as old.
         assert!(app.hub_stale && render(&app, 130, 12).contains("Needs push"));
+    }
+
+    /// An uncompared session found to differ is called what the row calls it
+    /// ("Differs"), as the CLI and the web UI do; the list column, which knows
+    /// only the state, keeps the state's own word.
+    #[test]
+    fn the_hub_view_uses_the_rows_own_label() {
+        let mut app = app();
+        let mut row = hub_row(&app, 0, RowState::Untracked);
+        row.label = "Differs";
+        app.set_hub_for_test(HubStatus { joined: true, connected: true, rows: vec![row], ..Default::default() });
+        app.hub_view = true;
+        let screen = render(&app, 120, 14);
+        assert!(screen.contains("Differs") && !screen.contains("Not compared"), "{screen}");
     }
 
     /// The hub view lists everything, the things that need a decision first,

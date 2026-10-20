@@ -33,7 +33,7 @@ use crate::CoreError;
 
 /// Bumped whenever the schema or the text-extraction rules change; a
 /// mismatch rebuilds from scratch.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 pub struct Index {
     conn: Connection,
@@ -67,6 +67,11 @@ impl Index {
     }
 
     /// Create the schema, or wipe and recreate it if the version moved.
+    ///
+    /// Opening an index whose schema is current writes nothing, so a search
+    /// never waits behind the indexer's transaction just to open the file.
+    /// (Nor is anything needed to tune the FTS table: a new one starts with
+    /// the default `automerge`, which is what merging should be at.)
     fn prepare(&mut self) -> Result<(), CoreError> {
         // WAL keeps searches readable while a refresh writes; the busy
         // timeout covers a CLI, a TUI and the web server refreshing at once.
@@ -83,13 +88,6 @@ impl Index {
                  PRAGMA cache_size=-32000;",
             )
             .map_err(self.sql_err())?;
-
-        // An earlier build wrote `automerge=16` into the FTS table, where
-        // it persists; back to the default, so merging keeps up with
-        // writing instead of leaving segments for a search to walk.
-        let _ = self
-            .conn
-            .execute_batch("INSERT INTO message_fts(message_fts, rank) VALUES('automerge', 4);");
 
         let existing: Option<u32> = self
             .conn

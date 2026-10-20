@@ -49,6 +49,33 @@ pub(crate) fn collect(adapter: &CodexAdapter, session: &Session) -> Result<Bundl
     Ok(Bundle { files, canonical, extra: json!({ "rollout_rel": rollout_rel.display().to_string() }) })
 }
 
+/// How the rollout here relates to the hub's, by the comparison `install`
+/// makes of them (`bundle::prefix_outcome`) and without writing anything.
+/// Both sides are cut at their last complete line, as `collect` does: a
+/// line codex is writing right now is not part of the conversation yet.
+pub(crate) fn relate(
+    session: &Session,
+    manifest: &Manifest,
+    blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
+) -> Result<Option<bundle::Relation>, CoreError> {
+    let sha = manifest
+        .files
+        .iter()
+        .find(|f| f.path == "rollout.jsonl")
+        .and_then(|f| f.sha256.as_deref())
+        .ok_or_else(|| CoreError::Invalid { msg: "bundle has no rollout".into() })?;
+    let src = blob(sha)?;
+    let incoming = std::fs::read(&src).map_err(|e| CoreError::io(&src, e))?;
+    let SessionLocation::JsonlFile { path } = &session.handle.location else {
+        return Err(CoreError::Invalid { msg: "codex session has no rollout file".into() });
+    };
+    let local = std::fs::read(path).map_err(|e| CoreError::io(path, e))?;
+    Ok(bundle::Relation::of(bundle::prefix_outcome(
+        bundle::complete_lines(&local),
+        bundle::complete_lines(&incoming),
+    )))
+}
+
 /// Codex holds an flock on `thread-writer-locks/<id>.lock` while a process
 /// writes the thread (measured on 0.151). Taking it proves the session idle
 /// and keeps codex from starting to write while asm does; dropping the file
@@ -196,17 +223,13 @@ pub(crate) fn install(
                     msg: format!("{} ends in an unfinished line; resume the session once so codex finishes it", path.display()),
                 });
             }
-            let outcome = if local_raw == incoming {
-                InstallOutcome::InSync
-            } else if incoming.starts_with(&local_raw) {
-                let delta = &incoming[local_raw.len()..];
-                let mut f = std::fs::OpenOptions::new().append(true).open(path).map_err(|e| CoreError::io(path, e))?;
-                f.write_all(delta).map_err(|e| CoreError::io(path, e))?;
-                InstallOutcome::FastForward { appended: delta.len() as u64 }
-            } else if local_raw.starts_with(incoming) {
-                InstallOutcome::Ahead
-            } else {
-                InstallOutcome::Diverged
+            let outcome = match bundle::prefix_outcome(&local_raw, incoming) {
+                InstallOutcome::FastForward { appended } => {
+                    let mut f = std::fs::OpenOptions::new().append(true).open(path).map_err(|e| CoreError::io(path, e))?;
+                    f.write_all(&incoming[local_raw.len()..]).map_err(|e| CoreError::io(path, e))?;
+                    InstallOutcome::FastForward { appended }
+                }
+                other => other,
             };
             (outcome, path.clone())
         }
@@ -270,6 +293,52 @@ mod tests {
 
         let err = pull(&adapter, &bundle_of(Path::new("/nonexistent/mercury"), &["x"]), dir.path()).unwrap_err();
         assert!(err.to_string().contains("continues it only there"), "{err}");
+    }
+
+    /// `relate` says what `install` is about to find, and writes nothing.
+    #[test]
+    fn relating_says_what_an_install_finds_and_writes_nothing() {
+        use bundle::Relation::*;
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("mercury");
+        std::fs::create_dir_all(&project).unwrap();
+        let adapter = CodexAdapter::with_root(dir.path().join("codex"));
+        let first = pull(&adapter, &bundle_of(&project, &["session_meta", "turn"]), dir.path()).unwrap();
+        let here = crate::hub::bundle::session_at(
+            crate::model::AgentKind::Codex,
+            ID,
+            SessionLocation::JsonlFile { path: first.path.clone() },
+        );
+
+        let relate_then_pull = |pushed: &(Manifest, HashMap<String, Vec<u8>>)| {
+            let blob = |sha: &str| {
+                let path = dir.path().join(format!("relate-{sha}"));
+                std::fs::write(&path, &pushed.1[sha]).unwrap();
+                Ok(path)
+            };
+            let before = std::fs::read(&first.path).unwrap();
+            let related = relate(&here, &pushed.0, &blob).unwrap();
+            assert_eq!(std::fs::read(&first.path).unwrap(), before, "relating writes nothing");
+            let installed = pull(&adapter, pushed, dir.path()).unwrap().outcome;
+            assert_eq!(related, bundle::Relation::of(installed), "install found {installed:?}");
+            related
+        };
+        assert_eq!(relate_then_pull(&bundle_of(&project, &["session_meta", "turn"])), Some(Same));
+        assert_eq!(relate_then_pull(&bundle_of(&project, &["session_meta", "turn", "reply"])), Some(HubAhead));
+        // Now the copy here has the reply; the hub's older one is behind it.
+        assert_eq!(relate_then_pull(&bundle_of(&project, &["session_meta", "turn"])), Some(LocalAhead));
+        assert_eq!(relate_then_pull(&bundle_of(&project, &["session_meta", "elsewhere"])), Some(Diverged));
+        // A line codex is writing right now is not part of either side yet.
+        let mut raw = std::fs::read(&first.path).unwrap();
+        raw.extend_from_slice(b"{\"type\":\"tu");
+        std::fs::write(&first.path, raw).unwrap();
+        let blob = |sha: &str| {
+            let (_, blobs) = bundle_of(&project, &["session_meta", "turn", "reply"]);
+            let path = dir.path().join(format!("torn-{sha}"));
+            std::fs::write(&path, &blobs[sha]).unwrap();
+            Ok(path)
+        };
+        assert_eq!(relate(&here, &bundle_of(&project, &["session_meta", "turn", "reply"]).0, &blob).unwrap(), Some(Same));
     }
 
     #[test]

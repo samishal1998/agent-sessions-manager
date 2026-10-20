@@ -83,6 +83,39 @@ pub(crate) fn collect(adapter: &AntigravityAdapter, session: &Session) -> Result
     Ok(Bundle { files, canonical, extra: Value::Null })
 }
 
+/// The transcript here against the hub's: the database is rewritten whole by
+/// agy, so an older copy is one whose transcript is a prefix of the hub's.
+fn compare(local: &[u8], hub: &[u8]) -> InstallOutcome {
+    match bundle::prefix_outcome(local, hub) {
+        InstallOutcome::FastForward { .. } => InstallOutcome::Replaced,
+        other => other,
+    }
+}
+
+/// How the conversation here relates to the hub's, by the comparison
+/// `install` makes of them (`compare`) and without writing anything. Only the
+/// hub's transcript is fetched, never its database. `None` when either side
+/// has no transcript: `install` calls that a divergence, but with nothing to
+/// tell the two databases apart by, nothing is known about which is ahead.
+pub(crate) fn relate(
+    adapter: &AntigravityAdapter,
+    session: &Session,
+    manifest: &Manifest,
+    blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
+) -> Result<Option<bundle::Relation>, CoreError> {
+    let id = &session.handle.native_id;
+    let Some(sha) = manifest.files.iter().find(|f| f.path == TRANSCRIPT).and_then(|f| f.sha256.as_deref()) else {
+        return Ok(None);
+    };
+    let path = blob(sha)?;
+    let hub = std::fs::read(&path).map_err(|e| CoreError::io(&path, e))?;
+    let Ok(local) = std::fs::read(adapter.transcript_of(id)) else { return Ok(None) };
+    if !adapter.conversations_dir().join(format!("{id}.db")).is_file() {
+        return Ok(None);
+    }
+    Ok(bundle::Relation::of(compare(bundle::complete_lines(&local), bundle::complete_lines(&hub))))
+}
+
 /// Install a pulled conversation here, under its original id. The database
 /// is rewritten whole by agy, so an older copy here is one whose transcript
 /// is a prefix of the hub's; it is backed up and replaced.
@@ -140,16 +173,7 @@ pub(crate) fn install(
             });
         };
         let local = bundle::complete_lines(&raw);
-        let content = if local == hub_lines.as_slice() {
-            InstallOutcome::InSync
-        } else if hub_lines.starts_with(local) {
-            InstallOutcome::Replaced
-        } else if local.starts_with(hub_lines) {
-            InstallOutcome::Ahead
-        } else {
-            InstallOutcome::Diverged
-        };
-        bundle::with_base(content, &fsutil::sha256_hex(local), &manifest.canonical, base)
+        bundle::with_base(compare(local, hub_lines), &fsutil::sha256_hex(local), &manifest.canonical, base)
     } else {
         InstallOutcome::New
     };
@@ -262,6 +286,54 @@ mod tests {
 
         assert_eq!(pull(&adapter, &pushed, dir.path()).unwrap().outcome, InstallOutcome::InSync);
         assert_eq!(pull(&adapter, &bundle_of(&["hello", "other"]), dir.path()).unwrap().outcome, InstallOutcome::Diverged);
+    }
+
+    /// `relate` says what `install` is about to find, and writes nothing.
+    #[test]
+    fn relating_says_what_an_install_finds_and_writes_nothing() {
+        use bundle::Relation::*;
+        let dir = tempfile::tempdir().unwrap();
+        let adapter = AntigravityAdapter::with_root(dir.path().join("agy"));
+        pull(&adapter, &bundle_of(&["hello", "reply"]), dir.path()).unwrap();
+        let here = crate::hub::bundle::session_at(
+            crate::model::AgentKind::Antigravity,
+            ID,
+            crate::model::SessionLocation::Archive { dir: adapter.root().join("brain").join(ID) },
+        );
+        let relate_in = |pushed: &(Manifest, HashMap<String, Vec<u8>>)| {
+            let blob = |sha: &str| {
+                let path = dir.path().join(format!("relate-{sha}"));
+                std::fs::write(&path, &pushed.1[sha]).unwrap();
+                Ok(path)
+            };
+            let before = std::fs::read(adapter.transcript_of(ID)).unwrap();
+            let related = relate(&adapter, &here, &pushed.0, &blob).unwrap();
+            assert_eq!(std::fs::read(adapter.transcript_of(ID)).unwrap(), before, "relating writes nothing");
+            related
+        };
+        // The ones an install leaves alone are run through it as well.
+        for (hub, want) in [
+            (bundle_of(&["hello", "reply"]), Same),
+            (bundle_of(&["hello"]), LocalAhead),
+            (bundle_of(&["hello", "other"]), Diverged),
+        ] {
+            let related = relate_in(&hub);
+            assert_eq!(related, Some(want));
+            let installed = pull(&adapter, &hub, dir.path()).unwrap().outcome;
+            assert_eq!(related, bundle::Relation::of(installed), "install found {installed:?}");
+        }
+        // Behind: an install would replace this copy, after a backup in asm's
+        // data dir, which a unit test does not write to. `compare` is what it
+        // acts on.
+        let ahead = bundle_of(&["hello", "reply", "more"]);
+        assert_eq!(relate_in(&ahead), Some(HubAhead));
+        assert_eq!(compare(b"{\"step\":\"hello\"}\n", &ahead.1[&ahead.0.canonical]), InstallOutcome::Replaced);
+
+        // No transcript on the hub's side: nothing to tell the databases apart
+        // by (install says diverged; that is not known).
+        let mut bare = bundle_of(&["hello", "reply"]);
+        bare.0.files.retain(|f| f.path != TRANSCRIPT);
+        assert_eq!(relate_in(&bare), None);
     }
 
     #[test]

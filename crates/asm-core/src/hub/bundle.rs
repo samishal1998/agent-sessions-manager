@@ -232,6 +232,81 @@ pub enum InstallOutcome {
     Diverged,
 }
 
+/// How this machine's copy of a session stands against the hub's, found
+/// without installing or writing anything: what an install would find, said
+/// as which side is ahead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Relation {
+    /// The same conversation on both sides.
+    Same,
+    /// This machine's copy contains the hub's and goes on from it: push it.
+    LocalAhead,
+    /// The hub's copy contains this machine's and goes on from it: pull it.
+    HubAhead,
+    /// Each side has something the other lacks.
+    Diverged,
+}
+
+impl Relation {
+    /// What a comparison of two copies means. An outcome that is not the
+    /// result of a comparison (`New`, `Renamed`) says nothing about which
+    /// side is ahead.
+    pub(crate) fn of(outcome: InstallOutcome) -> Option<Relation> {
+        match outcome {
+            InstallOutcome::InSync => Some(Relation::Same),
+            InstallOutcome::FastForward { .. } | InstallOutcome::Replaced => Some(Relation::HubAhead),
+            InstallOutcome::Ahead => Some(Relation::LocalAhead),
+            InstallOutcome::Diverged => Some(Relation::Diverged),
+            InstallOutcome::New | InstallOutcome::Renamed => None,
+        }
+    }
+}
+
+/// An append-only log here against the hub's: behind when this copy is a
+/// prefix of the hub's (`FastForward`, the bytes the hub has beyond it), ahead
+/// when the hub's is a prefix of this one. One rule for the install that acts
+/// on it and the `relate` that only reads it, so the two cannot drift.
+pub(crate) fn prefix_outcome(local: &[u8], incoming: &[u8]) -> InstallOutcome {
+    if local == incoming {
+        InstallOutcome::InSync
+    } else if incoming.starts_with(local) {
+        InstallOutcome::FastForward { appended: (incoming.len() - local.len()) as u64 }
+    } else if local.starts_with(incoming) {
+        InstallOutcome::Ahead
+    } else {
+        InstallOutcome::Diverged
+    }
+}
+
+/// How this machine's copy of `session` relates to the hub revision
+/// `manifest` describes, by the same comparison that agent's install makes
+/// and without writing anything. `blob` fetches a file of the revision by
+/// its hash; only the one file the comparison reads is asked for.
+///
+/// `None` when no honest answer exists: the two sides have nothing to tell
+/// them apart by, the bundle is of another generation than this machine's
+/// store, or the local copy is not readable. What an install also checks to
+/// be allowed to write (a live session, a lock, the target directory) is not
+/// part of the comparison and is not looked at.
+pub fn relate(
+    session: &Session,
+    manifest: &super::manifest::Manifest,
+    blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
+) -> Result<Option<Relation>, CoreError> {
+    // A hash from the hub becomes a file name in the caller's scratch space.
+    manifest.validate().map_err(|msg| CoreError::Invalid { msg })?;
+    let adapter = crate::ops::adapter_for(session.handle.agent)
+        .ok_or(CoreError::StoreNotFound { path: PathBuf::new() })?;
+    match &adapter {
+        Adapter::ClaudeCode(_) => crate::adapter::claude::hub::relate(session, manifest, blob),
+        Adapter::Codex(_) => crate::adapter::codex::hub::relate(session, manifest, blob),
+        Adapter::JCode(a) => crate::adapter::jcode::hub::relate(a, session, manifest, blob),
+        Adapter::OpenCode(a) => crate::adapter::opencode::hub::relate(a, session, manifest, blob),
+        Adapter::Antigravity(a) => crate::adapter::antigravity::hub::relate(a, session, manifest, blob),
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Installed {
     pub outcome: InstallOutcome,
@@ -270,6 +345,27 @@ pub fn restorable(agent: AgentKind) -> bool {
     )
 }
 
+/// A bare session at `location`, for the adapters' `relate` tests, which read
+/// nothing of it but where it lives.
+#[cfg(test)]
+pub(crate) fn session_at(agent: AgentKind, id: &str, location: crate::model::SessionLocation) -> Session {
+    Session {
+        handle: crate::model::SessionRef { agent, native_id: id.into(), location },
+        title: None,
+        slug: None,
+        project_root: PathBuf::new(),
+        git_branch: None,
+        created: None,
+        updated: None,
+        model: None,
+        usage: Default::default(),
+        status: crate::model::SessionStatus::Idle,
+        parent: None,
+        agent_version: None,
+        size_bytes: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,6 +385,30 @@ mod tests {
         // No record: the contents decide.
         assert_eq!(with_base(Replaced, "here", "hub", None), Replaced);
         assert_eq!(with_base(Diverged, "same", "same", None), InSync);
+    }
+
+    #[test]
+    fn two_logs_are_told_apart_by_which_is_a_prefix_of_the_other() {
+        use InstallOutcome::*;
+        assert_eq!(prefix_outcome(b"a\nb\n", b"a\nb\n"), InSync);
+        assert_eq!(prefix_outcome(b"a\n", b"a\nb\n"), FastForward { appended: 2 });
+        assert_eq!(prefix_outcome(b"a\nb\n", b"a\n"), Ahead);
+        assert_eq!(prefix_outcome(b"a\nx\n", b"a\nb\n"), Diverged);
+        assert_eq!(prefix_outcome(b"", b"a\n"), FastForward { appended: 2 });
+    }
+
+    #[test]
+    fn an_install_outcome_reads_as_which_side_is_ahead() {
+        use InstallOutcome::*;
+        assert_eq!(Relation::of(InSync), Some(Relation::Same));
+        assert_eq!(Relation::of(FastForward { appended: 1 }), Some(Relation::HubAhead));
+        assert_eq!(Relation::of(Replaced), Some(Relation::HubAhead));
+        assert_eq!(Relation::of(Ahead), Some(Relation::LocalAhead));
+        assert_eq!(Relation::of(Diverged), Some(Relation::Diverged));
+        // Not results of comparing two copies.
+        assert_eq!(Relation::of(New), None);
+        assert_eq!(Relation::of(Renamed), None);
+        assert_eq!(serde_json::to_string(&Relation::LocalAhead).unwrap(), "\"local_ahead\"");
     }
 
     #[test]

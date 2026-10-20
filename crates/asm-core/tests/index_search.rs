@@ -561,3 +561,234 @@ fn a_turn_written_while_the_session_is_read_is_not_marked_as_indexed() {
         .unwrap();
     assert_eq!(hits.len(), 1, "and it is findable");
 }
+
+/// What the index recorded for each session's rows: `(native_id, first
+/// rowid, last rowid, message count)`, read behind the index's back.
+fn recorded(db: &std::path::Path) -> Vec<(String, Option<i64>, Option<i64>, i64)> {
+    let conn = rusqlite::Connection::open(db).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT native_id, first_rowid, last_rowid, message_count FROM indexed_session ORDER BY native_id")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+fn hits(index: &Index, text: &str) -> usize {
+    index.search(&SearchQuery { text: text.into(), limit: 50, ..Default::default() }).unwrap().len()
+}
+
+/// Change a session's transcript, so that its fingerprint moves: it is
+/// longer each round, because the file's mtime alone is not trusted to.
+fn touch(session: &Session, round: usize) {
+    let SessionLocation::JsonlFile { path } = &session.handle.location else { unreachable!() };
+    std::fs::write(path, "x".repeat(round + 2)).unwrap();
+}
+
+/// Sessions of 2, 3 and 1 messages, `b` the middle one, not yet indexed.
+fn three_sessions(dir: &std::path::Path, exporter: &Exporter) -> Vec<Session> {
+    let words = [
+        ("a", vec!["apricot one", "apricot two"]),
+        ("b", vec!["bilberry one", "bilberry two", "bilberry three"]),
+        ("c", vec!["cherry one"]),
+    ];
+    words
+        .into_iter()
+        .map(|(id, texts)| {
+            let transcript = dir.join(format!("{id}.jsonl"));
+            std::fs::write(&transcript, id).unwrap();
+            let messages = texts.into_iter().map(|t| text_message(IrRole::User, t)).collect();
+            exporter.set(id, ir(id, messages));
+            session(id, &transcript, "/proj/one")
+        })
+        .collect()
+}
+
+/// The session's rows are deleted by the range recorded for them, which is
+/// only right if the range really is the session's rows and nobody else's.
+#[test]
+fn a_reindexed_session_leaves_its_neighbours_rows_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = Exporter::new();
+    let sessions = three_sessions(dir.path(), &exporter);
+    let mut index = open_index(dir.path());
+    index.refresh_with(&sessions, |s| exporter.export(s), |_| {}).unwrap();
+    assert_eq!(exporter.take_calls().len(), 3);
+
+    // One unbroken run of rowids per session, as many as it has messages,
+    // and no two sessions share one.
+    let db = dir.path().join("index/sessions.db");
+    let ranges = recorded(&db);
+    let mut seen = Vec::new();
+    for (id, first, last, count) in &ranges {
+        let (first, last) = (first.expect(id), last.expect(id));
+        assert_eq!(last - first + 1, *count, "{id}: a run as long as its messages");
+        assert!(seen.iter().all(|r: &(i64, i64)| last < r.0 || first > r.1), "{id}: ranges overlap");
+        seen.push((first, last));
+    }
+
+    // b grows and shrinks and grows: its old rows go each time, its new ones
+    // arrive, and a and c are never touched.
+    let rounds = [
+        vec!["bilberry"],
+        vec!["gooseberry one", "gooseberry two", "gooseberry three", "gooseberry four"],
+        vec!["loganberry"],
+    ];
+    for (round, texts) in rounds.into_iter().enumerate() {
+        touch(&sessions[1], round);
+        exporter.set("b", ir("b", texts.iter().map(|t| text_message(IrRole::User, t)).collect()));
+        let report = index.refresh_with(&sessions, |s| exporter.export(s), |_| {}).unwrap();
+        assert_eq!(report.reindexed, 1, "round {round}");
+        assert_eq!(exporter.take_calls(), vec!["b"]);
+        assert_eq!(hits(&index, "apricot"), 2, "round {round}: a is intact");
+        assert_eq!(hits(&index, "cherry"), 1, "round {round}: c is intact");
+        assert_eq!(hits(&index, texts[0].split(' ').next().unwrap()), texts.len(), "round {round}: new rows");
+        assert_eq!(index.stats().unwrap().messages, 2 + texts.len() + 1, "round {round}: no stale rows");
+    }
+    assert_eq!(hits(&index, "bilberry"), 0);
+    assert_eq!(hits(&index, "gooseberry"), 0);
+}
+
+/// A range that does not account for the session's rows is not believed:
+/// the delete still names the session, and anything it missed is found by
+/// the scan. Wrong bookkeeping costs time, never a stale or a foreign row.
+#[test]
+fn a_range_that_does_not_fit_the_session_falls_back_to_scanning() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("index/sessions.db");
+    let exporter = Exporter::new();
+    let sessions = three_sessions(dir.path(), &exporter);
+    let mut index = open_index(dir.path());
+    index.refresh_with(&sessions, |s| exporter.export(s), |_| {}).unwrap();
+
+    let tamper = |first: Option<i64>, last: Option<i64>| {
+        let conn = rusqlite::Connection::open(&db).unwrap();
+        conn.execute(
+            "UPDATE indexed_session SET first_rowid = ?1, last_rowid = ?2 WHERE native_id = 'b'",
+            rusqlite::params![first, last],
+        )
+        .unwrap();
+    };
+    let rows = recorded(&db);
+    let (a, b) = (&rows[0], &rows[1]);
+    let cases = [
+        ("unknown", None, None),
+        ("a neighbour's rows", a.1, a.2),
+        ("too narrow", b.1, b.1),
+        ("too wide", Some(1), Some(1_000_000)),
+        ("nowhere", Some(1_000_000), Some(1_000_001)),
+    ];
+    for (round, (why, first, last)) in cases.into_iter().enumerate() {
+        tamper(first, last);
+        touch(&sessions[1], round);
+        let word = format!("fruit{round}");
+        exporter.set("b", ir("b", vec![text_message(IrRole::User, &word), text_message(IrRole::User, &word)]));
+        let report = index.refresh_with(&sessions, |s| exporter.export(s), |_| {}).unwrap();
+        assert_eq!(report.reindexed, 1, "{why}");
+        assert_eq!(hits(&index, &word), 2, "{why}: the new rows");
+        assert_eq!(hits(&index, "bilberry"), 0, "{why}: the original rows are gone");
+        if round > 0 {
+            assert_eq!(hits(&index, &format!("fruit{}", round - 1)), 0, "{why}: so are the last round's");
+        }
+        assert_eq!(hits(&index, "apricot"), 2, "{why}: a is intact");
+        assert_eq!(hits(&index, "cherry"), 1, "{why}: c is intact");
+        assert_eq!(index.stats().unwrap().messages, 5, "{why}");
+    }
+
+    // The same when the session goes away rather than changing.
+    tamper(Some(1_000_000), Some(1_000_001));
+    let others = [sessions[0].clone(), sessions[2].clone()];
+    let report = index.refresh_with(&others, |s| exporter.export(s), |_| {}).unwrap();
+    assert_eq!(report.removed, 1);
+    assert_eq!(hits(&index, "fruit4"), 0, "a vanished session's rows go, wherever the range says they are");
+    assert_eq!((hits(&index, "apricot"), hits(&index, "cherry")), (2, 1));
+    assert_eq!(index.stats().unwrap().messages, 3);
+}
+
+/// An index written before rowid ranges were recorded has a table the new
+/// code cannot write to; it is discarded like any other old schema.
+#[test]
+fn an_index_from_before_rowid_ranges_is_rebuilt_and_usable() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("index/sessions.db");
+    std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let agent = AgentKind::ClaudeCode.to_string();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    // Schema version 3, as shipped.
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         CREATE TABLE indexed_session (
+             agent TEXT NOT NULL, native_id TEXT NOT NULL, title TEXT, project_root TEXT,
+             updated_ms INTEGER, status TEXT, fingerprint TEXT,
+             message_count INTEGER NOT NULL DEFAULT 0, indexed_at_ms INTEGER NOT NULL,
+             PRIMARY KEY (agent, native_id));
+         CREATE INDEX indexed_session_project ON indexed_session (project_root);
+         CREATE VIRTUAL TABLE message_fts USING fts5(
+             text, agent UNINDEXED, native_id UNINDEXED, role UNINDEXED, seq UNINDEXED, ts UNINDEXED,
+             tokenize = 'unicode61 remove_diacritics 2');
+         INSERT INTO meta VALUES ('schema_version', '3');",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO indexed_session (agent, native_id, title, project_root, status, fingerprint, message_count, indexed_at_ms)
+         VALUES (?1, 'a', 't', '/p', 'idle', 'file:1:1', 1, 0)",
+        [&agent],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO message_fts (text, agent, native_id, role, seq, ts) VALUES ('persimmon', ?1, 'a', 'user', 0, NULL)",
+        [&agent],
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut index = Index::open_at(&db).unwrap();
+    assert_eq!(index.stats().unwrap().sessions, 0, "the old rows are not read");
+    assert_eq!(hits(&index, "persimmon"), 0);
+
+    let transcript = dir.path().join("a.jsonl");
+    std::fs::write(&transcript, "a").unwrap();
+    let exporter = Exporter::new();
+    exporter.set("a", ir("a", vec![text_message(IrRole::User, "kumquat")]));
+    let sessions = vec![session("a", &transcript, "/p")];
+    let report = index.refresh_with(&sessions, |s| exporter.export(s), |_| {}).unwrap();
+    assert_eq!((report.reindexed, report.failed.len()), (1, 0));
+    assert_eq!(hits(&index, "kumquat"), 1);
+    assert_eq!(recorded(&db)[0].3, 1);
+
+    // And it carries on: the next change to the session replaces its row.
+    std::fs::write(&transcript, "aa").unwrap();
+    exporter.set("a", ir("a", vec![text_message(IrRole::User, "mangosteen")]));
+    index.refresh_with(&sessions, |s| exporter.export(s), |_| {}).unwrap();
+    assert_eq!((hits(&index, "kumquat"), hits(&index, "mangosteen")), (0, 1));
+}
+
+/// Searching has to work while the indexer is mid-transaction. Opening the
+/// index used to write (a tuning statement run on every open), and a write
+/// waits for the indexer's — five seconds, then goes ahead without it.
+#[test]
+fn opening_and_searching_do_not_wait_for_a_writer() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("index/sessions.db");
+    let transcript = dir.path().join("a.jsonl");
+    std::fs::write(&transcript, "a").unwrap();
+    let exporter = Exporter::new();
+    exporter.set("a", ir("a", vec![text_message(IrRole::User, "persimmon")]));
+    let mut index = Index::open_at(&db).unwrap();
+    index.refresh_with(&[session("a", &transcript, "/p")], |s| exporter.export(s), |_| {}).unwrap();
+    drop(index);
+
+    // The indexer, part-way through a batch.
+    let writer = rusqlite::Connection::open(&db).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    let started = std::time::Instant::now();
+    let index = Index::open_at(&db).unwrap();
+    assert_eq!(hits(&index, "persimmon"), 1);
+    assert!(index.stats().unwrap().sessions == 1);
+    let waited = started.elapsed();
+    writer.execute_batch("ROLLBACK").unwrap();
+    assert!(waited < std::time::Duration::from_secs(2), "opened and searched in {waited:?}, behind a writer");
+}

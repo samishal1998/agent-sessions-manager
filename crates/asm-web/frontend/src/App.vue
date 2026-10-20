@@ -601,8 +601,13 @@ async function doCompare(row) {
   progress(`Comparing ${row.short_id}…`)
   try {
     const c = await api.compare(row.agent, row.id)
-    if (c.verdict === 'identical') say(`${row.short_id} is identical on the hub: now synced.`)
-    else say(`${row.short_id} differs from the hub; pull it to see which side is ahead.`)
+    const id = row.short_id
+    if (c.verdict === 'identical' || c.relation === 'same') say(`${id} is identical on the hub: now synced.`)
+    else if (c.relation === 'local_ahead') say(`${id} is ahead of the hub: push it.`)
+    else if (c.relation === 'hub_ahead') say(`${id} is behind the hub: pull it.`)
+    else if (c.relation === 'diverged') say(`${id} was continued both here and on the hub; nothing changed.`, { tone: 'warning' })
+    else if (c.lean) say(`${id} differs from the hub and ${c.lean === 'local' ? 'this machine' : 'the hub'} looks newer; that is only a guess, pull it to see which side is ahead.`)
+    else say(`${id} differs from the hub; pull it to see which side is ahead.`)
   } catch (e) {
     fail(`Compare failed: ${e.message}`)
   }

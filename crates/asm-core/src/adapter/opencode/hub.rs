@@ -420,6 +420,45 @@ fn check_tree(hub: &Map<String, Value>, id: &str) -> Result<(), CoreError> {
     Ok(())
 }
 
+/// How the copy here relates to the hub's, by the comparison `install` makes
+/// of them (`compare`, or the 2.x one in `hub_v2`) and without writing
+/// anything or running `opencode`. Only the bundle's one file is fetched.
+/// `None` when the bundle is of the other generation than this machine's
+/// store (an install refuses that), the store cannot be read as either, or
+/// the session is not filed here.
+pub(crate) fn relate(
+    adapter: &OpenCodeAdapter,
+    session: &Session,
+    manifest: &Manifest,
+    blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
+) -> Result<Option<bundle::Relation>, CoreError> {
+    let bundle_v2 = manifest.extra.get("generation").and_then(Value::as_str) == Some(super::hub_v2::GENERATION);
+    match (adapter.schema(), bundle_v2) {
+        (super::Schema::V2, true) if !super::is_unmigrated_row(session) => {
+            return super::hub_v2::relate(adapter, manifest, blob);
+        }
+        (super::Schema::V1, false) => {}
+        _ => return Ok(None),
+    }
+    let id = &manifest.id;
+    let rows_sha = manifest
+        .files
+        .iter()
+        .find(|f| f.path == "rows.json")
+        .and_then(|f| f.sha256.as_deref())
+        .ok_or_else(|| CoreError::Invalid { msg: "bundle has no rows".into() })?;
+    let rows_path = blob(rows_sha)?;
+    let doc: Value = serde_json::from_slice(&std::fs::read(&rows_path).map_err(|e| CoreError::io(&rows_path, e))?)
+        .map_err(|e| CoreError::Invalid { msg: format!("rows.json is unreadable: {e}") })?;
+    let hub = doc.get("sessions").and_then(Value::as_object).cloned().unwrap_or_default();
+    check_tree(&hub, id)?;
+    let conn = super::super::open_ro(adapter.db())?;
+    if place_of(&conn, id).is_none() {
+        return Ok(None);
+    }
+    Ok(bundle::Relation::of(compare(&dump_tree(&conn, id), &hub)))
+}
+
 /// Install a pulled OpenCode session here, under its original id, with
 /// every descendant, todo, share and input it had.
 pub(crate) fn install(
@@ -659,6 +698,75 @@ mod tests {
         let todos: i64 = b.query_row("SELECT COUNT(*) FROM todo", [], |r| r.get(0)).unwrap();
         let inputs: i64 = b.query_row("SELECT COUNT(*) FROM session_input", [], |r| r.get(0)).unwrap();
         assert_eq!((todos, inputs), (1, 1), "what `opencode import` would drop arrives too");
+    }
+
+    /// `relate` answers with `compare`'s outcome for the store it reads, and
+    /// only for a store of the bundle's own generation.
+    #[test]
+    fn relating_reads_the_store_and_the_bundle_and_nothing_else() {
+        use bundle::Relation::*;
+        let dir = tempfile::tempdir().unwrap();
+        let a = machine_a(dir.path());
+        let hub_rows = dump_tree(&a, ROOT);
+        let manifest_of = |rows: &Map<String, Value>| {
+            let body = serde_json::to_vec(&json!({ "root": ROOT, "sessions": rows })).unwrap();
+            let sha = fsutil::sha256_hex(&body);
+            let path = dir.path().join(format!("blob-{sha}"));
+            std::fs::write(&path, &body).unwrap();
+            let manifest: Manifest = serde_json::from_value(json!({
+                "schema": crate::hub::manifest::SCHEMA, "agent": "opencode", "id": ROOT,
+                "project_root": "/home/a/billing", "project_root_portable": "/home/a/billing",
+                "canonical": "c", "files": [{ "path": "rows.json", "sha256": sha, "size": body.len() }],
+            }))
+            .unwrap();
+            (manifest, path)
+        };
+        let relate_in = |db: &str, rows: &Map<String, Value>| {
+            let (manifest, path) = manifest_of(rows);
+            let adapter = OpenCodeAdapter::with_db(dir.path().join(db));
+            let session = crate::hub::bundle::session_at(
+                crate::model::AgentKind::OpenCode,
+                ROOT,
+                crate::model::SessionLocation::SqliteRow { db: adapter.db().to_path_buf(), table: "session".into() },
+            );
+            relate(&adapter, &session, &manifest, &|_| Ok(path.clone()))
+        };
+
+        // B has the first message only, at an older time: behind.
+        let b = store(dir.path(), "proj_b", "/home/b/billing");
+        session(&b, ROOT, None, "proj_b", "/home/b/billing", 10);
+        message(&b, ROOT, "msg_1", 5);
+        assert_eq!(relate_in("proj_b.db", &hub_rows).unwrap(), Some(HubAhead));
+        assert_eq!(compare(&dump_tree(&b, ROOT), &hub_rows), InstallOutcome::Replaced);
+        // The same store against an older bundle: ahead.
+        let mut older = hub_rows.clone();
+        older[ROOT]["message"].as_array_mut().unwrap().truncate(1);
+        older[ROOT]["part"].as_array_mut().unwrap().truncate(1);
+        older.remove(CHILD);
+        let behind_a = relate_in("proj_a.db", &older).unwrap();
+        assert_eq!(behind_a, Some(LocalAhead));
+        assert_eq!(relate_in("proj_a.db", &hub_rows).unwrap(), Some(Same));
+        // Both moved.
+        message(&b, ROOT, "msg_9", 60);
+        assert_eq!(relate_in("proj_b.db", &hub_rows).unwrap(), Some(Diverged));
+        // Not filed here: nothing to compare. A bundle that is not a tree of
+        // its own is refused, as an install refuses it.
+        let c = store(dir.path(), "proj_c", "/home/c/billing");
+        drop(c);
+        assert_eq!(relate_in("proj_c.db", &hub_rows).unwrap(), None);
+        let mut stray = hub_rows.clone();
+        stray.insert("ses_victim00000000000000000".into(), json!({ "session": [] }));
+        assert!(relate_in("proj_b.db", &stray).is_err());
+        // A 2.x bundle means nothing to this 1.x store.
+        let (mut v2, path) = manifest_of(&hub_rows);
+        v2.extra = json!({ "generation": super::super::hub_v2::GENERATION });
+        let adapter = OpenCodeAdapter::with_db(dir.path().join("proj_b.db"));
+        let here = crate::hub::bundle::session_at(
+            crate::model::AgentKind::OpenCode,
+            ROOT,
+            crate::model::SessionLocation::SqliteRow { db: adapter.db().to_path_buf(), table: "session".into() },
+        );
+        assert_eq!(relate(&adapter, &here, &v2, &|_| Ok(path.clone())).unwrap(), None);
     }
 
     #[test]

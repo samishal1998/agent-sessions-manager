@@ -29,6 +29,12 @@ CREATE TABLE indexed_session (
     -- whether the session needs re-extracting.
     fingerprint   TEXT,
     message_count INTEGER NOT NULL DEFAULT 0,
+    -- The rowids of the session's rows in `message_fts`, which one
+    -- transaction writes consecutively; NULL when they are not known to be
+    -- (or there are none). Lets a session's rows be deleted by range
+    -- instead of by scanning the table.
+    first_rowid   INTEGER,
+    last_rowid    INTEGER,
     indexed_at_ms INTEGER NOT NULL,
     PRIMARY KEY (agent, native_id)
 );

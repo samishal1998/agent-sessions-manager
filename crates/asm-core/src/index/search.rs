@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use rusqlite::params;
+use rusqlite::{OptionalExtension, params};
 use serde::Serialize;
 
 use crate::CoreError;
@@ -258,6 +258,45 @@ enum Extracted {
     Failed(String),
 }
 
+/// Remove a session's rows from the text index.
+///
+/// `agent` and `native_id` are not indexed by `message_fts`, so deleting by
+/// them reads the whole table — once per session, which made a cold build
+/// quadratic in the size of the index. A session's rows are written by one
+/// transaction, so they are consecutive, and the range recorded beside the
+/// session finds them without a scan. The range only narrows the search:
+/// the delete still names the session, and if it removes anything but the
+/// number of rows recorded, the scan runs as well. A wrong range costs
+/// time, never rows.
+fn forget(tx: &rusqlite::Transaction, agent: &str, id: &str) -> rusqlite::Result<()> {
+    let recorded = tx
+        .query_row(
+            "SELECT first_rowid, last_rowid, message_count FROM indexed_session
+             WHERE agent = ?1 AND native_id = ?2",
+            params![agent, id],
+            |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, i64>(2)?)),
+        )
+        .optional()?;
+    // A session never indexed has no rows to find.
+    let Some((first, last, count)) = recorded else { return Ok(()) };
+    match (first, last) {
+        (Some(first), Some(last)) => {
+            let gone = tx.execute(
+                "DELETE FROM message_fts WHERE rowid BETWEEN ?1 AND ?2 AND agent = ?3 AND native_id = ?4",
+                params![first, last, agent, id],
+            )?;
+            if gone as i64 == count {
+                return Ok(());
+            }
+        }
+        // No messages, so no rows.
+        _ if count == 0 => return Ok(()),
+        _ => {}
+    }
+    tx.execute("DELETE FROM message_fts WHERE agent = ?1 AND native_id = ?2", params![agent, id])?;
+    Ok(())
+}
+
 impl Index {
     /// Bring the index in line with the agents' stores. `progress` is called
     /// with a short message per session actually re-extracted.
@@ -351,25 +390,34 @@ impl Index {
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 )
                 .map_err(&sql_err)?;
-            let mut forget = tx
-                .prepare("DELETE FROM message_fts WHERE agent = ?1 AND native_id = ?2")
-                .map_err(&sql_err)?;
             let mut record = tx
                 .prepare(
                     "INSERT OR REPLACE INTO indexed_session
                         (agent, native_id, title, project_root, updated_ms, status,
-                         fingerprint, message_count, indexed_at_ms)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                         fingerprint, message_count, first_rowid, last_rowid, indexed_at_ms)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 )
                 .map_err(&sql_err)?;
             let now = jiff::Timestamp::now().as_millisecond();
             for documents in batch {
-                forget.execute(params![documents.agent, documents.id]).map_err(&sql_err)?;
+                forget(&tx, &documents.agent, &documents.id).map_err(&sql_err)?;
+                let (mut first, mut last) = (None, None);
                 for (seq, role, text, ts) in &documents.messages {
                     insert
                         .execute(params![text, documents.agent, documents.id, role, *seq as i64, ts])
                         .map_err(&sql_err)?;
+                    let rowid = tx.last_insert_rowid();
+                    first.get_or_insert(rowid);
+                    last = Some(rowid);
                 }
+                // Recorded only when the rows really are one unbroken run;
+                // otherwise `forget` scans for them, as it always could.
+                let range = match (first, last) {
+                    (Some(first), Some(last)) if last - first + 1 == documents.messages.len() as i64 => {
+                        (Some(first), Some(last))
+                    }
+                    _ => (None, None),
+                };
                 record
                     .execute(params![
                         documents.agent,
@@ -380,6 +428,8 @@ impl Index {
                         documents.status,
                         documents.fingerprint,
                         documents.messages.len() as i64,
+                        range.0,
+                        range.1,
                         now,
                     ])
                     .map_err(&sql_err)?;
@@ -511,20 +561,24 @@ impl Index {
                 .map_err(self.sql_err())?;
             rows.filter_map(Result::ok).filter(|key| !seen.contains(key)).collect()
         };
-        for (agent, id) in &stale {
-            self.conn
-                .execute(
-                    "DELETE FROM message_fts WHERE agent = ?1 AND native_id = ?2",
-                    params![agent, id],
-                )
-                .map_err(self.sql_err())?;
-            self.conn
-                .execute(
+        if !stale.is_empty() {
+            let sql_err = Self::sql_err_at(self.path.clone());
+            let tx = self
+                .conn
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                .map_err(&sql_err)?;
+            for (agent, id) in &stale {
+                // Before the session's own row goes: that is where the
+                // range to delete is kept.
+                forget(&tx, agent, id).map_err(&sql_err)?;
+                tx.execute(
                     "DELETE FROM indexed_session WHERE agent = ?1 AND native_id = ?2",
                     params![agent, id],
                 )
-                .map_err(self.sql_err())?;
-            report.removed += 1;
+                .map_err(&sql_err)?;
+                report.removed += 1;
+            }
+            tx.commit().map_err(&sql_err)?;
         }
 
         Ok(report)

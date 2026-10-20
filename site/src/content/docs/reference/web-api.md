@@ -35,6 +35,7 @@ All routes are under `asm serve` (default `http://127.0.0.1:7433`). Mutating (`P
 | `POST /api/bulk` | `{"sessions": [{"agent","native_id"}…], "action": "archive" \| "unarchive" \| "delete" \| "move" \| "export" \| "import" \| "push", …}` — `move` and `export` add `"dir"`, `import` adds `"to"`. One verb over many sessions, with a per-session result. |
 | `POST /api/hub/pull` | `{"agent","id","project_dir"?}` |
 | `POST /api/hub/pull-all` | — a bulk-style report. |
+| `POST /api/hub/compare` | `{"agent","id"}` — compares one session here with the hub's copy and installs nothing: `{"verdict": "identical"\|"differs", "local_size", "hub_size", "relation", "lean"}`. Identical copies are recorded as synced. For a copy that differs, the hub's copy (up to 256 MiB) is read and related to this one the way a pull would: `relation` is `same`, `local_ahead` (also recorded as the base a push needs), `hub_ahead` or `diverged`, and `null` when it could not be proven (the agent has no such comparison, the hub did not answer). Then `lean` is `"local"`, `"hub"` or `null`: an advisory guess from the two `updated` times and sizes when both agree, and `null` whenever `relation` is set. `GET /api/hub` rows carry the same object as `compare`. |
 
 ## The hub protocol
 

@@ -457,12 +457,8 @@ impl App {
         // moment's wait.
         self.streaming = self.sessions.is_empty();
         self.incoming.clear();
+        // The projects and the stores' health come back with it.
         let _ = self.worker.tx.send(Request::Scan);
-        // Store health is cheap and worth knowing without being asked for:
-        // duplicate ids and stale locks are exactly what a browser should
-        // surface.
-        let _ = self.worker.tx.send(Request::Doctor);
-        let _ = self.worker.tx.send(Request::Projects);
     }
 
     pub fn selected_session(&self) -> Option<&Session> {
@@ -1383,7 +1379,11 @@ impl App {
                 self.input = self.filter.clone();
                 self.filter_before = self.filter.clone();
             }
-            KeyCode::Char('R') => self.request_scan(),
+            KeyCode::Char('R') => {
+                // Asked for, so git is asked again too.
+                crate::worker::forget_git();
+                self.request_scan();
+            }
             KeyCode::Enter => {
                 if let Some(session) = self.selected_session() {
                     match ops::resume_command(session) {
@@ -1948,6 +1948,24 @@ mod tests {
         app.request_scan();
         assert!(app.rescan_pending, "queued, not started under the running one");
         assert!(app.scanning);
+    }
+
+    /// A scan is one request. The projects and the stores' health used to
+    /// be asked for beside it, each listing every store again, with
+    /// everything else the worker was asked meanwhile queued behind them.
+    #[test]
+    fn a_scan_is_one_request_of_the_worker() {
+        let (tx, requests) = std::sync::mpsc::channel();
+        let worker = crate::worker::Worker {
+            tx,
+            index_tx: std::sync::mpsc::channel().0,
+            rx: std::sync::mpsc::channel().1,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let mut app = App::new(worker);
+        app.request_scan();
+        assert!(matches!(requests.try_recv(), Ok(Request::Scan)));
+        assert!(requests.try_recv().is_err(), "projects and health come back with the scan");
     }
 
     /// Esc peels back one layer at a time, and only leaves when there is

@@ -72,7 +72,10 @@ const push = computed(() => {
   if (r.state === 'untracked') return { ok: false, label: 'Pull first to compare: this machine has no record of syncing it' }
   if (r.action === 'pull') return { ok: false, label: 'Pull first: the hub has a newer copy' }
   if (r.state === 'diverged') return { ok: false, label: 'Diverged: resolve with `asm push --force`' }
-  return { ok: true, label: r.state === 'local' ? 'Push: not on the hub yet' : 'Push: changed since the last sync' }
+  if (r.state === 'local') return { ok: true, label: 'Push: not on the hub yet' }
+  // A copy never synced here that the hub's copy was read and found to be an earlier part of.
+  if (r.compare?.relation === 'local_ahead') return { ok: true, label: "Push: this copy goes on from the hub's" }
+  return { ok: true, label: 'Push: changed since the last sync' }
 })
 // HListItem sets its title as text only; the full title is also the native
 // tooltip, for a title the row has to truncate.

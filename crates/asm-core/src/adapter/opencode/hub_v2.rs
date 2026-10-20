@@ -284,6 +284,42 @@ pub(super) fn import_tree(adapter: &OpenCodeAdapter, tree: &[Value], dir: &Path)
     result
 }
 
+/// The 2.x counterpart of `hub::relate`: this machine's tree against the
+/// bundle's, by the comparison `install` makes of them (`compare`) and
+/// without running `opencode`. `None` when the session is not here, or a
+/// session of the bundle's tree is filed here outside it (an install
+/// refuses that).
+pub(crate) fn relate(
+    adapter: &OpenCodeAdapter,
+    manifest: &Manifest,
+    blob: &dyn Fn(&str) -> Result<PathBuf, CoreError>,
+) -> Result<Option<bundle::Relation>, CoreError> {
+    let id = &manifest.id;
+    let sha = manifest
+        .files
+        .iter()
+        .find(|f| f.path == FILE)
+        .and_then(|f| f.sha256.as_deref())
+        .ok_or_else(|| invalid("bundle has no sessions"))?;
+    let path = blob(sha)?;
+    let doc: Value = serde_json::from_slice(&std::fs::read(&path).map_err(|e| CoreError::io(&path, e))?)
+        .map_err(|e| invalid(format!("{FILE} is unreadable: {e}")))?;
+    let hub = parse_tree(&doc, id)?;
+    let sql = |e: rusqlite::Error| CoreError::Sqlite { db: adapter.db().to_path_buf(), source: Box::new(e) };
+    let conn = super::super::open_ro(adapter.db())?;
+    if v2::info_of(&conn, id).map_err(sql)?.is_none() {
+        return Ok(None);
+    }
+    let local_ids = v2::tree_ids(&conn, id).map_err(sql)?;
+    for t in &hub {
+        if !local_ids.iter().any(|l| l == id_of(t)) && v2::info_of(&conn, id_of(t)).map_err(sql)?.is_some() {
+            return Ok(None);
+        }
+    }
+    let local = v2::settled(&v2::transfer_tree(&conn, id, false).map_err(sql)?);
+    Ok(bundle::Relation::of(compare(&local, &hub)))
+}
+
 /// Install a pulled 2.x session here under its original ids.
 pub(crate) fn install(
     adapter: &OpenCodeAdapter,

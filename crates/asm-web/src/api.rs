@@ -169,8 +169,10 @@ async fn hub_pull(Json(body): Json<PullBody>) -> ApiResult<Value> {
 }
 
 /// Compare one session here with the hub's copy without installing anything:
-/// identical copies are recorded as synced, and a difference says which side
-/// is bigger. This is the "Compare" button.
+/// identical copies are recorded as synced, and a difference has the hub's
+/// copy read (up to 256 MiB) to say which side is ahead (`relation`), or, when
+/// it cannot be proven, an advisory `lean` from times and sizes. This is the
+/// "Compare" button.
 async fn hub_compare(Json(body): Json<PullBody>) -> ApiResult<Value> {
     blocking(move || {
         use asm_core::hub::{actions, state::SyncState};
@@ -186,7 +188,7 @@ async fn hub_compare(Json(body): Json<PullBody>) -> ApiResult<Value> {
             .find(|s| s.handle.agent.as_str() == body.agent && s.handle.native_id == body.id)
             .ok_or_else(|| err(StatusCode::NOT_FOUND, "this machine does not have that session"))?;
         let mut state = SyncState::load(&remote).map_err(internal)?;
-        let found = actions::compare_session(&mut state, &session, head).map_err(internal)?;
+        let found = actions::compare_session(&remote, &mut state, &session, head).map_err(internal)?;
         serde_json::to_value(found).map_err(internal)
     })
     .await
