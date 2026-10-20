@@ -43,6 +43,12 @@ pub struct Manifest {
     pub git_branch: Option<String>,
     #[serde(default)]
     pub agent_version: Option<String>,
+    /// Native id of the session this one is a child of (a subagent), so
+    /// the hub can tell a child from a root without opening its bundle.
+    /// Display only: nothing is ever built from it, and a manifest without
+    /// one is a root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     #[serde(default)]
     pub created: Option<Timestamp>,
     #[serde(default)]
@@ -235,6 +241,7 @@ mod tests {
             git_origin: None,
             git_branch: None,
             agent_version: None,
+            parent: None,
             created: None,
             updated: None,
             machine: None,
@@ -332,6 +339,29 @@ mod tests {
         // A sibling that merely shares a prefix is fine.
         let m = manifest(vec![file("transcript.jsonl"), link("session-dir/a"), file("session-dir/ab")]);
         assert_eq!(m.validate(), Ok(()));
+    }
+
+    /// A child session says whose child it is, and a root says nothing:
+    /// manifests pushed before the field existed parse as roots, and a root's
+    /// bytes do not change.
+    #[test]
+    fn a_parent_round_trips_and_old_manifests_have_none() {
+        let mut m = manifest(vec![file("rows.json")]);
+        m.agent = AgentKind::OpenCode;
+        m.id = "ses_child".into();
+        m.parent = Some("ses_boss".into());
+        assert_eq!(m.validate(), Ok(()), "a parent is display only");
+        let text = serde_json::to_string(&m).unwrap();
+        let back: Manifest = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.parent.as_deref(), Some("ses_boss"));
+
+        let mut root = m.clone();
+        root.parent = None;
+        let mut value = serde_json::to_value(&root).unwrap();
+        assert!(value.get("parent").is_none(), "a root's manifest is as it was");
+        assert_eq!(serde_json::from_value::<Manifest>(value.clone()).unwrap().parent, None);
+        value.as_object_mut().unwrap().insert("parent".into(), serde_json::Value::Null);
+        assert_eq!(serde_json::from_value::<Manifest>(value).unwrap().parent, None);
     }
 
     /// A layout is per agent: a Claude name in a codex manifest is refused.

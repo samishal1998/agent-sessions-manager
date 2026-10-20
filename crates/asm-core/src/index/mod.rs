@@ -33,7 +33,7 @@ use crate::CoreError;
 
 /// Bumped whenever the schema or the text-extraction rules change; a
 /// mismatch rebuilds from scratch.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 pub struct Index {
     conn: Connection,

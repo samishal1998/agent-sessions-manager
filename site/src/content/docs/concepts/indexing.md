@@ -27,4 +27,4 @@ The naive choice is wrong for OpenCode: its `session.time_updated` lags behind i
 
 ## Disposable
 
-The index is derived data: anything unreadable, or written by a different schema version, is rebuilt rather than migrated. `asm index` also reclaims space after re-extraction (FTS5's `optimize` restructures but does not return pages to the filesystem; `VACUUM` does).
+The index is derived data: anything unreadable, or written by a different schema version, is rebuilt rather than migrated (version 5 records each session's parent, so the first run after upgrading to a version that has it rebuilds the index once). `asm index` also reclaims space after re-extraction (FTS5's `optimize` restructures but does not return pages to the filesystem; `VACUUM` does).

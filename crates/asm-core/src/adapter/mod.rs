@@ -97,6 +97,12 @@ pub struct SessionFilter {
     /// Include subagent/child sessions (hidden by default, like the agents'
     /// own pickers).
     pub include_children: bool,
+    /// Include jcode's own debug/test sessions. Not a kind of child, and
+    /// not part of `include_children`: a frontend lists children to show
+    /// them under their parent, and a debug session has none to hide under.
+    /// Only what must see every session in a store (the search index, the
+    /// hub looking for an exact id) asks for them.
+    pub include_debug: bool,
 }
 
 impl SessionFilter {
@@ -162,6 +168,9 @@ pub struct RelocateOutcome {
 pub struct DeleteReport {
     pub backup_dir: Option<PathBuf>,
     pub removed: Vec<PathBuf>,
+    /// Sessions deleted along with this one, for an agent that deletes a
+    /// session's whole tree (see [`crate::ops::deletes_descendants`]).
+    pub descendants: usize,
     /// Something to tell the user beyond the backup's location (how to
     /// restore it, when that takes more than putting files back).
     pub note: Option<String>,

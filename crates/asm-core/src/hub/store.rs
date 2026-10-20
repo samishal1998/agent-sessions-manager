@@ -986,6 +986,7 @@ mod tests {
             git_origin: None,
             git_branch: None,
             agent_version: None,
+            parent: None,
             created: None,
             updated: None,
             // A client claim the hub must overwrite.

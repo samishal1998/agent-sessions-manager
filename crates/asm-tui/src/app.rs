@@ -70,10 +70,33 @@ pub struct PickerRow {
     pub agent: Option<AgentKind>,
 }
 
+/// What the list shows of one row besides its session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Place {
+    /// How far under its parent the row sits (0 for a root).
+    pub depth: u16,
+    /// Sessions under this one, at any depth, shown or not.
+    pub below: usize,
+    /// Whether they are shown.
+    pub open: bool,
+}
+
 pub struct App {
     worker: Worker,
+    /// Every session, children too: the list is grouped from these.
     pub sessions: Vec<Session>,
+    /// The rows of the list, as positions in `sessions`, in display order.
     pub filtered: Vec<usize>,
+    /// A `Place` for each of `filtered`.
+    pub places: Vec<Place>,
+    /// Subagent sessions shown as a tree under their parent (`T`) rather
+    /// than hidden behind it.
+    pub tree: bool,
+    /// Sessions whose children are shown the other way from `tree`: opened
+    /// when subagents are hidden, folded when they are shown.
+    toggled: HashSet<(AgentKind, String)>,
+    /// Where each of `sessions` has its parent, if that is in `sessions`.
+    parent_ix: Vec<Option<usize>>,
     pub selected: usize,
     pub mode: Mode,
     pub input: String,
@@ -102,6 +125,9 @@ pub struct App {
     /// rather than failing later with a confusing error.
     pending_batch: Vec<Session>,
     pending_action: Option<BulkAction>,
+    /// Sessions a confirmed delete takes along that are not themselves in
+    /// it, counted when it was asked for.
+    pending_below: usize,
     /// The last batch's per-item outcome, shown as an overlay when
     /// anything did not simply work.
     pub report: Option<(String, BulkReport)>,
@@ -173,6 +199,10 @@ impl App {
             worker,
             sessions: Vec::new(),
             filtered: Vec::new(),
+            places: Vec::new(),
+            tree: false,
+            toggled: HashSet::new(),
+            parent_ix: Vec::new(),
             selected: 0,
             mode: Mode::Normal,
             input: String::new(),
@@ -190,6 +220,7 @@ impl App {
             selection: HashSet::new(),
             pending_batch: Vec::new(),
             pending_action: None,
+            pending_below: 0,
             report: None,
             sending: false,
             sending_for: None,
@@ -266,7 +297,11 @@ impl App {
             return;
         }
         self.hub_checking = true;
-        let _ = self.worker.tx.send(Request::Hub(self.sessions.clone()));
+        // What the hub compares is what `asm push` would send: a subagent
+        // travels in its parent's bundle, and listed on its own it would be
+        // a "Local" row nobody could push.
+        let roots = self.sessions.iter().filter(|s| s.parent.is_none()).cloned().collect();
+        let _ = self.worker.tx.send(Request::Hub(roots));
     }
 
     pub fn hub_joined(&self) -> bool {
@@ -509,7 +544,7 @@ impl App {
 
     fn selection_status(&self) -> String {
         match self.selection.len() {
-            0 => format!("{} sessions", self.sessions.len()),
+            0 => self.count_status(),
             n => format!("{n} selected — a archive · d delete · m move · e export · i import · p push"),
         }
     }
@@ -535,6 +570,7 @@ impl App {
             self.status = "nothing selected is still there".to_string();
             return;
         }
+        self.pending_below = if matches!(action, BulkAction::Delete) { self.deleted_with(&batch) } else { 0 };
         self.pending_batch = batch;
         self.pending_action = Some(action);
         if let Some(default) = input_default {
@@ -555,6 +591,44 @@ impl App {
             let _ = self.worker.tx.send(Request::Bulk(sessions, action));
         }
         self.mode = Mode::Normal;
+    }
+
+    /// Sessions that deleting `batch` takes along without being in it: the
+    /// ones under a session of an agent that deletes its whole tree.
+    fn deleted_with(&self, batch: &[Session]) -> usize {
+        let named: HashSet<(AgentKind, &str)> =
+            batch.iter().map(|s| (s.handle.agent, s.handle.native_id.as_str())).collect();
+        let flat = ops::flatten(&ops::group_children(&self.sessions), &|_| true);
+        let mut taken: HashSet<usize> = HashSet::new();
+        for (at, &(i, depth)) in flat.iter().enumerate() {
+            let s = &self.sessions[i];
+            if named.contains(&(s.handle.agent, s.handle.native_id.as_str())) && ops::deletes_descendants(s.handle.agent) {
+                taken.extend(flat[at + 1..].iter().take_while(|&&(_, d)| d > depth).map(|&(j, _)| j));
+            }
+        }
+        taken
+            .into_iter()
+            .filter(|&j| {
+                let s = &self.sessions[j];
+                !named.contains(&(s.handle.agent, s.handle.native_id.as_str()))
+            })
+            .count()
+    }
+
+    /// What a search hit's parent is called, if the hit is inside a
+    /// subagent: its title, or its short id when the list has not got it.
+    pub fn parent_label(&self, hit: &asm_core::index::SearchHit) -> Option<String> {
+        let parent = hit.parent.as_deref()?;
+        let agent = AgentKind::parse(&hit.agent)?;
+        Some(match self.sessions.iter().find(|s| s.handle.agent == agent && s.handle.native_id == parent) {
+            Some(s) => s.title.clone().unwrap_or_else(|| s.short_id().to_string()),
+            None => asm_core::model::short_id_of(agent, parent, None).to_string(),
+        })
+    }
+
+    /// How many sessions the delete being confirmed takes along.
+    pub fn delete_takes(&self) -> usize {
+        self.pending_below
     }
 
     /// What a pending bulk confirmation is about, for the prompt.
@@ -635,7 +709,7 @@ impl App {
         self.filter.clear();
         if had {
             self.apply_filter();
-            self.status = format!("{} sessions", self.sessions.len());
+            self.status = self.count_status();
         }
         had
     }
@@ -650,10 +724,7 @@ impl App {
                 // What picking this agent would leave, with the project and
                 // the text still applied.
                 let left = |agent: AgentKind| {
-                    self.sessions
-                        .iter()
-                        .filter(|s| s.handle.agent == agent && self.matches_but_agents(s))
-                        .count()
+                    self.rows_of(|s| s.handle.agent == agent && self.matches_but_agents(s))
                 };
                 let mut agents: Vec<AgentKind> =
                     self.sessions.iter().map(|s| s.handle.agent).collect::<HashSet<_>>().into_iter().collect();
@@ -671,10 +742,7 @@ impl App {
             PickerKind::Project => {
                 let needle = picker.query.to_lowercase();
                 let left = |root: &PathBuf| {
-                    self.sessions
-                        .iter()
-                        .filter(|s| self.in_project(s, root) && self.matches_but_project(s))
-                        .count()
+                    self.rows_of(|s| self.in_project(s, root) && self.matches_but_project(s))
                 };
                 let mut rows: Vec<PickerRow> = self
                     .projects
@@ -703,7 +771,7 @@ impl App {
                     0,
                     PickerRow {
                         label: "all projects".into(),
-                        count: self.sessions.iter().filter(|s| self.matches_but_project(s)).count(),
+                        count: self.rows_of(|s| self.matches_but_project(s)),
                         on: self.project.is_none(),
                         agent: None,
                     },
@@ -721,6 +789,23 @@ impl App {
     #[cfg(test)]
     pub fn set_hub_for_test(&mut self, status: HubStatus) {
         self.take_hub(status);
+    }
+
+    #[cfg(test)]
+    pub fn apply_filter_for_test(&mut self) {
+        self.apply_filter();
+    }
+
+    #[cfg(test)]
+    pub fn toggle_tree_for_test(&mut self) {
+        self.toggle_tree();
+    }
+
+    /// `d` on a row, as a keystroke would.
+    #[cfg(test)]
+    pub fn begin_delete_for_test(&mut self, row: usize) {
+        self.selected = row;
+        self.on_normal_key(KeyEvent::from(KeyCode::Char('d')));
     }
 
     #[cfg(test)]
@@ -759,8 +844,8 @@ impl App {
         }
         self.apply_filter();
         self.status = match self.active_filters().as_slice() {
-            [] => format!("{} sessions", self.sessions.len()),
-            filters => format!("{} of {} — {}", self.filtered.len(), self.sessions.len(), filters.join(" · ")),
+            [] => self.count_status(),
+            filters => format!("{} of {} — {}", self.filtered.len(), self.total_rows(), filters.join(" · ")),
         };
     }
 
@@ -800,18 +885,214 @@ impl App {
         }
     }
 
+    /// Rebuild the rows: what the filters match, grouped by parent, with
+    /// the children of whatever is folded left out. Grouping happens among
+    /// the matches, so a match whose parent did not match stands on its own
+    /// instead of vanishing behind it.
     fn apply_filter(&mut self) {
-        self.filtered = self
+        let matching: Vec<usize> = self
             .sessions
             .iter()
             .enumerate()
             .filter(|(_, s)| self.matches(s))
             .map(|(i, _)| i)
             .collect();
+        let list: Vec<&Session> = matching.iter().map(|&i| &self.sessions[i]).collect();
+        let tree = ops::group_children(&list);
+        let mut below = vec![0; list.len()];
+        fn count(nodes: &[ops::Node], below: &mut [usize]) {
+            for node in nodes {
+                below[node.index] = node.descendants();
+                count(&node.children, below);
+            }
+        }
+        count(&tree, &mut below);
+        let open = |k: usize| self.is_open(list[k]);
+        let flat = ops::flatten(&tree, &open);
+        let places: Vec<Place> = flat
+            .iter()
+            .map(|&(k, depth)| Place { depth: depth as u16, below: below[k], open: below[k] > 0 && open(k) })
+            .collect();
+        let rows: Vec<usize> = flat.iter().map(|&(k, _)| matching[k]).collect();
+        let parents = self.index_parents();
+        self.filtered = rows;
+        self.places = places;
+        self.parent_ix = parents;
         if self.selected >= self.filtered.len() {
             self.selected = self.filtered.len().saturating_sub(1);
         }
         self.sync_preview();
+    }
+
+    fn index_parents(&self) -> Vec<Option<usize>> {
+        let at: HashMap<(AgentKind, &str), usize> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .map(|(i, s)| ((s.handle.agent, s.handle.native_id.as_str()), i))
+            .collect();
+        self.sessions
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let parent = s.parent.as_deref()?;
+                at.get(&(s.handle.agent, parent)).copied().filter(|&p| p != i)
+            })
+            .collect()
+    }
+
+    /// Whether a session's children are shown: the global choice, unless
+    /// this one has been flipped from it.
+    fn is_open(&self, session: &Session) -> bool {
+        self.tree != (!self.toggled.is_empty() && self.toggled.contains(&Self::key_of(session)))
+    }
+
+    /// What the list shows of the row at `row` besides its session.
+    pub fn place(&self, row: usize) -> Place {
+        self.places.get(row).copied().unwrap_or_default()
+    }
+
+    /// Whether any row is a parent or a child, so the list needs the room
+    /// for its fold marks and the indent.
+    pub fn grouped(&self) -> bool {
+        self.places.iter().any(|p| p.below > 0 || p.depth > 0)
+    }
+
+    /// Sessions that are not under another one, over every session.
+    fn top_level(&self) -> usize {
+        // Before the first grouping every session is its own.
+        if self.parent_ix.len() != self.sessions.len() {
+            return self.sessions.len();
+        }
+        self.parent_ix.iter().filter(|p| p.is_none()).count()
+    }
+
+    /// Sessions that are under another one in the list, over every session.
+    pub fn subagents(&self) -> usize {
+        self.sessions.len() - self.top_level()
+    }
+
+    /// "142 sessions", and how many more are under them.
+    fn count_status(&self) -> String {
+        match self.subagents() {
+            0 => format!("{} sessions", self.sessions.len()),
+            n => format!("{} sessions (+{n} subagent)", self.top_level()),
+        }
+    }
+
+    /// How many rows the list has with no filter on: every session when
+    /// they are shown as a tree, the top-level ones otherwise.
+    pub fn total_rows(&self) -> usize {
+        if self.tree { self.sessions.len() } else { self.top_level() }
+    }
+
+    /// How many rows the list would have if `keep` chose the sessions: a
+    /// picker's count. Subagents count only when they are shown, and are
+    /// left out when their parent is among the chosen (they are folded
+    /// under it).
+    fn rows_of(&self, keep: impl Fn(&Session) -> bool) -> usize {
+        let kept: Vec<bool> = self.sessions.iter().map(keep).collect();
+        // ponytail: a parent cycle in the data counts both members as
+        // children; the list itself cuts it (ops::group_children).
+        (0..kept.len())
+            .filter(|&i| {
+                kept[i] && (self.tree || !self.parent_ix.get(i).copied().flatten().is_some_and(|p| kept[p]))
+            })
+            .count()
+    }
+
+    /// Rebuild the rows after something changed what is folded, keeping
+    /// the cursor on the session it was on.
+    fn regroup(&mut self) {
+        let under_cursor = self.selected_session().map(Self::key_of);
+        self.apply_filter();
+        self.keep_cursor_on(under_cursor);
+        self.sync_preview();
+    }
+
+    /// `z`: fold or unfold the subagents under the selected session. On a
+    /// subagent with none of its own, fold the session it belongs to and
+    /// move up to it, the way a file manager's left arrow does.
+    fn toggle_fold(&mut self) {
+        let Some(session) = self.selected_session() else { return };
+        let key = Self::key_of(session);
+        let place = self.place(self.selected);
+        if place.below > 0 {
+            if !self.toggled.remove(&key) {
+                self.toggled.insert(key);
+            }
+            self.regroup();
+            return;
+        }
+        let parent = self
+            .selected_parent_row()
+            .map(|row| Self::key_of(&self.sessions[self.filtered[row]]));
+        match parent {
+            Some(parent) => {
+                // It is shown, so it is open: folding is flipping it from
+                // the global choice.
+                if self.tree {
+                    self.toggled.insert(parent.clone());
+                } else {
+                    self.toggled.remove(&parent);
+                }
+                self.regroup();
+                self.keep_cursor_on(Some(parent));
+                self.sync_preview();
+            }
+            None => self.status = "no subagent sessions under this one (T shows them all)".to_string(),
+        }
+    }
+
+    /// The row of the session the selected one is under, if it is listed
+    /// under one.
+    fn selected_parent_row(&self) -> Option<usize> {
+        let depth = self.place(self.selected).depth;
+        if depth == 0 {
+            return None;
+        }
+        (0..self.selected).rev().find(|&row| self.place(row).depth + 1 == depth)
+    }
+
+    /// `T`: subagent sessions shown as a tree under their parent, or
+    /// hidden behind it. Choosing resets every fold made by hand.
+    fn toggle_tree(&mut self) {
+        self.tree = !self.tree;
+        self.toggled.clear();
+        self.regroup();
+        self.status = if self.tree {
+            "subagent sessions shown as a tree (z folds one, T hides them)".to_string()
+        } else {
+            "subagent sessions hidden under their parent (z opens one, T shows them all)".to_string()
+        };
+        self.status_sticky = true;
+    }
+
+    /// Unfold whatever hides a session, so the list has a row for it.
+    /// Walks up through its parents; a loop in the data ends the walk.
+    fn reveal(&mut self, agent: AgentKind, id: &str) {
+        let mut at = self.sessions.iter().find(|s| s.handle.agent == agent && s.handle.native_id == id);
+        let mut flips = HashSet::new();
+        for _ in 0..self.sessions.len() {
+            let Some(parent) = at.and_then(|s| s.parent.as_deref()) else { break };
+            at = self.sessions.iter().find(|s| s.handle.agent == agent && s.handle.native_id == parent);
+            match at {
+                Some(session) if !self.is_open(session) => {
+                    flips.insert(Self::key_of(session));
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+        if flips.is_empty() {
+            return;
+        }
+        for key in flips {
+            if !self.toggled.remove(&key) {
+                self.toggled.insert(key);
+            }
+        }
+        self.apply_filter();
     }
 
     fn sync_preview(&mut self) {
@@ -1013,7 +1294,7 @@ impl App {
                     // Whatever the last action said stands: a count is not
                     // worth erasing "archived 4c0d9a71" with.
                     if !self.status_sticky {
-                        self.status = format!("{} sessions", self.sessions.len());
+                        self.status = self.count_status();
                     }
                     // Now that the list is up, keep the index current and ask
                     // the hub how it compares.
@@ -1030,8 +1311,8 @@ impl App {
                     self.indexing = None;
                     if reindexed > 0 && !self.status_sticky {
                         self.status = format!(
-                            "{} sessions — indexed {reindexed}{}",
-                            self.sessions.len(),
+                            "{} — indexed {reindexed}{}",
+                            self.count_status(),
                             if failed > 0 { format!(", {failed} unreadable") } else { String::new() }
                         );
                     }
@@ -1169,6 +1450,10 @@ impl App {
         let Some(hits) = &self.hits else { return };
         let Some(hit) = hits.get(self.hit_selected) else { return };
         let (target, seq) = ((hit.agent.clone(), hit.native_id.clone()), hit.seq);
+        // A hit inside a subagent lands on it, unfolding what hides it.
+        if let Some(agent) = AgentKind::parse(&target.0) {
+            self.reveal(agent, &target.1);
+        }
         let found = self.filtered.iter().position(|&i| {
             let s = &self.sessions[i];
             s.handle.agent.to_string() == target.0 && s.handle.native_id == target.1
@@ -1320,6 +1605,8 @@ impl App {
                 self.preview_focus = false;
             }
             KeyCode::Char('H') => self.open_hub_view(),
+            KeyCode::Char('z') => self.toggle_fold(),
+            KeyCode::Char('T') => self.toggle_tree(),
             KeyCode::Char('A') => self.open_picker(PickerKind::Agent),
             KeyCode::Char('P') => self.open_picker(PickerKind::Project),
             KeyCode::Char(' ') => {
@@ -1443,6 +1730,7 @@ impl App {
                 if !self.selection.is_empty() {
                     self.begin_bulk(BulkAction::Delete, None);
                 } else if let Some(session) = self.selected_session().cloned() {
+                    self.pending_below = self.deleted_with(std::slice::from_ref(&session));
                     self.pending = Some(session);
                     self.mode = Mode::ConfirmDelete;
                 }
@@ -2059,5 +2347,296 @@ mod tests {
 
     fn press_hub(app: &mut App, code: KeyCode) {
         app.on_hub_view_key(KeyEvent::from(code));
+    }
+
+    /// A session at a time (seconds), under a parent or not.
+    fn at(agent: AgentKind, id: &str, parent: Option<&str>, seconds: i64) -> Session {
+        Session {
+            parent: parent.map(str::to_string),
+            updated: jiff::Timestamp::from_second(seconds).ok(),
+            ..session(agent, id, "/w/app")
+        }
+    }
+
+    /// Plan > Review > Nested, Plan > Explore, and another root, newest first.
+    fn family() -> App {
+        let mut app = test_app(vec![
+            at(AgentKind::OpenCode, "plan", None, 100),
+            at(AgentKind::OpenCode, "review", Some("plan"), 90),
+            at(AgentKind::OpenCode, "nested", Some("review"), 80),
+            at(AgentKind::OpenCode, "explore", Some("plan"), 70),
+            at(AgentKind::ClaudeCode, "other", None, 60),
+        ]);
+        app.apply_filter();
+        app
+    }
+
+    /// The rows, as `id`, with `+N` on a folded session and indented by depth.
+    fn rows(app: &App) -> Vec<String> {
+        app.filtered
+            .iter()
+            .enumerate()
+            .map(|(row, &i)| {
+                let place = app.place(row);
+                let fold = match (place.below, place.open) {
+                    (0, _) => String::new(),
+                    (n, false) => format!("+{n}"),
+                    (_, true) => "v".into(),
+                };
+                format!("{}{}{fold}", "-".repeat(place.depth as usize), app.sessions[i].handle.native_id)
+            })
+            .collect()
+    }
+
+    fn on(app: &mut App, id: &str) {
+        app.selected = app.filtered.iter().position(|&i| app.sessions[i].handle.native_id == id).unwrap();
+    }
+
+    fn under_cursor(app: &App) -> String {
+        app.selected_session().unwrap().handle.native_id.clone()
+    }
+
+    /// Subagents are behind their parent, with how many, until asked for.
+    #[test]
+    fn subagents_are_hidden_behind_their_parent_with_a_count() {
+        let app = family();
+        assert_eq!(rows(&app), ["plan+3", "other"]);
+        assert_eq!(app.count_status(), "2 sessions (+3 subagent)");
+        assert!(app.grouped());
+        // A list with no subagents in it is the list it always was.
+        let plain = super::tests::app();
+        assert!(!plain.grouped());
+        assert_eq!(plain.count_status(), "4 sessions");
+    }
+
+    #[test]
+    fn z_unfolds_the_selected_session_one_level_and_again_folds_it() {
+        let mut app = family();
+        press(&mut app, KeyCode::Char('z'));
+        assert_eq!(rows(&app), ["planv", "-review+1", "-explore", "other"]);
+        assert_eq!(under_cursor(&app), "plan", "the cursor stays on it");
+
+        on(&mut app, "review");
+        press(&mut app, KeyCode::Char('z'));
+        assert_eq!(rows(&app), ["planv", "-reviewv", "--nested", "-explore", "other"]);
+        assert_eq!(under_cursor(&app), "review");
+
+        press(&mut app, KeyCode::Char('z'));
+        assert_eq!(rows(&app), ["planv", "-review+1", "-explore", "other"]);
+        on(&mut app, "plan");
+        press(&mut app, KeyCode::Char('z'));
+        assert_eq!(rows(&app), ["plan+3", "other"], "folded again, with the count");
+    }
+
+    /// `T` is the global choice between hiding subagents and showing them
+    /// all; choosing it forgets what was folded by hand.
+    #[test]
+    fn t_shows_every_subagent_as_a_tree_and_back() {
+        let mut app = family();
+        press(&mut app, KeyCode::Char('z'));
+        press(&mut app, KeyCode::Char('T'));
+        assert!(app.tree);
+        assert_eq!(rows(&app), ["planv", "-reviewv", "--nested", "-explore", "other"]);
+
+        // In a tree, z folds the one it is on.
+        on(&mut app, "review");
+        press(&mut app, KeyCode::Char('z'));
+        assert_eq!(rows(&app), ["planv", "-review+1", "-explore", "other"]);
+
+        press(&mut app, KeyCode::Char('T'));
+        assert!(!app.tree);
+        assert_eq!(rows(&app), ["plan+3", "other"], "back to hidden, and the fold by hand is forgotten");
+    }
+
+    /// The cursor is on a session, not on a row: rows come and go above it.
+    #[test]
+    fn the_cursor_stays_on_its_session_when_rows_appear_above_it() {
+        let mut app = family();
+        on(&mut app, "other");
+        assert_eq!(app.selected, 1);
+        press(&mut app, KeyCode::Char('T'));
+        assert_eq!(app.selected, 4);
+        assert_eq!(under_cursor(&app), "other");
+        press(&mut app, KeyCode::Char('T'));
+        assert_eq!(under_cursor(&app), "other");
+
+        // Folding a parent while on its child moves up to the parent.
+        press(&mut app, KeyCode::Char('T'));
+        on(&mut app, "nested");
+        press(&mut app, KeyCode::Char('z'));
+        assert_eq!(under_cursor(&app), "review", "z on a subagent with none folds its parent");
+        assert_eq!(rows(&app), ["planv", "-review+1", "-explore", "other"]);
+        on(&mut app, "explore");
+        press(&mut app, KeyCode::Char('z'));
+        assert_eq!(under_cursor(&app), "plan");
+        assert_eq!(rows(&app), ["plan+3", "other"]);
+        on(&mut app, "other");
+        press(&mut app, KeyCode::Char('z'));
+        assert!(app.status.contains("no subagent sessions"), "{}", app.status);
+    }
+
+    /// A subagent that matches a filter its parent does not match is a row
+    /// of its own, not a row nobody can see.
+    #[test]
+    fn a_match_whose_parent_did_not_match_stands_alone() {
+        let mut app = family();
+        app.filter = "nested".into();
+        app.apply_filter();
+        assert_eq!(rows(&app), ["nested"]);
+        app.filter = "e".into();
+        app.apply_filter();
+        // plan, review, nested, explore, other all contain an e.
+        assert_eq!(rows(&app), ["plan+3", "other"]);
+        // review and nested match, plan does not: review is the root, with nested under it.
+        app.sessions[2].title = Some("about review, nested".into());
+        app.filter = "review".into();
+        app.apply_filter();
+        assert_eq!(rows(&app), ["review+1"]);
+        assert_eq!(app.place(0).depth, 0);
+    }
+
+    fn hit(agent: &str, id: &str, parent: Option<&str>) -> asm_core::index::SearchHit {
+        asm_core::index::SearchHit {
+            agent: agent.into(),
+            native_id: id.into(),
+            title: None,
+            project_root: None,
+            parent: parent.map(str::to_string),
+            role: "user".into(),
+            seq: 3,
+            timestamp: None,
+            snippet: "x".into(),
+            score: 0.0,
+            status: "idle".into(),
+        }
+    }
+
+    /// A search hit in a subagent opens on it, however deep and however
+    /// folded, and says whose it is.
+    #[test]
+    fn a_search_hit_on_a_subagent_unfolds_its_parents_and_lands_on_it() {
+        let mut app = family();
+        assert_eq!(rows(&app), ["plan+3", "other"]);
+        app.hits = Some(vec![hit("opencode", "nested", Some("review"))]);
+        assert_eq!(app.parent_label(&app.hits.as_ref().unwrap()[0]).as_deref(), Some("about review"));
+        app.jump_to_hit();
+        assert!(app.hits.is_none(), "back to the list");
+        assert_eq!(under_cursor(&app), "nested");
+        assert_eq!(rows(&app), ["planv", "-reviewv", "--nested", "-explore", "other"]);
+        assert!(app.status.contains("jumped to match #3"), "{}", app.status);
+
+        // A parent the list does not have is named by its id.
+        let ghost = hit("opencode", "x", Some("ses_gone0000000"));
+        assert_eq!(app.parent_label(&ghost).as_deref(), Some("ses_gone"));
+        assert_eq!(app.parent_label(&hit("opencode", "x", None)), None);
+    }
+
+    /// The same hit in tree mode with something folded by hand.
+    #[test]
+    fn a_hit_unfolds_only_what_hides_it() {
+        let mut app = family();
+        press(&mut app, KeyCode::Char('T'));
+        on(&mut app, "review");
+        press(&mut app, KeyCode::Char('z'));
+        press(&mut app, KeyCode::Char('z')); // and open again
+        on(&mut app, "plan");
+        press(&mut app, KeyCode::Char('z'));
+        assert_eq!(rows(&app), ["plan+3", "other"]);
+        app.hits = Some(vec![hit("opencode", "explore", Some("plan"))]);
+        app.jump_to_hit();
+        assert_eq!(under_cursor(&app), "explore");
+        assert_eq!(rows(&app), ["planv", "-reviewv", "--nested", "-explore", "other"]);
+    }
+
+    /// A hub compares what a push would send: a subagent travels in its
+    /// parent's bundle, so listing it would give a "Local" row that cannot
+    /// be pushed.
+    #[test]
+    fn the_hub_is_asked_about_top_level_sessions_only() {
+        let (tx, requests) = std::sync::mpsc::channel();
+        let worker = crate::worker::Worker {
+            tx,
+            index_tx: std::sync::mpsc::channel().0,
+            rx: std::sync::mpsc::channel().1,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let mut app = App::new(worker);
+        app.sessions = family().sessions;
+        app.apply_filter();
+        app.request_hub();
+        let Ok(Request::Hub(sent)) = requests.try_recv() else { panic!("the hub was not asked") };
+        let ids: Vec<&str> = sent.iter().map(|s| s.handle.native_id.as_str()).collect();
+        assert_eq!(ids, ["plan", "other"]);
+        // Even with everything shown.
+        app.hub_checking = false;
+        app.tree = true;
+        app.apply_filter();
+        app.request_hub();
+        let Ok(Request::Hub(sent)) = requests.try_recv() else { panic!("the hub was not asked") };
+        assert_eq!(sent.len(), 2);
+    }
+
+    /// Deleting a session of an agent that deletes its tree says how many
+    /// go with it; the batch counts what is not already named in it.
+    #[test]
+    fn a_delete_counts_the_sessions_it_takes_along() {
+        let mut app = family();
+        on(&mut app, "plan");
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.mode, Mode::ConfirmDelete);
+        assert_eq!(app.delete_takes(), 3);
+        app.mode = Mode::Normal;
+
+        // A session of an agent that keeps its children takes none.
+        on(&mut app, "other");
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.delete_takes(), 0);
+        app.mode = Mode::Normal;
+
+        // plan and its review ticked: the nested and explore go too, review is already named.
+        press(&mut app, KeyCode::Char('T'));
+        on(&mut app, "plan");
+        press(&mut app, KeyCode::Char(' '));
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.selection.len(), 2);
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.mode, Mode::ConfirmBulk);
+        assert_eq!(app.delete_takes(), 2);
+        let jcode = {
+            let mut jcode = test_app(vec![
+                at(AgentKind::JCode, "main", None, 9),
+                at(AgentKind::JCode, "kid", Some("main"), 8),
+            ]);
+            jcode.apply_filter();
+            jcode
+        };
+        assert_eq!(jcode.deleted_with(&jcode.sessions[..1]), 0, "jcode keeps the children");
+    }
+
+    /// A picker counts the rows picking it would leave.
+    #[test]
+    fn pickers_count_rows_not_subagents() {
+        let mut app = family();
+        app.open_picker(PickerKind::Agent);
+        let count = |app: &App, label: &str| app.picker_rows().iter().find(|r| r.label == label).unwrap().count;
+        assert_eq!(count(&app, "opencode"), 1, "plan, with three behind it");
+        assert_eq!(count(&app, "claude-code"), 1);
+        app.tree = true;
+        app.apply_filter();
+        assert_eq!(count(&app, "opencode"), 4, "all of them, as they are shown");
+    }
+
+    /// Subagents arriving before their parent are rows of their own until
+    /// it arrives, and the cursor does not move.
+    #[test]
+    fn a_scan_that_delivers_a_subagent_first_regroups_when_the_parent_comes() {
+        let mut app = test_app(Vec::new());
+        app.scanning = true;
+        app.take_batch(vec![at(AgentKind::OpenCode, "other", None, 5), at(AgentKind::OpenCode, "kid", Some("plan"), 50)]);
+        assert_eq!(rows(&app), ["kid", "other"]);
+        on(&mut app, "other");
+        app.take_batch(vec![at(AgentKind::OpenCode, "plan", None, 100)]);
+        assert_eq!(rows(&app), ["plan+1", "other"]);
+        assert_eq!(under_cursor(&app), "other");
     }
 }

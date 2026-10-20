@@ -792,3 +792,110 @@ fn opening_and_searching_do_not_wait_for_a_writer() {
     writer.execute_batch("ROLLBACK").unwrap();
     assert!(waited < std::time::Duration::from_secs(2), "opened and searched in {waited:?}, behind a writer");
 }
+
+fn child_of(parent: &str, id: &str, transcript: &std::path::Path, project: &str) -> Session {
+    Session { parent: Some(parent.to_string()), ..session(id, transcript, project) }
+}
+
+/// A hit inside a subagent session is still a hit, and says whose it is.
+#[test]
+fn a_hit_in_a_child_session_names_its_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let exporter = Exporter::new();
+    let mut sessions = three_sessions(dir.path(), &exporter);
+    // b becomes a child of a.
+    sessions[1] = child_of("a", "b", &dir.path().join("b.jsonl"), "/proj/one");
+    let mut index = open_index(dir.path());
+    index.refresh_with(&sessions, |s| exporter.export(s), |_| {}).unwrap();
+
+    let find = |word: &str| {
+        index.search(&SearchQuery { text: word.into(), limit: 5, ..Default::default() }).unwrap()
+    };
+    let child = find("bilberry");
+    assert_eq!(child.len(), 3, "children are searched like any other session");
+    assert!(child.iter().all(|h| h.native_id == "b" && h.parent.as_deref() == Some("a")), "{child:?}");
+    assert_eq!(find("apricot")[0].parent, None, "a root has no parent");
+    assert_eq!(find("cherry")[0].parent, None);
+}
+
+/// The rowid ranges recorded for each session keep working beside children:
+/// re-extracting one, and dropping one that went away, touch only its rows,
+/// and the parent survives a re-extraction.
+#[test]
+fn children_are_reindexed_and_forgotten_by_their_ranges() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("index/sessions.db");
+    let exporter = Exporter::new();
+    let mut sessions = three_sessions(dir.path(), &exporter);
+    sessions[1] = child_of("a", "b", &dir.path().join("b.jsonl"), "/proj/one");
+    sessions[2] = child_of("b", "c", &dir.path().join("c.jsonl"), "/proj/one");
+    let mut index = open_index(dir.path());
+    index.refresh_with(&sessions, |s| exporter.export(s), |_| {}).unwrap();
+    assert_eq!(exporter.take_calls().len(), 3);
+    for (id, first, last, count) in recorded(&db) {
+        assert_eq!(last.unwrap() - first.unwrap() + 1, count, "{id}: its own unbroken run");
+    }
+
+    touch(&sessions[1], 0);
+    exporter.set("b", ir("b", vec![text_message(IrRole::User, "gooseberry one"), text_message(IrRole::User, "gooseberry two")]));
+    let report = index.refresh_with(&sessions, |s| exporter.export(s), |_| {}).unwrap();
+    assert_eq!(report.reindexed, 1);
+    assert_eq!(exporter.take_calls(), vec!["b"]);
+    assert_eq!(hits(&index, "bilberry"), 0);
+    assert_eq!(hits(&index, "gooseberry"), 2);
+    assert_eq!((hits(&index, "apricot"), hits(&index, "cherry")), (2, 1), "neighbours are intact");
+    let hit = &index.search(&SearchQuery { text: "gooseberry".into(), limit: 1, ..Default::default() }).unwrap()[0];
+    assert_eq!(hit.parent.as_deref(), Some("a"), "re-extracted, still a child");
+
+    // The grandchild goes away with nothing else changed.
+    let report = index.refresh_with(&sessions[..2], |s| exporter.export(s), |_| {}).unwrap();
+    assert_eq!(report.removed, 1);
+    assert_eq!(hits(&index, "cherry"), 0);
+    assert_eq!((hits(&index, "apricot"), hits(&index, "gooseberry")), (2, 2));
+}
+
+/// Version 4 had no parent column; its index is dropped and rebuilt rather
+/// than migrated, and the rebuilt one carries parents.
+#[test]
+fn an_index_from_before_parents_is_rebuilt_with_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("index/sessions.db");
+    std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    // Schema version 4, as shipped.
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         CREATE TABLE indexed_session (
+             agent TEXT NOT NULL, native_id TEXT NOT NULL, title TEXT, project_root TEXT,
+             updated_ms INTEGER, status TEXT, fingerprint TEXT,
+             message_count INTEGER NOT NULL DEFAULT 0,
+             first_rowid INTEGER, last_rowid INTEGER, indexed_at_ms INTEGER NOT NULL,
+             PRIMARY KEY (agent, native_id));
+         CREATE INDEX indexed_session_project ON indexed_session (project_root);
+         CREATE VIRTUAL TABLE message_fts USING fts5(
+             text, agent UNINDEXED, native_id UNINDEXED, role UNINDEXED, seq UNINDEXED, ts UNINDEXED,
+             tokenize = 'unicode61 remove_diacritics 2');
+         INSERT INTO meta VALUES ('schema_version', '4');
+         INSERT INTO indexed_session (agent, native_id, title, project_root, status, fingerprint, message_count, indexed_at_ms)
+             VALUES ('claude-code', 'a', 't', '/p', 'idle', 'file:1:1', 1, 0);
+         INSERT INTO message_fts (text, agent, native_id, role, seq, ts)
+             VALUES ('persimmon', 'claude-code', 'a', 'user', 0, NULL);",
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut index = Index::open_at(&db).unwrap();
+    assert_eq!(asm_core::index::SCHEMA_VERSION, 5);
+    assert_eq!(index.stats().unwrap().sessions, 0, "the old rows are not read");
+
+    let transcript = dir.path().join("kid.jsonl");
+    std::fs::write(&transcript, "k").unwrap();
+    let exporter = Exporter::new();
+    exporter.set("kid", ir("kid", vec![text_message(IrRole::User, "kumquat")]));
+    let sessions = vec![child_of("a", "kid", &transcript, "/p")];
+    let report = index.refresh_with(&sessions, |s| exporter.export(s), |_| {}).unwrap();
+    assert_eq!((report.reindexed, report.failed.len()), (1, 0));
+    let found = index.search(&SearchQuery { text: "kumquat".into(), limit: 5, ..Default::default() }).unwrap();
+    assert_eq!(found[0].parent.as_deref(), Some("a"));
+}

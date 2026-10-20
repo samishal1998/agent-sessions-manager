@@ -330,6 +330,7 @@ pub(super) fn delete(adapter: &OpenCodeAdapter, session: &Session) -> Result<Del
     Ok(DeleteReport {
         backup_dir: Some(backup.clone()),
         removed: vec![adapter.db().to_path_buf()],
+        descendants: ids.len().saturating_sub(1),
         note: Some(restore_hint(&backup)),
     })
 }

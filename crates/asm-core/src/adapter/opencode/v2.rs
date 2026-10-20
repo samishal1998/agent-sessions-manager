@@ -857,6 +857,41 @@ CREATE UNIQUE INDEX `session_pending_session_admitted_seq_idx` ON `session_pendi
         assert_eq!(sessions[0].handle.native_id, "ses_running");
     }
 
+    /// 2.x nests subagents in subagents as 1.x does: the tree is read off
+    /// `parent_id` to any depth, and a child is addressable by its id.
+    #[test]
+    fn a_subagent_tree_groups_to_any_depth() {
+        let store = store();
+        store.session("ses_grand", Some("ses_child"), Some("Grandchild"), 1_800_000_300_000, None, None);
+        store.session("ses_orphan", Some("ses_not_here"), Some("Parent gone"), 1_800_000_400_000, None, None);
+        let all = store
+            .adapter()
+            .sessions(&SessionFilter { include_children: true, ..SessionFilter::default() })
+            .unwrap();
+        assert_eq!(find(&all, "ses_grand").parent.as_deref(), Some("ses_child"));
+
+        let tree = crate::ops::group_children(&all);
+        let busy = tree.iter().find(|n| all[n.index].handle.native_id == "ses_busy").unwrap();
+        assert_eq!(busy.descendants(), 2);
+        assert_eq!(all[busy.children[0].index].handle.native_id, "ses_child");
+        assert_eq!(all[busy.children[0].children[0].index].handle.native_id, "ses_grand");
+        assert!(
+            tree.iter().any(|n| all[n.index].handle.native_id == "ses_orphan"),
+            "a child whose parent is not in the store is a root"
+        );
+        let below: Vec<&str> = crate::ops::descendants_in(&all, find(&all, "ses_busy"))
+            .iter()
+            .map(|(_, s)| s.handle.native_id.as_str())
+            .collect();
+        assert_eq!(below, ["ses_child", "ses_grand"]);
+        assert_eq!(crate::ops::resolve_in(all.clone(), "ses_grand").unwrap().handle.native_id, "ses_grand");
+        // Roots only: what the default listing gives, and what projects count.
+        let roots = store.adapter().sessions(&SessionFilter::default()).unwrap();
+        assert!(roots.iter().all(|s| s.parent.is_none()));
+        let projects = |s: &[crate::model::Session]| crate::ops::group_projects(s, |_| None, |_| Vec::new())[0].session_count;
+        assert_eq!(projects(&all), projects(&roots));
+    }
+
     #[test]
     fn children_and_archived_sessions() {
         let store = store();

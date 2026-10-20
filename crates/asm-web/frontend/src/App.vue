@@ -17,6 +17,7 @@ import {
 } from '@hearth-ui/vue'
 import api from './api.js'
 import { agentOptions, resumeCommand } from './agents.js'
+import { below as underOf, deletedWith, deletesDescendants, flip, keyOf, reveal, rows as groupRows } from './children.js'
 import { confirmDialog, promptDialog } from './dialogs.js'
 import { shortId, shortProject } from './ids.js'
 import { uniqueTails } from './paths.js'
@@ -43,6 +44,28 @@ const selectedAgents = ref([])
 const selectedSync = ref([])
 const projectFilter = ref('')
 const showArchived = ref(true)
+// Subagent sessions are folded behind their parent, or shown under it as a
+// tree. The choice is remembered per browser; `toggled` holds the sessions
+// flipped by hand from it (opened when folded, folded when shown).
+const TREE_KEY = 'asm-subagents'
+const readTree = () => {
+  try {
+    return localStorage.getItem(TREE_KEY) === 'tree'
+  } catch {
+    return false
+  }
+}
+const showTree = ref(readTree())
+const toggled = ref(new Set())
+watch(showTree, (tree) => {
+  toggled.value = new Set()
+  try {
+    localStorage.setItem(TREE_KEY, tree ? 'tree' : 'hidden')
+  } catch {
+    /* private window: the choice lasts until the page closes */
+  }
+})
+const fold = (s) => (toggled.value = flip(toggled.value, s))
 // Messages go to the toaster, and to a live region for screen readers: a toast
 // is a visual extra that comes and goes. `progress` is for the "Doing X…"
 // half of an action, which is announced but not worth a toast.
@@ -79,8 +102,10 @@ const AGENT_FILTER_OPTIONS = computed(() =>
 // archived switch still applied — not how many exist in total.
 const agentCounts = computed(() => {
   const counts = {}
-  for (const s of sessions.value) {
-    if (matches(s, { ignoreAgents: true })) counts[s.ref.agent] = (counts[s.ref.agent] || 0) + 1
+  // Rows, as the list would show them: a folded subagent is not one.
+  const left = sessions.value.filter((s) => matches(s, { ignoreAgents: true }))
+  for (const { session } of groupRows(left, { tree: showTree.value })) {
+    counts[session.ref.agent] = (counts[session.ref.agent] || 0) + 1
   }
   return counts
 })
@@ -119,7 +144,7 @@ async function refresh({ streamed = false } = {}) {
     scanning.value = true
     const arriving = []
     let painted = 0
-    const problems = await api.sessionsStreamed(false, async (batch) => {
+    const problems = await api.sessionsStreamed(true, async (batch) => {
       arriving.push(...batch)
       // The first load fills the list as it goes; a later poll replaces it
       // once, so rows do not shift under the pointer.
@@ -290,7 +315,30 @@ function matches(s, { ignoreAgents = false } = {}) {
   )
 }
 
-const visible = computed(() => sessions.value.filter((s) => matches(s)))
+// What the filters match, grouped under parents: a match whose parent did not
+// match stands on its own rather than vanishing behind it.
+const listRows = computed(() =>
+  groupRows(
+    sessions.value.filter((s) => matches(s)),
+    { tree: showTree.value, toggled: toggled.value },
+  ),
+)
+const visible = computed(() => listRows.value.map((r) => r.session))
+const byKey = computed(() => new Map(sessions.value.map((s) => [keyOf(s), s])))
+// Sessions that are not under another one, and the rest.
+const rootCount = computed(() => groupRows(sessions.value).length)
+const subagentCount = computed(() => sessions.value.length - rootCount.value)
+const totalRows = computed(() => (showTree.value ? sessions.value.length : rootCount.value))
+const sessionNote = computed(() => {
+  const n = rootCount.value
+  const subs = subagentCount.value ? ` (+${subagentCount.value} subagent)` : ''
+  return `${n} session${n === 1 ? '' : 's'}${subs} on this machine`
+})
+// Whether any row is a parent or a child, so the rows leave room for the fold
+// button and the indent.
+const grouped = computed(() => listRows.value.some((r) => r.below > 0 || r.depth > 0))
+// An OpenCode subagent travels in its parent's bundle: it is not pushed alone.
+const carried = (s) => s.ref.agent === 'opencode' && !!s.parent && byKey.value.has(`${s.ref.agent}\u0000${s.parent}`)
 
 // Only the rows near the viewport are built. A machine with thousands of
 // sessions would otherwise spend seconds constructing rows nobody has
@@ -310,9 +358,9 @@ const firstRow = computed(() => {
   return Math.max(0, Math.floor(scrolled.value / rowHeight.value) - overscan)
 })
 const shownRows = computed(() => {
-  if (!windowed.value) return visible.value
+  if (!windowed.value) return listRows.value
   const fits = Math.ceil(boxHeight.value / rowHeight.value) + 16
-  return visible.value.slice(firstRow.value, firstRow.value + fits)
+  return listRows.value.slice(firstRow.value, firstRow.value + fits)
 })
 const padTop = computed(() => firstRow.value * rowHeight.value)
 const padBottom = computed(() =>
@@ -459,9 +507,12 @@ const bulkUnarchive = () => runBulk({ action: 'unarchive' })
 
 async function bulkDelete() {
   const n = tickedSessions.value.length
+  const extra = deletedWith(sessions.value, tickedSessions.value)
   const ok = await confirmDialog({
     title: `Delete ${n} sessions?`,
-    description: 'Each is backed up first.',
+    description:
+      'Each is backed up first.' +
+      (extra ? ` It also deletes the ${extra} subagent session${extra === 1 ? '' : 's'} under them.` : ''),
     confirmLabel: 'Delete',
     danger: true,
   })
@@ -614,14 +665,29 @@ async function doCompare(row) {
   await loadHub()
 }
 
+// What deleting a session does to the subagent sessions under it.
+function underNote(s) {
+  const n = underOf(sessions.value, s).length
+  if (!n) return ''
+  const sessionsWord = `${n} subagent session${n === 1 ? '' : 's'}`
+  return deletesDescendants(s.ref.agent)
+    ? ` It also deletes the ${sessionsWord} under it.`
+    : ` The ${sessionsWord} under it ${n === 1 ? 'stays' : 'stay'}, as top-level sessions.`
+}
+
 async function doDelete(s) {
   const ok = await confirmDialog({
     title: `Delete ${shortId(s)}?`,
-    description: `"${s.title || 'untitled'}". A backup is written first.`,
+    description: `"${s.title || 'untitled'}". A backup is written first.${underNote(s)}`,
     confirmLabel: 'Delete',
     danger: true,
   })
-  if (ok) act('Delete', () => api.remove(s))
+  if (ok)
+    act('Delete', async () => {
+      const report = await api.remove(s)
+      const n = report.descendants || 0
+      return n ? `Deleted, with the ${n} subagent session${n === 1 ? '' : 's'} under it. A backup was written first.` : ''
+    })
 }
 
 async function doMove(s) {
@@ -682,6 +748,14 @@ function clearSearch() {
   hits.value = null
   fullText.value = ''
   searchedFor.value = ''
+  nextTick(scrollToOpened)
+}
+
+// What a hit inside a subagent says of where it is.
+function parentLabel(hit) {
+  if (!hit.parent) return ''
+  const parent = byKey.value.get(`${hit.agent}\u0000${hit.parent}`)
+  return parent ? parent.title || shortId(parent) : shortId({ ref: { agent: hit.agent, native_id: hit.parent }, slug: null })
 }
 
 async function reindex() {
@@ -697,10 +771,22 @@ async function reindex() {
   }
 }
 
+// The session a search hit opened, to bring into view when the list returns.
+let openedKey = null
 function openHit(hit) {
-  const match = sessions.value.find((s) => s.ref.agent === hit.agent && s.ref.native_id === hit.native_id)
-  if (match) selected.value = match
-  else say('That session is not in the current list — it may be archived.', { tone: 'warning' })
+  const match = byKey.value.get(`${hit.agent}\u0000${hit.native_id}`)
+  if (!match) return say('That session is not in the current list — it may be archived.', { tone: 'warning' })
+  // A hit inside a subagent unfolds what hides it, so its row exists.
+  toggled.value = reveal(sessions.value, match, { tree: showTree.value, toggled: toggled.value })
+  selected.value = match
+  openedKey = keyOf(match)
+}
+function scrollToOpened() {
+  const key = openedKey
+  openedKey = null
+  const at = key ? listRows.value.findIndex((r) => keyOf(r.session) === key) : -1
+  if (at < 0 || !listBox.value) return
+  window.scrollTo({ top: listBox.value.getBoundingClientRect().top + window.scrollY + at * rowHeight.value - 120 })
 }
 </script>
 
@@ -719,7 +805,7 @@ function openHit(hit) {
     >
       <template #sidebar-footer>
         <ColorModeSwitch class="s-theme" />
-        <p class="s-side-note">{{ sessions.length }} session{{ sessions.length === 1 ? '' : 's' }} on this machine</p>
+        <p class="s-side-note">{{ sessionNote }}</p>
       </template>
 
       <div class="asm-split">
@@ -746,6 +832,8 @@ function openHit(hit) {
               v-model:agents="selectedAgents"
               :project="projectFilter"
               v-model:archived="showArchived"
+              v-model:tree="showTree"
+              :subagents="subagentCount"
               :agent-options="AGENT_FILTER_OPTIONS"
               :agent-counts="agentCounts"
               :projects="projectOptions"
@@ -798,6 +886,7 @@ function openHit(hit) {
                   <template #leading><AgentMark :agent="h.agent" plain /></template>
                   <template #trailing>
                     <HBadge v-if="h.status === 'archived'" tone="accent" label="Archived" />
+                    <span v-if="h.parent" class="s-hit-parent" :title="`A subagent session of ${parentLabel(h)}`">↳ in {{ parentLabel(h) }}</span>
                     <span class="s-snippet" v-html="highlight(h.snippet)" />
                     <span class="s-hit-seq">#{{ h.seq }}</span>
                   </template>
@@ -865,26 +954,32 @@ function openHit(hit) {
                 <HList label="Sessions">
                   <li v-if="padTop" :style="{ height: padTop + 'px' }" aria-hidden="true" role="presentation" />
                   <SessionRow
-                    v-for="s in shownRows"
-                    :key="s.ref.agent + s.ref.native_id"
-                    :session="s"
-                    :active="isOpen(s)"
-                    :ticked="isTicked(s)"
-                    :hub-row="hubRow(s)"
+                    v-for="r in shownRows"
+                    :key="r.session.ref.agent + r.session.ref.native_id"
+                    :session="r.session"
+                    :depth="r.depth"
+                    :below="r.below"
+                    :open="r.open"
+                    :grouped="grouped"
+                    :carried="carried(r.session)"
+                    :active="isOpen(r.session)"
+                    :ticked="isTicked(r.session)"
+                    :hub-row="hubRow(r.session)"
                     :hub="hub"
-                    :caps="capabilities[s.ref.agent]"
+                    :caps="capabilities[r.session.ref.agent]"
                     :compact="isNarrow || !!selected"
-                    :dir="shortDir(s.project_root)"
-                    @open="selected = s"
-                    @tick="toggleTick(s)"
-                    @copy="copyResume(s)"
-                    @push="doPush(s)"
-                    @pull="doPull(hubRow(s))"
-                    @rename="doRename(s)"
-                    @archive="doArchive(s)"
-                    @move="doMove(s)"
-                    @import="doImport(s)"
-                    @delete="doDelete(s)"
+                    :dir="shortDir(r.session.project_root)"
+                    @open="selected = r.session"
+                    @fold="fold(r.session)"
+                    @tick="toggleTick(r.session)"
+                    @copy="copyResume(r.session)"
+                    @push="doPush(r.session)"
+                    @pull="doPull(hubRow(r.session))"
+                    @rename="doRename(r.session)"
+                    @archive="doArchive(r.session)"
+                    @move="doMove(r.session)"
+                    @import="doImport(r.session)"
+                    @delete="doDelete(r.session)"
                   />
                   <li v-if="padBottom" :style="{ height: padBottom + 'px' }" aria-hidden="true" role="presentation" />
                 </HList>
@@ -903,7 +998,7 @@ function openHit(hit) {
       </div>
 
       <template #footer>
-        <span>{{ visible.length }} of {{ sessions.length }} session{{ sessions.length === 1 ? '' : 's' }} shown</span>
+        <span>{{ visible.length }} of {{ totalRows }} session{{ totalRows === 1 ? '' : 's' }} shown</span>
       </template>
     </HDashboardShell>
 

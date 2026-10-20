@@ -22,9 +22,22 @@ Three global options narrow what a command acts on, and mean the same everywhere
 |---|---|
 | `--agent <name>` | One of `claude-code`, `opencode`, `jcode`, `codex`, `antigravity`. |
 | `--project <dir>` | Sessions of that project (the whole repository, not just the directory — see [Projects](/concepts/projects/)). |
-| `--include-children` | Include subagent and child sessions, hidden by default. |
+| `--include-children` | Include subagent and child sessions, hidden by default. `asm list` nests them under their parent. |
 
 On `push` and `pull`, `--all` means **everything the filters match** — `asm pull --all --agent codex` pulls every Codex session on the hub — and `--include-children` is its own, separate decision.
+
+### Subagent sessions
+
+`asm list` folds a session's [child sessions](/start/concepts/#child-sessions) behind it and marks the parent with `+N` (how many) at the end of its row; `asm list --include-children` shows them under it:
+
+```text
+AGENT     ID        PARENT    TITLE                      …  STATUS
+opencode  ses_71bc            Billing webhook retries    …  idle
+opencode  ses_71c0  ses_71bc  ↳ Review the retries       …  idle
+opencode  ses_71c4  ses_71c0    ↳ Explore the queue      …  idle
+```
+
+A child needs no flag to be named: `asm show ses_71c4`, `asm delete ses_71c4` and the other verbs find it by its id. Deleting an OpenCode session deletes everything under it, and the prompt lists what (`--yes` skips the prompt, not the backup). `asm list --json` is the same flat array either way; each session has a `parent`.
 
 ## Everyday verbs
 

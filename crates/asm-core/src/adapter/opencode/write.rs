@@ -276,5 +276,5 @@ pub(super) fn delete(
         return Err(CoreError::Invalid { msg: format!("session {id} not found in store") });
     }
     removed.push(adapter.db().to_path_buf());
-    Ok(DeleteReport { backup_dir: Some(backup), removed, note: None })
+    Ok(DeleteReport { backup_dir: Some(backup), removed, descendants: targets.len() - 1, note: None })
 }

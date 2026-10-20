@@ -14,10 +14,10 @@ All routes are under `asm serve` (default `http://127.0.0.1:7433`). Mutating (`P
 | Route | Returns |
 |---|---|
 | `GET /api/meta` | `{"home": …}` — the home directory, so the UI can shorten paths. |
-| `GET /api/sessions` | Sessions. `?all=true` includes children; `?stream=1` sends one JSON object per line as stores give sessions up. |
+| `GET /api/sessions` | Sessions. `?all=true` includes [child sessions](/start/concepts/#child-sessions) (each has a `parent`: the native id of its parent, `null` for a top-level session), which the web UI groups itself; without it, top-level sessions only. `?stream=1` sends one JSON object per line as stores give sessions up. |
 | `GET /api/projects` | Projects with counts. |
 | `GET /api/doctor` | The `asm doctor` report. |
-| `GET /api/search?q=&agent=&project=&limit=` | Full-text hits with snippets. |
+| `GET /api/search?q=&agent=&project=&limit=` | Full-text hits with snippets. A hit inside a child session carries `parent`, the native id of its parent. |
 | `GET /api/index` | Index statistics. |
 | `GET /api/session/{agent}/{id}/ir` | The session as IR. |
 | `GET /api/hub` | Hub status: joined, connected, url, machine, error, a summary, one row per session with its sync state — and `daemon`: the local daemon's state and last-written status (or `null`). |

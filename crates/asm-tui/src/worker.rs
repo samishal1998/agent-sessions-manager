@@ -129,7 +129,10 @@ pub fn spawn() -> Worker {
             if let Request::Scan = request {
                 let tx = resp_tx.clone();
                 let mut found = Vec::new();
-                let problems = ops::stream_sessions(&SessionFilter::default(), |_, batch| {
+                // Children are read too: the list groups them under their
+                // parent, and a search hit inside one has to be openable.
+                let everything = SessionFilter { include_children: true, ..SessionFilter::default() };
+                let problems = ops::stream_sessions(&everything, |_, batch| {
                     found.extend(batch.iter().cloned());
                     // A closed channel means the TUI has gone; stop reading.
                     tx.send(Response::SessionBatch(batch)).is_ok()
@@ -183,8 +186,13 @@ fn handle(request: Request) -> Response {
         }
         Request::Delete(session) => match ops::delete(&session) {
             Ok(report) => Response::Done(format!(
-                "deleted {} (backup: {}){}",
+                "deleted {}{} (backup: {}){}",
                 session.short_id(),
+                match report.descendants {
+                    0 => String::new(),
+                    1 => " and the 1 session under it".to_string(),
+                    n => format!(" and the {n} sessions under it"),
+                },
                 report
                     .backup_dir
                     .map(|p| p.display().to_string())
@@ -334,12 +342,18 @@ fn projects_of(sessions: &[Session]) -> Vec<asm_core::model::Project> {
     )
 }
 
+/// How many of `agent`'s sessions the store health counts: the ones its
+/// own picker lists, as `asm doctor` does, not its subagents.
+fn top_level_of(sessions: &[Session], agent: asm_core::model::AgentKind) -> usize {
+    sessions.iter().filter(|s| s.handle.agent == agent && s.parent.is_none()).count()
+}
+
 /// The health overlay's lines for the stores as they stand, with the
 /// number of warnings among them. Session counts are the scan's own.
 fn health_of(sessions: &[Session]) -> Response {
     let counted = |adapter: &asm_core::adapter::Adapter| {
         use asm_core::adapter::AgentRead;
-        Ok(sessions.iter().filter(|s| s.handle.agent == adapter.kind()).count())
+        Ok(top_level_of(sessions, adapter.kind()))
     };
     match ops::doctor_with(counted) {
         Ok(report) => {
@@ -513,6 +527,38 @@ mod tests {
     use std::cell::Cell;
     use std::path::Path;
     use std::time::Duration;
+
+    /// The store health counts what `asm doctor` counts, whichever listing
+    /// the sessions came from.
+    #[test]
+    fn health_counts_the_sessions_an_agents_picker_lists() {
+        use asm_core::model::{AgentKind, SessionLocation, SessionRef, SessionStatus};
+        let session = |agent, id: &str, parent: Option<&str>| Session {
+            handle: SessionRef { agent, native_id: id.into(), location: SessionLocation::JsonlFile { path: "/x".into() } },
+            title: None,
+            slug: None,
+            project_root: "/p".into(),
+            git_branch: None,
+            created: None,
+            updated: None,
+            model: None,
+            usage: Default::default(),
+            status: SessionStatus::Idle,
+            parent: parent.map(str::to_string),
+            agent_version: None,
+            size_bytes: None,
+        };
+        let all = vec![
+            session(AgentKind::OpenCode, "a", None),
+            session(AgentKind::OpenCode, "b", Some("a")),
+            session(AgentKind::OpenCode, "c", Some("b")),
+            session(AgentKind::OpenCode, "d", Some("gone")),
+            session(AgentKind::ClaudeCode, "x", None),
+        ];
+        assert_eq!(top_level_of(&all, AgentKind::OpenCode), 1);
+        assert_eq!(top_level_of(&all, AgentKind::ClaudeCode), 1);
+        assert_eq!(top_level_of(&all, AgentKind::Codex), 0);
+    }
 
     /// Asked twice, git is asked once: the answer is what a scan used to
     /// fork a process for, for every project directory.

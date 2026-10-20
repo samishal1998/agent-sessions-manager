@@ -30,7 +30,8 @@ pub struct Cli {
     #[arg(long, global = true)]
     project: Option<PathBuf>,
 
-    /// Include subagent/child sessions (hidden by default).
+    /// Include subagent/child sessions (hidden by default). `list` shows them
+    /// nested under their parent.
     #[arg(long = "include-children", global = true)]
     include_children: bool,
 
@@ -41,6 +42,12 @@ pub struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// List sessions across all agents (default command).
+    ///
+    /// Subagent sessions are folded behind their parent: a session that has
+    /// some ends its row with `+N` in the status column. With
+    /// `--include-children` they are listed under it, indented, with the
+    /// parent's id in a PARENT column. `--json` is an array of sessions in
+    /// listing order, each with its `parent` (null for a top-level session).
     List,
     /// List projects with session counts. A project is a git repository —
     /// every worktree of it, plus sessions started in subdirectories — not
@@ -87,6 +94,11 @@ enum Command {
         r#ref: String,
     },
     /// Delete a session and all its sidecars (backed up first).
+    ///
+    /// OpenCode deletes a session's whole tree, so the sessions under it go
+    /// with it; the prompt names them, and the backup holds them all. jcode
+    /// deletes the one session, and its children stay as top-level sessions.
+    /// `--yes` skips the prompt.
     Delete {
         /// Session to act on: a native id, a unique id prefix, or `agent:id-prefix`.
         r#ref: String,
@@ -607,11 +619,16 @@ fn search(
         println!("No matches for {query:?}.");
         return Ok(());
     }
+    let short = |agent: &str, id: &str| -> String {
+        id.chars().take(if agent == "opencode" { 12 } else { 8 }).collect()
+    };
     for hit in &hits {
-        let id: String = hit.native_id.chars().take(if hit.agent == "opencode" { 12 } else { 8 }).collect();
+        let id = short(&hit.agent, &hit.native_id);
         let archived = if hit.status == "archived" { "  (archived)" } else { "" };
+        // A hit inside a subagent says whose subagent it is.
+        let parent = hit.parent.as_deref().map_or(String::new(), |p| format!("  ↳ in {}", short(&hit.agent, p)));
         println!(
-            "{}  {}  {}{archived}",
+            "{}  {}  {}{parent}{archived}",
             hit.agent,
             id,
             hit.title.as_deref().unwrap_or("(untitled)")
@@ -898,26 +915,62 @@ fn build_filter(cli: &Cli) -> anyhow::Result<SessionFilter> {
         ),
         None => None,
     };
-    Ok(SessionFilter { agent, project, include_children: cli.include_children })
+    Ok(SessionFilter { agent, project, include_children: cli.include_children, include_debug: false })
 }
 
 fn list(filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
-    let (sessions, problems) = ops::list_sessions_partial(filter);
+    // Children are read either way: the `+N` after a session counts them,
+    // and `--include-children` nests them under it.
+    let (sessions, problems) =
+        ops::list_sessions_partial(&SessionFilter { include_children: true, ..filter.clone() });
     for problem in problems {
         eprintln!("asm: could not read {problem}");
     }
     for note in ops::store_notes() {
         eprintln!("asm: {note}");
     }
+    let tree = ops::group_children(&sessions);
     if json {
-        println!("{}", serde_json::to_string_pretty(&sessions)?);
+        // A flat array in listing order, nested or not. Without
+        // `--include-children` it is the roots, as it always was.
+        let listed: Vec<&asm_core::model::Session> = if filter.include_children {
+            sessions.iter().collect()
+        } else {
+            tree.iter().map(|n| &sessions[n.index]).collect()
+        };
+        println!("{}", serde_json::to_string_pretty(&listed)?);
         return Ok(());
     }
     if sessions.is_empty() {
         println!("No sessions found.");
         return Ok(());
     }
-    format::session_table(&sessions);
+    if filter.include_children {
+        // A parent goes by the id its own row shows (a jcode session by its
+        // name); one that is not listed by what its id begins with.
+        let goes_by: std::collections::HashMap<(AgentKind, &str), &str> =
+            sessions.iter().map(|s| ((s.handle.agent, s.handle.native_id.as_str()), s.short_id())).collect();
+        let rows: Vec<format::Row> = ops::flatten(&tree, &|_| true)
+            .into_iter()
+            .map(|(i, depth)| {
+                let s = &sessions[i];
+                let parent = s.parent.as_deref().map(|p| {
+                    goes_by
+                        .get(&(s.handle.agent, p))
+                        .map_or_else(|| asm_core::model::short_id_of(s.handle.agent, p, None), |id| *id)
+                        .to_string()
+                });
+                format::Row { session: s, depth, below: 0, parent }
+            })
+            .collect();
+        format::session_rows(&rows, true);
+    } else {
+        let rows: Vec<format::Row> = tree
+            .iter()
+            .map(|n| format::Row { session: &sessions[n.index], depth: 0, below: n.descendants(), parent: None })
+            .collect();
+        format::session_rows(&rows, false);
+    }
     Ok(())
 }
 
@@ -1048,15 +1101,53 @@ fn unarchive(query: &str, filter: &SessionFilter) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// How many of a session's children the confirmation names; the rest are
+/// counted.
+const DELETE_NAMES: usize = 5;
+
+/// What `asm delete` asks. A session with sessions under it says so: for the
+/// agents that delete the whole tree (`cascades`) it names what goes with
+/// it, and for the others what stays. `below` is [`ops::descendants`].
+fn delete_prompt(
+    session: &asm_core::model::Session,
+    below: &[(usize, asm_core::model::Session)],
+    cascades: bool,
+) -> String {
+    let mut prompt = format!(
+        "Delete {} \"{}\" ({}) and all its sidecars?",
+        session.short_id(),
+        session.title.as_deref().unwrap_or("(untitled)"),
+        session.handle.agent,
+    );
+    let n = below.len();
+    let s = if n == 1 { "" } else { "s" };
+    if n > 0 && cascades {
+        prompt.push_str(&format!(" It also deletes the {n} session{s} under it:\n"));
+        for (depth, child) in below.iter().take(DELETE_NAMES) {
+            prompt.push_str(&format!(
+                "  {}{}  {}\n",
+                "  ".repeat(depth - 1),
+                child.short_id(),
+                format::truncate(child.title.as_deref().unwrap_or("(untitled)"), 60),
+            ));
+        }
+        if n > DELETE_NAMES {
+            prompt.push_str(&format!("  … and {} more\n", n - DELETE_NAMES));
+        }
+    } else if n > 0 {
+        let (the, are) = if n == 1 { ("The session".to_string(), "is") } else { (format!("The {n} sessions"), "are") };
+        prompt.push_str(&format!(" {the} under it {are} kept, and top-level from now on.\n"));
+    }
+    prompt.push_str(if prompt.ends_with('\n') { "[y/N] " } else { " [y/N] " });
+    prompt
+}
+
 fn delete(query: &str, yes: bool, filter: &SessionFilter) -> anyhow::Result<()> {
     let session = resolve(query, filter)?;
     if !yes {
-        eprint!(
-            "Delete {} \"{}\" ({}) and all its sidecars? [y/N] ",
-            session.short_id(),
-            session.title.as_deref().unwrap_or("(untitled)"),
-            session.handle.agent,
-        );
+        // Asked before anything is deleted, and only when it is to be shown.
+        let below = ops::descendants(&session).unwrap_or_default();
+        eprint!("{}", delete_prompt(&session, &below, ops::deletes_descendants(session.handle.agent)));
         let mut answer = String::new();
         std::io::stdin().read_line(&mut answer)?;
         if !matches!(answer.trim(), "y" | "Y" | "yes") {
@@ -1068,7 +1159,15 @@ fn delete(query: &str, yes: bool, filter: &SessionFilter) -> anyhow::Result<()> 
     if let Some(backup) = &report.backup_dir {
         println!("Backed up to {}.", backup.display());
     }
-    println!("Deleted {} ({} paths/stores touched).", session.short_id(), report.removed.len());
+    let touched = report.removed.len();
+    match report.descendants {
+        0 => println!("Deleted {} ({touched} paths/stores touched).", session.short_id()),
+        n => println!(
+            "Deleted {} and the {n} session{} under it ({touched} paths/stores touched).",
+            session.short_id(),
+            if n == 1 { "" } else { "s" }
+        ),
+    }
     if let Some(note) = &report.note {
         println!("{note}.");
     }
@@ -1685,5 +1784,87 @@ mod tests {
             Ok(_) => panic!("--help is an error that prints"),
         };
         assert!(help.contains("serve") && !help.contains("receive"), "{help}");
+    }
+
+    fn session(agent: AgentKind, id: &str, title: &str, parent: Option<&str>) -> asm_core::model::Session {
+        use asm_core::model::{SessionLocation, SessionRef, SessionStatus};
+        asm_core::model::Session {
+            handle: SessionRef {
+                agent,
+                native_id: id.into(),
+                location: SessionLocation::JsonlFile { path: format!("/t/{id}").into() },
+            },
+            title: Some(title.into()),
+            slug: None,
+            project_root: "/w/app".into(),
+            git_branch: None,
+            created: None,
+            updated: None,
+            model: None,
+            usage: Default::default(),
+            status: SessionStatus::Idle,
+            parent: parent.map(str::to_string),
+            agent_version: None,
+            size_bytes: None,
+        }
+    }
+
+    /// A session with nothing under it is asked about exactly as it always was.
+    #[test]
+    fn deleting_a_session_with_no_children_asks_what_it_always_did() {
+        let root = session(AgentKind::OpenCode, "ses_71bc0e4faa21", "Plan", None);
+        for cascades in [true, false] {
+            assert_eq!(
+                delete_prompt(&root, &[], cascades),
+                "Delete ses_71bc \"Plan\" (opencode) and all its sidecars? [y/N] "
+            );
+        }
+    }
+
+    /// OpenCode (1.x and 2.x alike: the prompt knows the agent, not the
+    /// store) deletes a session's whole tree, so the prompt says what that
+    /// is: how many, and which, indented by depth.
+    #[test]
+    fn deleting_an_opencode_parent_names_what_goes_with_it() {
+        let root = session(AgentKind::OpenCode, "ses_root00000000", "Plan", None);
+        let below = vec![
+            (1, session(AgentKind::OpenCode, "ses_kid100000000", "Review docs (@general subagent)", Some("ses_root00000000"))),
+            (2, session(AgentKind::OpenCode, "ses_gran10000000", "Nested", Some("ses_kid100000000"))),
+        ];
+        assert_eq!(
+            delete_prompt(&root, &below, true),
+            "Delete ses_root \"Plan\" (opencode) and all its sidecars? It also deletes the 2 sessions under it:\n\
+             \x20 ses_kid1  Review docs (@general subagent)\n\
+             \x20   ses_gran  Nested\n\
+             [y/N] "
+        );
+        let one = &below[..1];
+        assert!(delete_prompt(&root, one, true).contains("the 1 session under it:"));
+    }
+
+    /// A long tree is counted, not listed.
+    #[test]
+    fn a_long_list_of_children_is_cut_and_counted() {
+        let root = session(AgentKind::OpenCode, "ses_root00000000", "Plan", None);
+        let below: Vec<_> = (0..8)
+            .map(|i| (1, session(AgentKind::OpenCode, &format!("ses_kid{i}0000000"), &"x".repeat(100), Some("ses_root00000000"))))
+            .collect();
+        let prompt = delete_prompt(&root, &below, true);
+        assert!(prompt.contains("the 8 sessions under it:"), "{prompt}");
+        assert_eq!(prompt.lines().filter(|l| l.starts_with("  ses_kid")).count(), DELETE_NAMES);
+        assert!(prompt.contains("… and 3 more"), "{prompt}");
+        assert!(prompt.lines().all(|l| l.chars().count() < 100), "titles are clipped");
+        assert!(prompt.ends_with("\n[y/N] "));
+    }
+
+    /// Where deleting a session leaves its children (jcode), the prompt says
+    /// they stay, rather than that they go.
+    #[test]
+    fn a_parent_whose_children_stay_says_so() {
+        let main = session(AgentKind::JCode, "session_main_1790000000000_aaaa", "Main", None);
+        let kid = (1, session(AgentKind::JCode, "session_kid_1790000000001_bbbb", "Kid", Some("session_main_1790000000000_aaaa")));
+        let prompt = delete_prompt(&main, &[kid.clone(), kid], false);
+        assert!(prompt.contains("The 2 sessions under it are kept, and top-level from now on.\n"), "{prompt}");
+        assert!(!prompt.contains("also deletes"));
     }
 }

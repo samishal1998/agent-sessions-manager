@@ -10,6 +10,7 @@ description: What asm can do with each agent's sessions, where they live, and wh
 | List, show, search, projects | yes | yes | yes | yes | yes |
 | Liveness | yes | yes | yes | no | no |
 | Resume | yes | yes | yes | yes | yes |
+| Child sessions (subagents) | inside the parent's transcript | yes, at any depth | yes | yes | no |
 | Export to Session IR | yes | yes | yes | yes | yes |
 | Rename | yes | yes | yes | no | no |
 | Archive / unarchive | yes | yes (1.x only) | yes | no | no |
@@ -24,6 +25,10 @@ description: What asm can do with each agent's sessions, where they live, and wh
 | Hub restore verified against | 2.1.278 | 1.18.31; 2.0.25 (same major version only) | 0.83.0 | 0.151.0 | 1.1.22 |
 
 `asm doctor --json` reports each agent's capabilities, and the web UI greys out what an agent cannot do, so the limits are visible rather than discovered by error. Importing a session into an agent warns when the installed version has drifted from the verified one (`asm doctor` does not check this). OpenCode is verified once per major version: an installed 2.x is compared with 2.0.25, a 1.x with 1.17.18. For 2.0.25 "verified" means the real binary accepted the import and the session read back from its store; resuming an imported session was not exercised.
+
+## Child sessions
+
+Where an agent records one session as the child of another, asm groups them (see [Child sessions](/start/concepts/#child-sessions)): OpenCode through `parent_id` (1.x and 2.x, at any depth; 2.x's `fork_session_id` forks are siblings and list as ordinary sessions), jcode through `parent_id`, Codex through its spawn edges. jcode's `is_debug` sessions are not children and stay out of every list. Claude Code's subagents are not sessions: they appear inside the parent's transcript. Antigravity has none.
 
 ## Where each agent keeps its sessions
 

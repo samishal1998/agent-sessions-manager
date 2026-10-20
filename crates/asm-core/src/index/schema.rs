@@ -21,6 +21,9 @@ CREATE TABLE indexed_session (
     native_id     TEXT NOT NULL,
     title         TEXT,
     project_root  TEXT,
+    -- Native id of the session this is a child of (a subagent), if any, so
+    -- a hit inside a child can say where it belongs.
+    parent        TEXT,
     updated_ms    INTEGER,
     -- 'idle' | 'live' | 'archived'; archived sessions are searchable but
     -- are not in `asm list`, so results can say why.

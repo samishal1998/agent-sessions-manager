@@ -65,6 +65,10 @@ pub struct SearchHit {
     pub native_id: String,
     pub title: Option<String>,
     pub project_root: Option<String>,
+    /// Native id (same agent) of the session this one is a child of, when it
+    /// is a subagent: a hit inside it is still returned, and this is how a
+    /// frontend says where it belongs.
+    pub parent: Option<String>,
     pub role: String,
     /// Position of the matching message within the session.
     pub seq: i64,
@@ -212,6 +216,7 @@ struct Documents {
     fingerprint: String,
     title: Option<String>,
     project_root: String,
+    parent: Option<String>,
     updated_ms: Option<i64>,
     status: &'static str,
     /// (sequence, role, text, timestamp)
@@ -236,6 +241,7 @@ impl Documents {
             fingerprint,
             title: session.title.clone(),
             project_root: session.project_root.display().to_string(),
+            parent: session.parent.clone(),
             updated_ms: session.updated.map(|t| t.as_millisecond()),
             status: status_name(&session.status),
             messages: ir
@@ -302,8 +308,9 @@ impl Index {
     /// with a short message per session actually re-extracted.
     pub fn refresh(&mut self, progress: impl FnMut(RefreshProgress)) -> Result<RefreshReport, CoreError> {
         // Subagent sessions are included: their content is worth finding
-        // even though the pickers hide them.
-        let filter = SessionFilter { include_children: true, ..SessionFilter::default() };
+        // even though the pickers hide them. So are jcode's debug sessions,
+        // which the index has always held.
+        let filter = SessionFilter { include_children: true, include_debug: true, ..SessionFilter::default() };
         let (mut sessions, unreadable) = ops::list_sessions_partial(&filter);
         // Archived sessions have left their agent's store but not our
         // archive, and "where did I do that thing" should still find them.
@@ -393,9 +400,9 @@ impl Index {
             let mut record = tx
                 .prepare(
                     "INSERT OR REPLACE INTO indexed_session
-                        (agent, native_id, title, project_root, updated_ms, status,
+                        (agent, native_id, title, project_root, parent, updated_ms, status,
                          fingerprint, message_count, first_rowid, last_rowid, indexed_at_ms)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 )
                 .map_err(&sql_err)?;
             let now = jiff::Timestamp::now().as_millisecond();
@@ -424,6 +431,7 @@ impl Index {
                         documents.id,
                         documents.title,
                         documents.project_root,
+                        documents.parent,
                         documents.updated_ms,
                         documents.status,
                         documents.fingerprint,
@@ -598,7 +606,7 @@ impl Index {
         let mut sql = String::from(
             "SELECT m.agent, m.native_id, s.title, s.project_root, m.role, m.seq, m.ts,
                     snippet(message_fts, 0, '\u{1}', '\u{2}', '…', 14), bm25(message_fts),
-                    s.status
+                    s.status, s.parent
              FROM message_fts m
              LEFT JOIN indexed_session s
                     ON s.agent = m.agent AND s.native_id = m.native_id
@@ -632,6 +640,7 @@ impl Index {
                     snippet: row.get(7)?,
                     score: row.get(8)?,
                     status: row.get::<_, Option<String>>(9)?.unwrap_or_else(|| "idle".into()),
+                    parent: row.get(10)?,
                 })
             })
             .map_err(self.sql_err())?;

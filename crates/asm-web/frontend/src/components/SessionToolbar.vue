@@ -17,6 +17,8 @@ const props = defineProps({
   found: { type: Number, default: 0 },
   indexing: { type: Object, default: null },
   anyFilter: { type: Boolean, default: false },
+  // Subagent sessions in the list: the switch is only worth showing when there are some.
+  subagents: { type: Number, default: 0 },
 })
 const emit = defineEmits(['search', 'clear-search', 'refresh', 'clear'])
 
@@ -25,6 +27,7 @@ const fullText = defineModel('fullText', { type: String, default: '' })
 const agents = defineModel('agents', { type: Array, default: () => [] })
 const project = defineModel('project', { type: String, default: '' })
 const archived = defineModel('archived', { type: Boolean, default: true })
+const tree = defineModel('tree', { type: Boolean, default: false })
 
 // Counts go in the label: HChipGroup has no slot for them.
 const chipOptions = computed(() =>
@@ -37,6 +40,7 @@ const chipOptions = computed(() =>
     <HPageHeader class="s-head" title="Sessions">
       <!-- The shell's mobile drawer has no footer, so on phones the colour mode lives here. -->
       <ColorModeSwitch class="s-theme-mobile" />
+      <HSwitch v-if="subagents" v-model="tree" label="Show subagent sessions as a tree" />
       <HSwitch v-model="archived" label="Archived" />
       <HButton variant="secondary" size="compact" @click="emit('refresh')">
         <RefreshCw :size="15" aria-hidden="true" />

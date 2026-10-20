@@ -57,6 +57,21 @@ fn session_field_names_are_stable() {
     }
 }
 
+/// The UIs group children into a tree from this one field: a null for a
+/// root, the parent's native id for a child.
+#[test]
+fn parent_is_the_native_id_of_the_parent_or_null() {
+    assert_eq!(json(SessionStatus::Idle)["parent"], Value::Null);
+    let mut child = sample(SessionStatus::Idle);
+    child.parent = Some("ses_boss".into());
+    let value = serde_json::to_value(&child).unwrap();
+    assert_eq!(value["parent"], "ses_boss");
+    let back: Session = serde_json::from_value(value).unwrap();
+    assert_eq!(back.parent.as_deref(), Some("ses_boss"));
+    // No field was added to carry the tree: it is grouped from `parent`.
+    assert_eq!(serde_json::to_value(sample(SessionStatus::Idle)).unwrap().as_object().unwrap().len(), 13);
+}
+
 #[test]
 fn agent_names_match_their_cli_spelling() {
     // Must agree with Display, AgentKind::parse and the `--agent` flag —

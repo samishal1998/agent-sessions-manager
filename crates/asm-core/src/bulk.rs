@@ -12,7 +12,9 @@
 //!   later session can succeed after an earlier one failed. That is why the
 //!   report is per item and not a count of how far it got.
 //! - **Order is the order given.** Sequential, never parallel: these verbs
-//!   move files and rewrite rows in stores other programs own.
+//!   move files and rewrite rows in stores other programs own. (A delete runs
+//!   children before their parents, so a parent that takes them with it does
+//!   not make them fail.)
 //! - **Everything goes through [`crate::ops`].** The single-session verbs
 //!   already refuse to touch a live session and back up before destroying
 //!   anything; reaching past them into the adapters would quietly drop
@@ -183,7 +185,7 @@ pub fn run(sessions: &[Session], action: &BulkAction) -> BulkReport {
     };
 
     let mut report = BulkReport::default();
-    for session in sessions {
+    for session in in_order(sessions, action, &store_tree) {
         let label = format!("{} {}", session.handle.agent, session.short_id());
         let outcome = if let Some(reason) = dest_refuses.clone() {
             ItemOutcome::Skipped { reason }
@@ -200,6 +202,45 @@ pub fn run(sessions: &[Session], action: &BulkAction) -> BulkReport {
         });
     }
     report
+}
+
+/// The order a batch runs in: the order given, except that a delete goes
+/// deepest first. Deleting a parent takes its subagent sessions with it for
+/// the agents that do that, so one ticked after it would only fail with
+/// "not found" for a session that is gone because it was asked for.
+///
+/// Depth is measured in the agent's whole tree (`tree`), not the batch's: a
+/// grandchild ticked without the session between it and a ticked root is
+/// still below that root.
+fn in_order<'a>(
+    sessions: &'a [Session],
+    action: &BulkAction,
+    tree: &dyn Fn(AgentKind) -> Vec<Session>,
+) -> Vec<&'a Session> {
+    let mut order: Vec<&Session> = sessions.iter().collect();
+    if matches!(action, BulkAction::Delete) {
+        let key = |s: &Session| (s.handle.agent, s.handle.native_id.clone());
+        let mut all: Vec<Session> = sessions.to_vec();
+        let mut seen: std::collections::HashSet<_> = all.iter().map(key).collect();
+        let mut agents: Vec<AgentKind> = sessions.iter().map(|s| s.handle.agent).collect();
+        agents.dedup();
+        for agent in agents.into_iter().filter(|a| ops::deletes_descendants(*a)) {
+            all.extend(tree(agent).into_iter().filter(|s| seen.insert(key(s))));
+        }
+        let depth: std::collections::HashMap<usize, usize> =
+            ops::flatten(&ops::group_children(&all), &|_| true).into_iter().collect();
+        let depth_of: std::collections::HashMap<_, _> = all.iter().enumerate().map(|(i, s)| (key(s), depth[&i])).collect();
+        // Stable, so equal depths keep the order given.
+        order.sort_by_key(|s| std::cmp::Reverse(depth_of[&key(s)]));
+    }
+    order
+}
+
+/// Every session of `agent` in its store, children included; what is
+/// unreadable counts as nothing (the batch then orders by what it holds).
+fn store_tree(agent: AgentKind) -> Vec<Session> {
+    let filter = SessionFilter { agent: Some(agent), include_children: true, ..SessionFilter::default() };
+    ops::list_sessions(&filter).unwrap_or_default()
 }
 
 fn apply(session: &Session, action: &BulkAction) -> ItemOutcome {
@@ -363,6 +404,58 @@ mod tests {
         assert!(BulkAction::Move { dir: "/tmp".into() }.is_destructive());
         assert!(!BulkAction::Archive.is_destructive());
         assert!(!BulkAction::Export { dir: "/tmp".into() }.is_destructive());
+    }
+
+    fn opencode(id: &str, parent: Option<&str>) -> Session {
+        Session {
+            handle: crate::model::SessionRef {
+                agent: AgentKind::OpenCode,
+                native_id: id.into(),
+                location: crate::model::SessionLocation::JsonlFile { path: "/x".into() },
+            },
+            title: None,
+            slug: None,
+            project_root: "/p".into(),
+            git_branch: None,
+            created: None,
+            updated: None,
+            model: None,
+            usage: Default::default(),
+            status: crate::model::SessionStatus::Idle,
+            parent: parent.map(str::to_string),
+            agent_version: None,
+            size_bytes: None,
+        }
+    }
+
+    /// Ticking a parent and its children, parent first, must not make the
+    /// children fail for having been deleted with it.
+    #[test]
+    fn a_delete_goes_deepest_first_and_nothing_else_is_reordered() {
+        let batch = vec![
+            opencode("root", None),
+            opencode("grand", Some("kid")),
+            opencode("other", None),
+            opencode("kid", Some("root")),
+        ];
+        let ids = |action: &BulkAction| -> Vec<String> {
+            in_order(&batch, action, &|_| Vec::new()).iter().map(|s| s.handle.native_id.clone()).collect()
+        };
+        assert_eq!(ids(&BulkAction::Delete), ["grand", "kid", "root", "other"]);
+        assert_eq!(ids(&BulkAction::Archive), ["root", "grand", "other", "kid"], "the order given");
+    }
+
+    /// Root and grandchild ticked, the session between them not: the store
+    /// knows the grandchild is deeper, so it still goes first.
+    #[test]
+    fn a_ticked_grandchild_goes_before_its_root_even_without_the_session_between() {
+        let batch = vec![opencode("root", None), opencode("other", None), opencode("grand", Some("kid"))];
+        let store = |agent: AgentKind| {
+            assert_eq!(agent, AgentKind::OpenCode);
+            vec![opencode("root", None), opencode("kid", Some("root")), opencode("grand", Some("kid"))]
+        };
+        let ids: Vec<String> = in_order(&batch, &BulkAction::Delete, &store).iter().map(|s| s.handle.native_id.clone()).collect();
+        assert_eq!(ids, ["grand", "root", "other"]);
     }
 
     #[test]

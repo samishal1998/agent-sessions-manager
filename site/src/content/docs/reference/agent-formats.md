@@ -532,7 +532,7 @@ follows.
 | `short_name` | memorable name ("fox"); what `jcode --resume` takes and what the UI shows |
 | `working_dir` | the project directory |
 | `parent_id` | spawned child sessions |
-| `is_debug` | debug/test sessions, hidden like subagents elsewhere |
+| `is_debug` | debug/test sessions: never listed (a different thing from `parent_id` children, which `--include-children` shows) |
 | `status` | externally tagged: `"Active"`, `"Closed"`, `{"Crashed":{…}}`, `{"Error":{…}}` |
 | `last_pid` | the process that last owned the session |
 

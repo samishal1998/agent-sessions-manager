@@ -127,24 +127,43 @@ fn journal_files_are_not_sessions() {
     let dir = tempfile::tempdir().unwrap();
     write_store(dir.path());
     let all = adapter(dir.path())
-        .sessions(&SessionFilter { include_children: true, ..SessionFilter::default() })
+        .sessions(&SessionFilter { include_children: true, include_debug: true, ..SessionFilter::default() })
         .unwrap();
 
     assert_eq!(all.len(), 3, "main + child + debug, and no journal");
     assert!(all.iter().all(|s| !s.handle.native_id.contains("journal")));
 }
 
+fn ids(dir: &Path, filter: SessionFilter) -> Vec<String> {
+    let mut ids: Vec<String> =
+        adapter(dir).sessions(&filter).unwrap().into_iter().map(|s| s.handle.native_id).collect();
+    ids.sort();
+    ids
+}
+
+/// Children and debug sessions are two different things behind two flags:
+/// a listing that asks for children, to show them under their parent, must
+/// not get jcode's own debug scaffolding as top-level sessions.
 #[test]
-fn children_and_debug_sessions_are_hidden_until_asked_for() {
+fn children_and_debug_sessions_are_hidden_until_asked_for_separately() {
     let dir = tempfile::tempdir().unwrap();
     write_store(dir.path());
-    let all = adapter(dir.path())
+    let with = |include_children, include_debug| {
+        ids(dir.path(), SessionFilter { include_children, include_debug, ..SessionFilter::default() })
+    };
+
+    assert_eq!(with(false, false), vec![MAIN]);
+    // Children, with their parent named, and no debug session among them.
+    assert_eq!(with(true, false), vec![CHILD, MAIN]);
+    let listed = adapter(dir.path())
         .sessions(&SessionFilter { include_children: true, ..SessionFilter::default() })
         .unwrap();
-
-    let child = all.iter().find(|s| s.handle.native_id == CHILD).unwrap();
+    let child = listed.iter().find(|s| s.handle.native_id == CHILD).unwrap();
     assert_eq!(child.parent.as_deref(), Some(MAIN));
-    assert!(all.iter().any(|s| s.handle.native_id == DEBUG));
+    assert!(listed.iter().all(|s| s.handle.native_id != DEBUG), "debug stays out of a children listing");
+    // Debug on its own does not bring children.
+    assert_eq!(with(false, true), vec![DEBUG, MAIN]);
+    assert_eq!(with(true, true), vec![CHILD, DEBUG, MAIN]);
 }
 
 #[test]

@@ -300,11 +300,14 @@ pub fn commit(message: &str) -> Result<CommitOutcome, CoreError> {
 /// They are deliberately absent from `asm list`, which reflects what the
 /// agents themselves can see.
 pub fn archived_sessions() -> Result<Vec<crate::model::Session>, CoreError> {
+    archived_sessions_in(&archive_root()?)
+}
+
+fn archived_sessions_in(root: &Path) -> Result<Vec<crate::model::Session>, CoreError> {
     use crate::model::{AgentKind, Session, SessionLocation, SessionRef, SessionStatus, Usage};
 
-    let root = archive_root()?;
     let mut sessions = Vec::new();
-    for agent_dir in read_dirs(&root)? {
+    for agent_dir in read_dirs(root)? {
         let Some(agent_name) = agent_dir.file_name().and_then(|n| n.to_str()) else { continue };
         let Some(agent) = AgentKind::parse(agent_name) else { continue };
 
@@ -344,7 +347,8 @@ pub fn archived_sessions() -> Result<Vec<crate::model::Session>, CoreError> {
                 model: None,
                 usage: Usage::default(),
                 status: SessionStatus::Archived,
-                parent: None,
+                // Absent from archives written before it was recorded.
+                parent: manifest.get("parent").and_then(|v| v.as_str()).map(str::to_string),
                 agent_version: None,
                 size_bytes: Some(dir_size(&session_dir)),
             });
@@ -377,4 +381,69 @@ fn dir_size(dir: &Path) -> u64 {
         }
     }
     total
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{AgentKind, SessionLocation, SessionRef, SessionStatus};
+
+    fn child_of(parent: Option<&str>) -> crate::model::Session {
+        crate::model::Session {
+            handle: SessionRef {
+                agent: AgentKind::JCode,
+                native_id: "session_kid".into(),
+                location: SessionLocation::JsonlFile { path: "/gone/kid.json".into() },
+            },
+            title: Some("Kid".into()),
+            slug: None,
+            project_root: "/w/app".into(),
+            git_branch: None,
+            created: None,
+            updated: None,
+            model: None,
+            usage: Default::default(),
+            status: SessionStatus::Idle,
+            parent: parent.map(str::to_string),
+            agent_version: None,
+            size_bytes: None,
+        }
+    }
+
+    /// Lay out `<root>/jcode/session_kid/` the way archiving does, from the
+    /// manifest archiving writes.
+    fn archive(root: &Path, session: &crate::model::Session) {
+        let dir = root.join("jcode/session_kid");
+        std::fs::create_dir_all(dir.join("native")).unwrap();
+        std::fs::write(dir.join("native/transcript.jsonl"), "{}").unwrap();
+        let manifest = crate::archive::manifest_of(session, &[]);
+        std::fs::write(dir.join("manifest.json"), manifest.to_string()).unwrap();
+    }
+
+    /// An archived child comes back as a child: it was a root here, and a
+    /// pulled or archived subagent filed under no parent is not what the
+    /// agent had.
+    #[test]
+    fn an_archived_session_keeps_its_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        archive(tmp.path(), &child_of(Some("session_boss")));
+        let listed = archived_sessions_in(tmp.path()).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].parent.as_deref(), Some("session_boss"));
+        assert_eq!(listed[0].status, SessionStatus::Archived);
+    }
+
+    #[test]
+    fn an_archive_without_a_parent_lists_as_a_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        archive(tmp.path(), &child_of(None));
+        assert_eq!(archived_sessions_in(tmp.path()).unwrap()[0].parent, None);
+
+        // And one written before the parent was recorded has no such key.
+        let manifest = tmp.path().join("jcode/session_kid/manifest.json");
+        let mut value: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest).unwrap()).unwrap();
+        value.as_object_mut().unwrap().remove("parent");
+        std::fs::write(&manifest, value.to_string()).unwrap();
+        assert_eq!(archived_sessions_in(tmp.path()).unwrap()[0].parent, None);
+    }
 }

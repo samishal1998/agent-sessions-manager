@@ -102,7 +102,7 @@ is embedded.
 
 ```sh
 asm                          # interactive TUI on a terminal; plain table when piped
-asm list --agent opencode    # filter by agent, --project, --include-children (subagents)
+asm list --agent opencode    # filter by agent, --project, --include-children (subagents, under their parent)
 asm projects --worktrees     # projects are repositories; show each one's checkouts
 asm show 4c93a826            # metadata card; refs are unique id prefixes or agent:prefix
 asm resume 4c93a826          # hands off to the native agent, in the right directory

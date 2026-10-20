@@ -148,7 +148,7 @@ fn draw_doctor(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Every key, grouped. The footer shows the handful that fit; this is the
 /// rest, and it is why the footer does not have to list them all.
-const HELP: [(&str, &[(&str, &str)]); 5] = [
+const HELP: [(&str, &[(&str, &str)]); 6] = [
     (
         "moving around",
         &[
@@ -183,6 +183,13 @@ const HELP: [(&str, &[(&str, &str)]); 5] = [
             ("i", "import into the other agent"),
             ("p", "push to the hub"),
             ("c", "reply to the session"),
+        ],
+    ),
+    (
+        "subagent sessions",
+        &[
+            ("z", "fold or unfold the subagents under the selected session"),
+            ("T", "hide subagents behind their parent, or show them as a tree"),
         ],
     ),
     (
@@ -349,6 +356,12 @@ fn draw_hits(frame: &mut Frame, app: &App, area: Rect) {
                 format!("  {} {} #{}", hit.agent, hit.role, hit.seq),
                 theme::dim(),
             ),
+            // A hit inside a subagent says whose it is; Enter opens it
+            // there, unfolding the parent.
+            Span::styled(
+                app.parent_label(hit).map(|p| format!("  ↳ in {p}")).unwrap_or_default(),
+                Style::default().fg(theme::ACCENT),
+            ),
             Span::styled(
                 if hit.status == "archived" { "  archived" } else { "" },
                 Style::default().fg(Color::Magenta),
@@ -384,10 +397,32 @@ fn snippet_spans(snippet: &str) -> Vec<Span<'static>> {
     spans
 }
 
+/// A session's title with its place in the tree: indented by depth, a fold
+/// mark on a session that has subagents under it (`▾` shown, `▸` folded),
+/// `↳` on a subagent.
+fn tree_title(name: String, place: crate::app::Place) -> Line<'static> {
+    let mark = match (place.below, place.open, place.depth) {
+        (0, _, 0) => "  ",
+        (0, _, _) => "↳ ",
+        (_, true, _) => "▾ ",
+        (_, false, _) => "▸ ",
+    };
+    Line::from(vec![Span::raw("  ".repeat(place.depth as usize)), Span::styled(mark, theme::dim()), Span::raw(name)])
+}
+
 fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     let mut title = format!("sessions  {}", app.filtered.len());
-    if app.filtered.len() != app.sessions.len() {
-        title.push_str(&format!(" of {}", app.sessions.len()));
+    if app.filtered.len() != app.total_rows() {
+        title.push_str(&format!(" of {}", app.total_rows()));
+    }
+    // Subagent sessions are in the list or behind it, and the title says
+    // which, with the key that changes it.
+    if app.subagents() > 0 {
+        title.push_str(&if app.tree {
+            format!("  ·  {} subagent, shown (T hides)", app.subagents())
+        } else {
+            format!("  ·  +{} subagent, hidden (T shows)", app.subagents())
+        });
     }
     if app.scanning {
         // The count is not a total yet, and a list that does not say so
@@ -415,10 +450,12 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     let show_size = inner >= 50;
     let show_updated = inner >= 42;
 
+    let grouped = app.grouped();
     let rows: Vec<Row> = app
         .filtered
         .iter()
-        .map(|&i| {
+        .enumerate()
+        .map(|(row, &i)| {
             let s = &app.sessions[i];
             let status = match s.status {
                 SessionStatus::Live { .. } => {
@@ -437,7 +474,8 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
             if show_id {
                 cells.push(Cell::from(Span::styled(s.short_id().to_string(), theme::dim())));
             }
-            cells.push(Cell::from(s.title.clone().unwrap_or_else(|| "(untitled)".into())));
+            let name = s.title.clone().unwrap_or_else(|| "(untitled)".into());
+            cells.push(Cell::from(if grouped { tree_title(name, app.place(row)) } else { Line::raw(name) }));
             if show_project {
                 cells.push(Cell::from(Span::styled(
                     shorten(&home_relative(&s.project_root), project_width as usize),
@@ -458,6 +496,15 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
                     Some(state) => sync_span(state, state.label(), app.hub_stale),
                     None => Span::styled("", theme::dim()),
                 }));
+            }
+            // How many are folded under it: its own column, so a long title
+            // cannot cut it off.
+            if grouped {
+                let place = app.place(row);
+                cells.push(Cell::from(Span::styled(
+                    if place.below > 0 && !place.open { format!("+{}", place.below) } else { String::new() },
+                    Style::default().fg(theme::ACCENT),
+                )));
             }
             cells.push(Cell::from(status));
             Row::new(cells)
@@ -487,6 +534,10 @@ fn draw_list(frame: &mut Frame, app: &App, area: Rect) {
     if show_hub {
         widths.push(Constraint::Length(14));
         header.push("sync");
+    }
+    if grouped {
+        widths.push(Constraint::Length(5));
+        header.push("sub");
     }
     widths.push(Constraint::Length(6));
     header.push("state");
@@ -670,9 +721,14 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, filters: &[String]) {
                 .pending_session()
                 .map(|s| format!("{} \"{}\"", s.short_id(), s.title.as_deref().unwrap_or("?")))
                 .unwrap_or_default();
+            let with = match app.delete_takes() {
+                0 => String::new(),
+                1 => " and the 1 subagent session under it".to_string(),
+                n => format!(" and the {n} subagent sessions under it"),
+            };
             (
                 Line::styled(
-                    format!(" delete {target} and all its sidecars? it is backed up first."),
+                    format!(" delete {target}{with} and all its sidecars? it is backed up first."),
                     Style::default().fg(theme::BAD).add_modifier(Modifier::BOLD),
                 ),
                 vec![("y", "delete"), ("any other key", "keep it")],
@@ -695,9 +751,13 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, filters: &[String]) {
                 .map(|(a, n)| format!("{} {n} selected session(s)", a.verb().to_lowercase()))
                 .unwrap_or_default();
             let destructive = app.pending_bulk().is_some_and(|(a, _)| a.is_destructive());
+            let with = match app.delete_takes() {
+                0 => String::new(),
+                n => format!(" it also deletes {n} subagent session(s) under them."),
+            };
             (
                 Line::styled(
-                    format!(" {what}?{}", if destructive { " backed up first." } else { "" }),
+                    format!(" {what}?{}{with}", if destructive { " backed up first." } else { "" }),
                     if destructive {
                         Style::default().fg(theme::WARN).add_modifier(Modifier::BOLD)
                     } else {
@@ -754,6 +814,11 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, filters: &[String]) {
                 ("A", "agents"),
                 ("P", "project"),
             ];
+            // Only where there are subagent sessions to fold.
+            if app.subagents() > 0 {
+                keys.push(("z", "fold"));
+                keys.push(("T", if app.tree { "hide subagents" } else { "tree" }));
+            }
             // Only where there is a hub to look at.
             if app.hub_joined() {
                 keys.push(("H", "hub"));
@@ -1232,8 +1297,8 @@ mod tests {
     fn help_lists_every_key_and_says_how_to_close() {
         let mut app = app();
         app.help_open = true;
-        let screen = render(&app, 100, 44);
-        for key in ["rename", "push to the hub", "pick agents", "store health", "quit"] {
+        let screen = render(&app, 100, 48);
+        for key in ["rename", "push to the hub", "pick agents", "fold or unfold", "store health", "quit"] {
             assert!(screen.contains(key), "{key} missing:\n{screen}");
         }
         assert!(screen.contains("closes"), "{screen}");
@@ -1243,6 +1308,77 @@ mod tests {
         assert!(short.contains("j/k scrolls"), "{short}");
         app.help_scroll = 40;
         assert!(render(&app, 100, 20).contains("quit"), "scrolling reaches the end");
+    }
+
+    /// Plan, folded over two subagents, beside a plain session: the list
+    /// says what is folded and how to open it.
+    fn family() -> App {
+        let mut app = app();
+        let kid = |id: &str, title: &str, parent: &str| {
+            let mut s = session(AgentKind::OpenCode, id, title, "/home/u/code/atlas-web");
+            s.parent = Some(parent.into());
+            s
+        };
+        let plan = app.sessions[1].handle.native_id.clone();
+        app.sessions.push(kid("ses_kid1", "Review the retries", &plan));
+        app.sessions.push(kid("ses_kid2", "Explore the queue", "ses_kid1"));
+        app.apply_filter_for_test();
+        app
+    }
+
+    #[test]
+    fn folded_subagents_are_counted_on_their_parents_row_and_unfold_as_a_tree() {
+        let mut app = family();
+        let folded = render(&app, 160, 12);
+        assert!(folded.lines().any(|l| l.contains("▸ Billing webhook retries") && l.contains("+2")), "{folded}");
+        assert!(!folded.contains("Review the retries"), "{folded}");
+        assert!(folded.contains("+2 subagent, hidden (T shows)"), "{folded}");
+        assert!(folded.contains("T tree") && folded.contains("z fold"), "the keys are on screen:\n{folded}");
+
+        app.toggle_tree_for_test();
+        let tree = render(&app, 160, 12);
+        assert!(tree.contains("▾ Billing webhook retries"), "{tree}");
+        assert!(tree.contains("  ▾ Review the retries"), "{tree}");
+        assert!(tree.contains("    ↳ Explore the queue"), "{tree}");
+        assert!(!tree.contains("+2 "), "nothing is hidden, so no count:\n{tree}");
+        assert!(tree.contains("2 subagent, shown (T hides)"), "{tree}");
+        assert!(tree.contains("T hide subagents"), "{tree}");
+    }
+
+    /// No subagents, no change: not an indent, a mark or a key.
+    #[test]
+    fn a_list_with_no_subagents_looks_as_it_did() {
+        let screen = render(&app(), 120, 12);
+        assert!(!screen.contains('▸') && !screen.contains('↳') && !screen.contains("subagent"), "{screen}");
+        assert!(!screen.contains("T tree"), "{screen}");
+    }
+
+    #[test]
+    fn a_hit_in_a_subagent_says_whose_it_is() {
+        let mut app = family();
+        app.hits = Some(vec![asm_core::index::SearchHit {
+            agent: "opencode".into(),
+            native_id: "ses_kid1".into(),
+            title: Some("Review the retries".into()),
+            project_root: None,
+            parent: Some(app.sessions[1].handle.native_id.clone()),
+            role: "user".into(),
+            seq: 2,
+            timestamp: None,
+            snippet: "the \u{1}retry\u{2} loop".into(),
+            score: 0.0,
+            status: "idle".into(),
+        }]);
+        let screen = render(&app, 120, 12);
+        assert!(screen.contains("↳ in Billing webhook retries"), "{screen}");
+    }
+
+    #[test]
+    fn deleting_a_parent_says_how_many_sessions_go_with_it() {
+        let mut app = family();
+        app.begin_delete_for_test(1);
+        let screen = render(&app, 160, 12);
+        assert!(screen.contains("and the 2 subagent sessions under it"), "{screen}");
     }
 
     #[test]

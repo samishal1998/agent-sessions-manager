@@ -209,7 +209,12 @@ pub fn classify_error(e: &CoreError) -> Report {
 /// pushing, installing over or archiving some other session because it
 /// starts the same would be the worst way to be helpful.
 fn find_local(agent: AgentKind, id: &str) -> Option<Session> {
-    let filter = SessionFilter { agent: Some(agent), include_children: true, ..Default::default() };
+    let filter = SessionFilter {
+        agent: Some(agent),
+        include_children: true,
+        include_debug: true,
+        ..Default::default()
+    };
     pick(ops::list_sessions(&filter).ok()?, id)
 }
 

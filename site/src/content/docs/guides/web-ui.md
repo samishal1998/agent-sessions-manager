@@ -28,6 +28,15 @@ On a phone the sidebar becomes an overlay and the transcript takes the full scre
 
 ![The web UI at phone width](../../../assets/shots/mobile.png)
 
+## Subagent sessions
+
+[Child sessions](/start/concepts/#child-sessions) are folded behind their parent. A parent with children has a chevron at the start of its row (`aria-expanded`, operable from the keyboard) and a `+3` badge while folded; the chevron shows its subagents indented beneath it, marked `↳ subagent`. When the list has any, the Sessions header gains a **Show subagent sessions as a tree** switch that shows them all; the choice is remembered in the browser, and choosing it forgets the chevrons you used by hand.
+
+- A filter is applied first and the matches grouped afterwards, so a subagent that matches while its parent does not is a row of its own.
+- A search hit inside a subagent says `↳ in <parent>`. Opening it opens its transcript and, when you go back to the list, unfolds what hid it and scrolls to it.
+- Every action works on a subagent. Deleting a parent says how many sessions go with it (OpenCode deletes the whole tree), and so does a bulk delete that includes parents.
+- The sidebar counts top-level sessions and, beside them, the subagents (`12 sessions (+5 subagent)`). The Hub screen lists top-level sessions only, and the push button of an OpenCode subagent explains that it goes up with its parent.
+
 ## Light and dark
 
 The **Color mode** switcher at the bottom of the sidebar picks Light, Dark or System (follow the operating system). On phones it is at the top of the Sessions screen, and the hub admin page has its own. The choice is remembered in the browser.

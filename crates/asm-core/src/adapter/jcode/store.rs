@@ -73,9 +73,10 @@ pub(super) fn sessions(
         let Some(snapshot) = read_snapshot(&path) else {
             continue; // unreadable or truncated mid-write
         };
-        // Debug/test sessions are jcode's own scaffolding, hidden like
-        // subagent sessions are elsewhere.
-        if snapshot.is_debug && !filter.include_children {
+        // Debug/test sessions are jcode's own scaffolding. They are hidden
+        // on their own flag, not the children's: a listing that includes
+        // children so it can group them must not surface these as roots.
+        if snapshot.is_debug && !filter.include_debug {
             continue;
         }
         if snapshot.parent_id.is_some() && !filter.include_children {

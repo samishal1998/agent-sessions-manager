@@ -20,6 +20,7 @@ The index is **incremental**: each session carries an opaque content fingerprint
 
 - Every message, including **subagent transcripts** — in delegating sessions they are the majority of the searchable text.
 - Tool *inputs* in full (commands, paths, patterns); tool *outputs* only in part, since they dominate transcript bulk.
+- [Child sessions](/start/concepts/#child-sessions) as sessions of their own. A hit inside one is marked `↳ in <parent>` in the CLI, the TUI and the web UI, and opening it lands on the child with its parent unfolded. jcode's debug sessions are indexed too, but they are listed nowhere, so a hit in one cannot be opened from the TUI or web UI (`asm show <id>` still works).
 
 ## On a machine with thousands of sessions
 

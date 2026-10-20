@@ -39,21 +39,7 @@ pub fn archive_entries(
     let native = archive_dir.join("native");
     fs::create_dir_all(&native).map_err(|e| CoreError::io(&native, e))?;
 
-    let manifest = json!({
-        "schema": 1,
-        "agent": agent,
-        "id": id,
-        // The memorable name an agent uses for the session, so it can be
-        // restored by the handle its user knows it by.
-        "slug": session.slug,
-        "title": session.title,
-        "project_root": session.project_root,
-        "archived_at": jiff::Timestamp::now().to_string(),
-        "entries": entries
-            .iter()
-            .map(|(name, original)| json!({ "name": name, "original_path": original }))
-            .collect::<Vec<_>>(),
-    });
+    let manifest = manifest_of(session, entries);
     let manifest_path = archive_dir.join("manifest.json");
     fs::write(&manifest_path, serde_json::to_string_pretty(&manifest).unwrap())
         .map_err(|e| CoreError::io(&manifest_path, e))?;
@@ -62,6 +48,28 @@ pub fn archive_entries(
         fsutil::move_path(original, &native.join(name))?;
     }
     Ok(ArchiveOutcome { archived_to: Some(archive_dir) })
+}
+
+/// What the archive remembers about a session besides its files.
+pub(crate) fn manifest_of(session: &Session, entries: &[(String, PathBuf)]) -> Value {
+    json!({
+        "schema": 1,
+        "agent": session.handle.agent.as_str(),
+        "id": session.handle.native_id,
+        // The memorable name an agent uses for the session, so it can be
+        // restored by the handle its user knows it by.
+        "slug": session.slug,
+        "title": session.title,
+        "project_root": session.project_root,
+        // A child archived on its own is still a child once it is listed
+        // from here (the search index lists the archive).
+        "parent": session.parent,
+        "archived_at": jiff::Timestamp::now().to_string(),
+        "entries": entries
+            .iter()
+            .map(|(name, original)| json!({ "name": name, "original_path": original }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 /// Restore an archived session, whichever agent wrote it. Archived sessions

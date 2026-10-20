@@ -41,6 +41,13 @@ Press `?` in the TUI for the same list. The footer shows the keys that fit your 
 | `p` | Push to the hub |
 | `c` | Reply to the session |
 
+## Subagent sessions
+
+| Key | |
+|---|---|
+| `z` | Fold or unfold the subagents under the selected session (on a subagent with none: fold its parent) |
+| `T` | Hide subagents behind their parent, or show them all as a tree |
+
 ## The hub
 
 | Key | |

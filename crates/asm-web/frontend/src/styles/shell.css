@@ -251,7 +251,9 @@
   flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
-  padding-inline: 8px;
+  /* A subagent sits one step in from its parent for each level. */
+  padding-inline-start: calc(8px + var(--s-depth, 0) * 28px);
+  padding-inline-end: 8px;
   /* Thousands of rows: the browser skips the ones nobody has scrolled to. */
   content-visibility: auto;
   contain-intrinsic-size: auto 64px;
@@ -301,6 +303,18 @@
   order: -1;
   min-height: 24px;
   flex: 0 0 auto;
+}
+/* The fold button leads the row, ahead of the tick; rows with nothing to fold
+   keep its place empty so the ticks line up. */
+.s-fold {
+  order: -2;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
 }
 /* The tick's label names the checkbox without being shown beside it. */
 .s-tick strong {
@@ -393,6 +407,11 @@
   border-radius: 3px;
   outline: 1px solid var(--h-accent);
 }
+.s-hit-parent {
+  order: 2;
+  color: var(--h-accent-text);
+  font-size: 13px;
+}
 .s-hit-seq {
   color: var(--h-faint);
   font-family: ui-monospace, monospace;
@@ -415,7 +434,8 @@
    drop under the title so the title keeps its width and can wrap to two lines. */
 @media (max-width: 640px) {
   .s-row {
-    padding-inline: 0;
+    padding-inline-start: calc(var(--s-depth, 0) * 20px);
+    padding-inline-end: 0;
   }
   .s-row .h-list-body {
     flex-wrap: wrap;

@@ -70,6 +70,7 @@ pub(super) fn manifest_for(
         git_origin: origin,
         git_branch: session.git_branch.clone(),
         agent_version: session.agent_version.clone(),
+        parent: session.parent.clone(),
         created: session.created,
         updated: session.updated,
         machine: None,
@@ -129,6 +130,7 @@ pub fn push_collecting(
             crate::ops::list_sessions(&crate::adapter::SessionFilter {
                 agent: Some(agent),
                 include_children: true,
+                include_debug: true,
                 ..Default::default()
             })
             .unwrap_or_default()
@@ -1216,6 +1218,17 @@ mod tests {
     use super::*;
     use crate::hub::manifest::Manifest;
 
+    /// A pushed subagent carries the id of the session it belongs to.
+    #[test]
+    fn a_pushed_manifest_names_the_sessions_parent() {
+        let loc = crate::model::SessionLocation::JsonlFile { path: "/x".into() };
+        let mut child = crate::hub::bundle::session_at(AgentKind::OpenCode, "ses_kid", loc);
+        let bundle = Bundle { files: Vec::new(), canonical: "c".into(), extra: serde_json::Value::Null };
+        assert_eq!(manifest_for(&child, &bundle, None, None).parent, None);
+        child.parent = Some("ses_boss".into());
+        assert_eq!(manifest_for(&child, &bundle, None, None).parent.as_deref(), Some("ses_boss"));
+    }
+
     fn head(agent: AgentKind, id: &str, slug: Option<&str>) -> Head {
         Head {
             rev: "r".into(),
@@ -1232,6 +1245,7 @@ mod tests {
                 git_origin: None,
                 git_branch: None,
                 agent_version: None,
+                parent: None,
                 created: None,
                 updated: None,
                 machine: None,

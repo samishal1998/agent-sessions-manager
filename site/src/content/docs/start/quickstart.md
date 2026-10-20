@@ -13,7 +13,7 @@ import { Steps } from '@astrojs/starlight/components';
    asm list
    ```
 
-   One table, every agent. Columns are agent, id prefix, title, project, last update and status (`live` means an agent process owns it right now). Add `--agent opencode` or `--project ~/code/mercury` to narrow it; `--include-children` shows subagent sessions too.
+   One table, every agent. Columns are agent, id prefix, title, project, last update and status (`live` means an agent process owns it right now). Add `--agent opencode` or `--project ~/code/mercury` to narrow it; `--include-children` shows subagent sessions too, under the session they belong to (a session with subagents folded behind it ends its row with `+N`).
 
 2. **Look at one.** Any unique id prefix works, or `agent:prefix` when two agents collide.
 

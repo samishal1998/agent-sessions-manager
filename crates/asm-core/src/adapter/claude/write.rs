@@ -282,7 +282,7 @@ pub(super) fn delete(
     for target in &targets {
         fsutil::remove_recursive(target)?;
     }
-    Ok(DeleteReport { backup_dir: Some(backup), removed: targets, note: None })
+    Ok(DeleteReport { backup_dir: Some(backup), removed: targets, descendants: 0, note: None })
 }
 
 /// Stable, collision-free names for backed-up entries.

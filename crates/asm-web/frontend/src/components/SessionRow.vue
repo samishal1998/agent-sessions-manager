@@ -1,10 +1,12 @@
 <script setup>
 import { computed, onMounted, onUpdated, ref } from 'vue'
-import { HBadge, HCheckbox, HDropdownMenu, HListItem } from '@hearth-ui/vue'
+import { HBadge, HButton, HCheckbox, HDropdownMenu, HListItem } from '@hearth-ui/vue'
 import {
   Archive,
   ArchiveRestore,
   ArrowLeftRight,
+  ChevronDown,
+  ChevronRight,
   CloudDownload,
   CloudUpload,
   Download,
@@ -23,6 +25,16 @@ import { shortId } from '../ids.js'
 // changes anything is an event; the screen owner does the work.
 const props = defineProps({
   session: { type: Object, required: true },
+  // Where the session sits among its subagents: how far under its parent, how
+  // many sessions are under it, and whether those are shown.
+  depth: { type: Number, default: 0 },
+  below: { type: Number, default: 0 },
+  open: { type: Boolean, default: false },
+  // Any row in the list is a parent or a child, so every row leaves room for
+  // the fold button.
+  grouped: { type: Boolean, default: false },
+  // Pushed with its parent, not on its own.
+  carried: { type: Boolean, default: false },
   // Open in the transcript panel.
   active: { type: Boolean, default: false },
   ticked: { type: Boolean, default: false },
@@ -36,7 +48,7 @@ const props = defineProps({
   // open beside the list, there is no room for nine buttons.
   compact: { type: Boolean, default: false },
 })
-const emit = defineEmits(['open', 'tick', 'copy', 'push', 'pull', 'rename', 'archive', 'move', 'import', 'delete'])
+const emit = defineEmits(['open', 'fold', 'tick', 'copy', 'push', 'pull', 'rename', 'archive', 'move', 'import', 'delete'])
 
 const s = computed(() => props.session)
 const can = (verb) => props.caps?.[verb] ?? true
@@ -45,8 +57,14 @@ const can = (verb) => props.caps?.[verb] ?? true
 const state = computed(() => s.value.status?.state ?? s.value.status)
 const title = computed(() => s.value.title || 'Untitled session')
 
+const folds = computed(() => props.below > 0)
+const foldLabel = computed(() => {
+  const n = `${props.below} subagent session${props.below === 1 ? '' : 's'}`
+  return `${props.open ? 'Fold' : 'Show'} the ${n} under ${title.value}`
+})
+
 const meta = computed(() =>
-  [shortId(s.value), ago(s.value.updated), s.value.size_bytes != null ? bytes(s.value.size_bytes) : '', props.dir]
+  [props.depth > 0 ? '↳ subagent' : '', shortId(s.value), ago(s.value.updated), s.value.size_bytes != null ? bytes(s.value.size_bytes) : '', props.dir]
     .filter(Boolean)
     .join(' · '),
 )
@@ -66,6 +84,7 @@ const statusHint = computed(() => {
 // session the hub already has, or has a newer copy of, only fails.
 const push = computed(() => {
   const r = props.hubRow
+  if (props.carried) return { ok: false, label: "Goes up with its parent session" }
   if (props.hub && !props.hub.connected) return { ok: false, label: 'The hub cannot be reached' }
   if (!r) return { ok: true, label: 'Push to hub' }
   if (r.state === 'in_sync') return { ok: false, label: 'Already on the hub' }
@@ -118,6 +137,7 @@ function choose(id) {
   <HListItem
     ref="item"
     class="s-row"
+    :style="{ '--s-depth': depth }"
     interactive
     :title="title"
     :description="meta"
@@ -129,6 +149,12 @@ function choose(id) {
 
     <template #trailing>
       <span class="s-badges">
+        <HBadge
+          v-if="folds && !open"
+          tone="info"
+          :label="`+${below}`"
+          :title="`${below} subagent session${below === 1 ? '' : 's'} folded under this one`"
+        />
         <HBadge :tone="statusTone" :dot="state === 'live'" :label="statusLabel" :title="statusHint" />
         <HBadge
           v-if="hubRow"
@@ -145,6 +171,18 @@ function choose(id) {
          slot is always there (a hidden one is an empty placeholder) so an icon
          is in the same place in every row. -->
     <template #actions>
+      <HButton
+        v-if="folds"
+        class="s-fold"
+        variant="ghost"
+        size="compact"
+        :aria-label="foldLabel"
+        :aria-expanded="open ? 'true' : 'false'"
+        @click="emit('fold')"
+      >
+        <component :is="open ? ChevronDown : ChevronRight" :size="16" aria-hidden="true" />
+      </HButton>
+      <span v-else-if="grouped" class="s-fold s-slot" aria-hidden="true" />
       <HCheckbox
         class="s-tick"
         :label="`Select ${title}`"

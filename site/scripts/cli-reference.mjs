@@ -138,8 +138,8 @@ overview += `Run \`asm\` with no command on a terminal to open the [terminal UI]
 overview += '## Options every command accepts\n\n' + table(globalRows, ['Option', 'Meaning']) + '\n'
 overview +=
   'These narrow what a command acts on. `--agent` and `--project` filter the sessions; `--include-children` ' +
-  'adds subagent sessions, which are hidden by default. On `push` and `pull`, `--all` means everything the ' +
-  'filters match.\n\n'
+  'adds subagent sessions, which are hidden by default (`asm list` nests them under their parent). On `push` ' +
+  'and `pull`, `--all` means everything the filters match.\n\n'
 overview += '## Commands\n\n| Command | What it does |\n|---|---|\n'
 for (const c of commands) overview += `| [${code('asm ' + c.sig)}](/reference/cli/${file(c.sig)}/) | ${cell(first(c.desc))} |\n`
 writeFileSync(resolve(out, 'overview.md'), overview)

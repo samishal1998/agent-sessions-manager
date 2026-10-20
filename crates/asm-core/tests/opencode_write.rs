@@ -215,6 +215,7 @@ fn delete_removes_child_sessions_too() {
     let sessions: i64 = conn.query_row("SELECT COUNT(*) FROM session", [], |r| r.get(0)).unwrap();
     let messages: i64 = conn.query_row("SELECT COUNT(*) FROM message", [], |r| r.get(0)).unwrap();
     let parts: i64 = conn.query_row("SELECT COUNT(*) FROM part", [], |r| r.get(0)).unwrap();
+    assert_eq!(report.descendants, 2, "the report counts the child and the grandchild");
     assert_eq!(sessions, 0, "descendants must go too, transitively");
     assert_eq!(messages, 0, "no orphan messages left behind");
     assert_eq!(parts, 0);
@@ -235,6 +236,7 @@ fn delete_removes_rows_sidecar_and_writes_backup() {
     let s = session(&adapter);
 
     let report = adapter.delete(&s).unwrap();
+    assert_eq!(report.descendants, 0, "a session with no children takes none");
     let backup = report.backup_dir.unwrap();
 
     // Backup captured the rows and the diff sidecar, keyed by session id
