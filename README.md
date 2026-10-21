@@ -20,6 +20,7 @@ UI (`asm serve`). There is a [tour of it here][site], and [full documentation][d
 
 [site]: https://samishal1998.github.io/agent-sessions-manager/
 [docs]: https://samishal1998.github.io/agent-sessions-manager/docs/
+[json]: https://samishal1998.github.io/agent-sessions-manager/docs/reference/json/
 [ir]: https://samishal1998.github.io/agent-sessions-manager/docs/reference/ir-schema/
 [fmt]: https://samishal1998.github.io/agent-sessions-manager/docs/reference/agent-formats/
 
@@ -142,7 +143,10 @@ asm serve --port 8080
 asm serve --host 0.0.0.0     # every interface — read the warning it prints
 ```
 
-Every command takes `--json`.
+Every command that prints a result takes `--json` (a bare array or object on stdout; a failure is one
+`{"error": {"code", …}}` object on stderr with its own exit status), and `asm capabilities --json`,
+`asm messages`, `asm children` and `asm events` exist for programs that drive `asm`. The shapes, the
+compatibility promise and the exit codes are in the [JSON reference][json].
 
 ### In the web UI
 

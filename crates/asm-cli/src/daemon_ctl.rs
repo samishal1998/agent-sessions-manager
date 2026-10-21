@@ -51,10 +51,10 @@ fn running() -> anyhow::Result<Option<u32>> {
 }
 
 /// Run a daemon in the background, logging to `<data>/daemon/daemon.log`.
-pub fn start(opts: Opts) -> anyhow::Result<()> {
+pub fn start(opts: Opts, json: bool) -> anyhow::Result<()> {
     asm_core::hub::client::load()?; // not joined → say so here, not in a log
     if let Some(pid) = running()? {
-        bail!("a daemon is already running (pid {pid}); `asm daemon status`");
+        fail!(Conflict, "a daemon is already running (pid {pid}); `asm daemon status`");
     }
     let log = data()?.join("daemon").join("daemon.log");
     std::fs::create_dir_all(log.parent().unwrap())?;
@@ -67,6 +67,9 @@ pub fn start(opts: Opts) -> anyhow::Result<()> {
     let mut child = cmd.spawn().context("cannot start the daemon")?;
     let up = wait_until(|| child.try_wait().ok().flatten().is_some() || matches!(running(), Ok(Some(_))), 5);
     if up && let Some(pid) = running()? {
+        if json {
+            return crate::print_json(&serde_json::json!({ "started": true, "pid": pid, "log": log }));
+        }
         println!("Daemon running (pid {pid}); log {}.", log.display());
         return Ok(());
     }
@@ -75,9 +78,12 @@ pub fn start(opts: Opts) -> anyhow::Result<()> {
 }
 
 /// Ask the running daemon to stop and wait for it to let go of its lock.
-pub fn stop() -> anyhow::Result<()> {
+pub fn stop(json: bool) -> anyhow::Result<()> {
     let st = daemon::status()?;
     let Some(pid) = st.file.as_ref().map(|f| f.pid).filter(|_| st.state != DaemonState::NotRunning) else {
+        if json {
+            return crate::print_json(&serde_json::json!({ "stopped": false, "pid": null }));
+        }
         println!("No daemon is running.");
         return Ok(());
     };
@@ -85,6 +91,9 @@ pub fn stop() -> anyhow::Result<()> {
     let sent = Command::new("kill").arg(pid.to_string()).status().is_ok_and(|s| s.success());
     if !sent || !wait_until(|| matches!(running(), Ok(None)), 10) {
         bail!("pid {pid} did not stop; `kill -9 {pid}` if it is really stuck");
+    }
+    if json {
+        return crate::print_json(&serde_json::json!({ "stopped": true, "pid": pid }));
     }
     println!("Stopped the daemon (pid {pid}). If it was installed as a service, `asm daemon uninstall` keeps it from coming back.");
     Ok(())
@@ -141,14 +150,19 @@ fn unit_text(exe: &Path, opts: Opts, data_dir: Option<&str>) -> String {
 // ponytail: only ASM_DATA_DIR is carried into the service; agent-specific
 // env (CLAUDE_CONFIG_DIR, …) is not, since a service shell would not have
 // it either. Add them here if someone installs with a custom store.
-pub fn install(opts: Opts, start_now: bool) -> anyhow::Result<()> {
+pub fn install(opts: Opts, start_now: bool, json: bool) -> anyhow::Result<()> {
     asm_core::hub::client::load()?;
     let path = unit_path()?;
     let text = unit_text(&exe()?, opts, std::env::var("ASM_DATA_DIR").ok().as_deref());
     std::fs::create_dir_all(path.parent().context("unit path has no directory")?)?;
     asm_core::fsutil::write_atomic(&path, text.as_bytes())?;
-    println!("Wrote {}.", path.display());
+    if !json {
+        println!("Wrote {}.", path.display());
+    }
     if !start_now {
+        if json {
+            return crate::print_json(&serde_json::json!({ "installed": true, "unit": path, "started": false }));
+        }
         println!("Not started (--no-start).");
         return Ok(());
     }
@@ -158,13 +172,19 @@ pub fn install(opts: Opts, start_now: bool) -> anyhow::Result<()> {
         run("systemctl", &["--user", "daemon-reload"])?;
         run("systemctl", &["--user", "enable", "--now", "asm-daemon"])?;
     }
+    if json {
+        return crate::print_json(&serde_json::json!({ "installed": true, "unit": path, "started": true }));
+    }
     println!("The daemon starts with your login session and restarts if it dies. `asm daemon status` shows it.");
     Ok(())
 }
 
-pub fn uninstall() -> anyhow::Result<()> {
+pub fn uninstall(json: bool) -> anyhow::Result<()> {
     let path = unit_path()?;
     if !path.exists() {
+        if json {
+            return crate::print_json(&serde_json::json!({ "uninstalled": false, "unit": path }));
+        }
         println!("No service installed ({}).", path.display());
         return Ok(());
     }
@@ -176,6 +196,9 @@ pub fn uninstall() -> anyhow::Result<()> {
     std::fs::remove_file(&path)?;
     if !cfg!(target_os = "macos") {
         let _ = run("systemctl", &["--user", "daemon-reload"]);
+    }
+    if json {
+        return crate::print_json(&serde_json::json!({ "uninstalled": true, "unit": path }));
     }
     println!("Removed {}.", path.display());
     Ok(())

@@ -140,6 +140,9 @@ overview +=
   'These narrow what a command acts on. `--agent` and `--project` filter the sessions; `--include-children` ' +
   'adds subagent sessions, which are hidden by default (`asm list` nests them under their parent). On `push` ' +
   'and `pull`, `--all` means everything the filters match.\n\n'
+overview +=
+  'With `--json` a command prints JSON on stdout, and a failure prints one `{"error": …}` object on stderr and exits ' +
+  'with a status for its code; the shapes, the codes and the compatibility promise are in [JSON and exit codes](/reference/json/).\n\n'
 overview += '## Commands\n\n| Command | What it does |\n|---|---|\n'
 for (const c of commands) overview += `| [${code('asm ' + c.sig)}](/reference/cli/${file(c.sig)}/) | ${cell(first(c.desc))} |\n`
 writeFileSync(resolve(out, 'overview.md'), overview)

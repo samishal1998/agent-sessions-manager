@@ -17,3 +17,10 @@ anyhow = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+
+[dev-dependencies]
+asm-cli = { workspace = true }
+clap = { workspace = true }
+rusqlite = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }

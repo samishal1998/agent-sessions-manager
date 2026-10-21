@@ -2508,6 +2508,7 @@ mod tests {
             snippet: "x".into(),
             score: 0.0,
             status: "idle".into(),
+            state: "idle".into(),
         }
     }
 

@@ -9,9 +9,10 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use clap::Subcommand;
 
+use asm_core::contract::{self, ErrorCode};
 use asm_core::hub::client::{self, Control};
 use asm_core::hub::commands::{Code, Command as Job, NewCommand, NewPlan, Op, Plan, State};
 use asm_core::hub::control as local;
@@ -161,7 +162,7 @@ fn hub_url() -> anyhow::Result<String> {
 fn client() -> anyhow::Result<Control> {
     let token = std::env::var("ASM_HUB_COMMANDS_TOKEN")
         .or_else(|_| std::env::var("ASM_HUB_ADMIN_TOKEN"))
-        .context("set ASM_HUB_COMMANDS_TOKEN to the token `asm hub commands-token` prints on the hub")?;
+        .map_err(|_| crate::coded(ErrorCode::Usage, "set ASM_HUB_COMMANDS_TOKEN to the token `asm hub commands-token` prints on the hub"))?;
     Ok(Control::new(&hub_url()?, &token)?)
 }
 
@@ -177,9 +178,9 @@ fn session(query: &str) -> anyhow::Result<(AgentKind, String)> {
     match query.split_once(':') {
         Some((agent, id)) if !id.is_empty() => match AgentKind::parse(agent) {
             Some(agent) => Ok((agent, id.to_string())),
-            None => bail!("{agent:?} is not an agent"),
+            None => fail!(Usage, "{agent:?} is not an agent"),
         },
-        _ => bail!("name the session as agent:id (this machine cannot look it up on a hub)"),
+        _ => fail!(Usage, "name the session as agent:id (this machine cannot look it up on a hub)"),
     }
 }
 
@@ -272,11 +273,14 @@ fn poll<T>(id: &str, mut ask: impl FnMut() -> Result<T, asm_core::CoreError>) ->
             // A refusal (a bad token, a plan that is gone) will not change by
             // asking again: say so now instead of ten seconds later.
             Err(e) if !transient(&e) => {
-                eprintln!("{e}");
+                crate::say_failure(contract::classify(&e).code, e.to_string());
                 std::process::exit(1)
             }
             Err(e) if tries + 1 >= POLL_TRIES => {
-                eprintln!("could not talk to the hub after {POLL_TRIES} tries: {e}\nThe command is not affected. `asm control show {id}` follows it.");
+                crate::say_failure(
+                    ErrorCode::Unreachable,
+                    format!("could not talk to the hub after {POLL_TRIES} tries: {e}\nThe command is not affected. `asm control show {id}` follows it."),
+                );
                 std::process::exit(EXIT_NO_HUB)
             }
             Err(e) => {
@@ -476,7 +480,7 @@ pub fn run(command: ControlCommand, json: bool) -> anyhow::Result<()> {
                     "push" => Ok(Op::Push),
                     "pull" => Ok(Op::Pull),
                     "archive" => Ok(Op::Archive),
-                    other => Err(anyhow::anyhow!("{other:?} is not an operation (push, pull, archive)")),
+                    other => Err(crate::coded(ErrorCode::Usage, format!("{other:?} is not an operation (push, pull, archive)"))),
                 })
                 .collect::<Result<_, _>>()?;
             let remote = client::load()?;
@@ -496,6 +500,10 @@ pub fn run(command: ControlCommand, json: bool) -> anyhow::Result<()> {
         }
         ControlCommand::Disable => {
             local::disable()?;
+            if json {
+                println!("{}", serde_json::json!({ "enabled": false }));
+                return Ok(());
+            }
             println!("Remote control is off. The hub can no longer ask this machine to do anything.");
         }
         ControlCommand::Status => {
@@ -533,7 +541,7 @@ pub fn run(command: ControlCommand, json: bool) -> anyhow::Result<()> {
             let remote = client::load().context("a pull is resolved against the hub, so this machine must have joined it")?;
             let history = remote
                 .history(agent.as_str(), &id)?
-                .with_context(|| format!("{agent}:{id} is not on the hub"))?;
+                .ok_or_else(|| crate::coded(ErrorCode::NotFound, format!("{agent}:{id} is not on the hub")))?;
             let from = match from {
                 Some(from) => from,
                 None => history
@@ -541,7 +549,7 @@ pub fn run(command: ControlCommand, json: bool) -> anyhow::Result<()> {
                     .machine
                     .as_ref()
                     .map(|m| m.id.clone())
-                    .context("the hub does not know which machine pushed that copy; pass --from")?,
+                    .ok_or_else(|| crate::coded(ErrorCode::Usage, "the hub does not know which machine pushed that copy; pass --from"))?,
             };
             let ctl = client()?;
             let job = ctl.create(&NewCommand {
@@ -562,10 +570,10 @@ pub fn run(command: ControlCommand, json: bool) -> anyhow::Result<()> {
                     let remote = client::load().context("name the pushing machine with --from (this machine has not joined the hub, so it cannot look up who pushed the current copy)")?;
                     let history = remote
                         .history(agent.as_str(), &id)?
-                        .with_context(|| format!("{agent}:{id} is not on the hub; name the machine to push it with --from"))?;
-                    let pusher = history.manifest.machine.as_ref().context("the hub does not know which machine pushed that copy; pass --from")?;
+                        .ok_or_else(|| crate::coded(ErrorCode::NotFound, format!("{agent}:{id} is not on the hub; name the machine to push it with --from")))?;
+                    let pusher = history.manifest.machine.as_ref().ok_or_else(|| crate::coded(ErrorCode::Usage, "the hub does not know which machine pushed that copy; pass --from"))?;
                     if pusher.id == to || pusher.name == to {
-                        bail!("{} pushed the hub's current copy, so --from defaults to it; name the machine that has the newer copy with --from.", pusher.name);
+                        fail!(Usage, "{} pushed the hub's current copy, so --from defaults to it; name the machine that has the newer copy with --from.", pusher.name);
                     }
                     pusher.id.clone()
                 }
@@ -599,6 +607,10 @@ pub fn run(command: ControlCommand, json: bool) -> anyhow::Result<()> {
                 _ => None,
             };
             let ends = Ends::resolve(&from, &to, machines.as_deref())?;
+            // A program cannot answer the prompt, whatever its stdin is.
+            if json && !yes {
+                fail!(Usage, "confirmation required: pass --yes");
+            }
             confirm_move(&format!("{agent}:{id}"), &ends, yes, std::io::IsTerminal::is_terminal(&std::io::stdin()), ask_yes)?;
             let plan = ctl.create_plan(&NewPlan {
                 kind: "move".into(),
@@ -684,8 +696,8 @@ fn machine<'a>(query: &str, machines: &'a [asm_core::hub::store::Machine]) -> an
     let hits: Vec<_> = machines.iter().filter(|m| m.name == query).collect();
     match hits.as_slice() {
         [one] => Ok(one),
-        [] => bail!("no machine on this hub is called {query:?}"),
-        many => bail!("{query:?} names {} machines; use the machine's id", many.len()),
+        [] => fail!(NotFound, "no machine on this hub is called {query:?}"),
+        many => fail!(Ambiguous, "{query:?} names {} machines; use the machine's id", many.len()),
     }
 }
 
@@ -698,7 +710,7 @@ impl Ends {
         };
         let (a, b) = (machine(from, machines)?, machine(to, machines)?);
         if a.id == b.id {
-            bail!("{} is both ends of the move", a.name);
+            fail!(Usage, "{} is both ends of the move", a.name);
         }
         Ok(Ends { from_id: a.id.clone(), from_name: a.name.clone(), to_id: b.id.clone(), to_name: b.name.clone() })
     }
@@ -718,9 +730,9 @@ fn confirm_move(session: &str, ends: &Ends, yes: bool, tty: bool, ask: impl FnOn
     }
     eprintln!("This will {}.", ends.summary(session));
     if !tty {
-        bail!("not asking: there is no terminal to answer on. Pass --yes to confirm the archive on {}.", ends.from_name);
+        fail!(Usage, "not asking: there is no terminal to answer on. Pass --yes to confirm the archive on {}.", ends.from_name);
     }
-    if ask() { Ok(()) } else { bail!("not confirmed; nothing was done") }
+    if ask() { Ok(()) } else { fail!(Usage, "not confirmed; nothing was done") }
 }
 
 fn ask_yes() -> bool {

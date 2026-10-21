@@ -19,6 +19,15 @@ pub enum AgentKind {
 }
 
 impl AgentKind {
+    /// Every agent, in the order listings and reports show them.
+    pub const ALL: [AgentKind; 5] = [
+        AgentKind::ClaudeCode,
+        AgentKind::OpenCode,
+        AgentKind::JCode,
+        AgentKind::Codex,
+        AgentKind::Antigravity,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             AgentKind::ClaudeCode => "claude-code",

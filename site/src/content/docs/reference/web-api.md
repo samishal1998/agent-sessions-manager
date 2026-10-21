@@ -4,20 +4,21 @@ description: The local HTTP API behind the web UI, and the hub protocol.
 ---
 
 :::caution
-These are the web UI's own endpoints. They are **not a stable public API**: they change with the UI. The CLI's `--json` output is the stable scripting surface.
+Most of these are the web UI's own endpoints and **change with the UI**. The stable, documented surface for programs is the CLI's `--json` and the machine routes in [JSON and exit codes](/reference/json/#web-api): `/api/meta`, `/api/sessions` (with its filters), `/api/sessions/{agent}/{id}` and its `/messages`, `/api/events` and `/api/search`. Those follow the same compatibility promise.
 :::
 
-All routes are under `asm serve` (default `http://127.0.0.1:7433`). Mutating (`POST`, `PUT`, `DELETE`) requests must carry an `X-Asm-Request: 1` header and are rejected from other origins; this stops other web pages, not a direct request. There is no authentication.
+All routes are under `asm serve` (default `http://127.0.0.1:7433`; `--port 0` picks a free port and the banner prints it). Mutating (`POST`, `PUT`, `DELETE`) requests must carry an `X-Asm-Request: 1` header and are rejected from other origins; this stops other web pages, not a direct request. There is no authentication by default; `asm serve --token-file PATH` (or `ASM_WEB_TOKEN`) makes every `/api/` request need `Authorization: Bearer <token>`, which is for programs: the bundled UI sends no token.
 
 ## Read
 
 | Route | Returns |
 |---|---|
-| `GET /api/meta` | `{"home": …}` — the home directory, so the UI can shorten paths. |
-| `GET /api/sessions` | Sessions. `?all=true` includes [child sessions](/start/concepts/#child-sessions) (each has a `parent`: the native id of its parent, `null` for a top-level session), which the web UI groups itself; without it, top-level sessions only. `?stream=1` sends one JSON object per line as stores give sessions up. |
+| `GET /api/meta` | `{"home": …, "hostname": …}` so the UI can shorten paths, and `asm_version`, `json_contract_version` and `capabilities` for programs. |
+| `GET /api/sessions` | Sessions, narrowed by `?agent=`, `?project=`, `?status=live\|idle\|archived` and `?q=` (a substring of title, id or path). `?all=true` includes [child sessions](/start/concepts/#child-sessions) (each has a `parent`: the native id of its parent, `null` for a top-level session), which the web UI groups itself; without it, top-level sessions only. `?stream=1` sends one JSON object per line as stores give sessions up. |
 | `GET /api/projects` | Projects with counts. |
 | `GET /api/doctor` | The `asm doctor` report. |
-| `GET /api/search?q=&agent=&project=&limit=` | Full-text hits with snippets. A hit inside a child session carries `parent`, the native id of its parent. |
+| `GET /api/sessions/{agent}/{id}` · `…/messages` · `GET /api/events` | One session; its messages as NDJSON; a server-sent stream of changes. See [JSON and exit codes](/reference/json/#web-api). |
+| `GET /api/search?q=&agent=&project=&status=&limit=` | Full-text hits with snippets. A hit inside a child session carries `parent`, the native id of its parent. |
 | `GET /api/index` | Index statistics. |
 | `GET /api/session/{agent}/{id}/ir` | The session as IR. |
 | `GET /api/hub` | Hub status: joined, connected, url, machine, error, a summary, one row per session with its sync state — and `daemon`: the local daemon's state and last-written status (or `null`). |

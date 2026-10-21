@@ -337,6 +337,9 @@ pub fn deletes_descendants(agent: AgentKind) -> bool {
 #[derive(Debug, serde::Serialize)]
 pub struct DoctorReport {
     pub agents: Vec<AgentHealth>,
+    /// Stores that could not be read at all, one line each (the lines a
+    /// listing prints to stderr). `agents` still has them, with no sessions.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -352,10 +355,42 @@ pub struct AgentHealth {
     /// What this adapter can actually do, so a UI can offer only those
     /// verbs rather than letting the user discover the answer by error.
     pub capabilities: crate::adapter::Capabilities,
+    /// OpenCode only: `v1`, `v2`, `absent`, `unsupported` or `unknown`. Null
+    /// for every other agent.
+    pub schema: Option<&'static str>,
+    /// OpenCode 2.x only: whether sessions are still waiting to be migrated
+    /// from the 1.x tables.
+    pub unmigrated: Option<bool>,
 }
 
 pub fn doctor() -> Result<DoctorReport, CoreError> {
-    doctor_with(|adapter| Ok(adapter.sessions(&SessionFilter::default())?.len()))
+    // One unreadable store is a finding, not a reason to report on none.
+    let problems = std::cell::RefCell::new(Vec::new());
+    let mut report = doctor_with(|adapter| {
+        Ok(adapter.sessions(&SessionFilter::default()).map(|s| s.len()).unwrap_or_else(|e| {
+            problems.borrow_mut().push(format!("{}: could not read sessions: {e}", adapter.kind()));
+            0
+        }))
+    })?;
+    report.warnings = problems.into_inner();
+    Ok(report)
+}
+
+/// An OpenCode store's schema generation and whether it is still migrating;
+/// nothing for any other agent.
+pub fn store_schema(adapter: &Adapter) -> (Option<&'static str>, Option<bool>) {
+    use crate::adapter::opencode::{Schema, unmigrated};
+    let Adapter::OpenCode(opencode) = adapter else { return (None, None) };
+    let schema = opencode.schema();
+    let label = match schema {
+        Schema::V1 => "v1",
+        Schema::V2 => "v2",
+        Schema::Absent => "absent",
+        Schema::Unsupported => "unsupported",
+        Schema::Unknown => "unknown",
+    };
+    let migrating = (schema == Schema::V2).then(|| unmigrated(opencode.db()).is_ok_and(|n| n > 0));
+    (Some(label), migrating)
 }
 
 /// `doctor`, with the session counts supplied. Counting is a full listing
@@ -413,6 +448,7 @@ pub fn doctor_with(
                 }
             }
         }
+        let (schema, unmigrated) = store_schema(&adapter);
         agents.push(AgentHealth {
             agent: detect.agent,
             store_root: detect.store_root,
@@ -421,9 +457,11 @@ pub fn doctor_with(
             duplicate_session_ids,
             warnings,
             capabilities: adapter.capabilities(),
+            schema,
+            unmigrated,
         });
     }
-    Ok(DoctorReport { agents })
+    Ok(DoctorReport { agents, warnings: Vec::new() })
 }
 
 /// The command that resumes `session` in its native agent.
@@ -460,22 +498,20 @@ pub fn archive(session: &Session) -> Result<ArchiveOutcome, CoreError> {
 
 /// Unarchive by user-supplied reference. OpenCode sessions unarchive in
 /// place (clearing `time_archived`); Claude sessions are restored from our
-/// archive store by id.
-pub fn unarchive(query: &str, filter: &SessionFilter) -> Result<Option<PathBuf>, CoreError> {
+/// archive store by id. An ambiguous reference stays an `Ambiguous` error,
+/// so a caller can list the candidates.
+pub fn unarchive(query: &str, filter: &SessionFilter) -> Result<Option<PathBuf>, ResolveError> {
     match resolve_ref(query, filter) {
         Ok(session) => {
             owning_adapter(&session)?.unarchive(&session)?;
             Ok(None)
         }
-        Err(ResolveError::Core(e)) => Err(e),
-        Err(ResolveError::Ambiguous { query, candidates }) => Err(CoreError::Invalid {
-            msg: format!("'{query}' is ambiguous; matches: {}", candidates.join(", ")),
-        }),
         // Not resolvable as a live session — try the Claude archive store.
         Err(ResolveError::NotFound { .. }) => {
             let id_query = query.split_once(':').map(|(_, rest)| rest).unwrap_or(query);
-            crate::archive::unarchive_by_id(id_query).map(Some)
+            Ok(Some(crate::archive::unarchive_by_id(id_query)?))
         }
+        Err(e) => Err(e),
     }
 }
 
@@ -497,6 +533,254 @@ pub fn import(
     opts: &crate::import::ImportOpts,
 ) -> Result<crate::import::ImportOutcome, CoreError> {
     crate::import::import(session, target, opts)
+}
+
+/// What `asm capabilities` and `/api/meta` say about this build and the
+/// agents on this machine.
+#[derive(Debug, serde::Serialize)]
+pub struct CapabilitiesReport {
+    pub asm_version: &'static str,
+    pub json_contract_version: u32,
+    pub ir_version: u32,
+    pub index_schema_version: u32,
+    pub agents: Vec<AgentCapabilities>,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct AgentCapabilities {
+    pub agent: AgentKind,
+    /// Whether its store is on this machine. An agent that is not has the
+    /// capabilities asm would have for it, and no `store_root`.
+    pub installed: bool,
+    pub store_root: Option<PathBuf>,
+    pub capabilities: crate::adapter::Capabilities,
+    /// Whether a session of this agent can be pushed to a hub and restored
+    /// on another machine.
+    pub hub_sync: bool,
+    /// OpenCode only: `v1`, `v2`, `absent`, `unsupported` or `unknown`.
+    pub schema: Option<&'static str>,
+    /// OpenCode 2.x only: sessions still waiting to be migrated.
+    pub unmigrated: Option<bool>,
+}
+
+/// Every agent asm knows, installed or not. Counts sessions never: that is a
+/// full listing, and this is for a caller deciding what to ask next.
+pub fn capabilities_report() -> CapabilitiesReport {
+    let present = Adapter::available();
+    let agents = AgentKind::ALL
+        .iter()
+        .map(|&agent| {
+            let adapter = present.iter().find(|a| a.kind() == agent);
+            let (schema, unmigrated) = adapter.map_or((None, None), store_schema);
+            AgentCapabilities {
+                agent,
+                installed: adapter.is_some(),
+                store_root: adapter.map(|a| a.detect().store_root),
+                capabilities: adapter.map_or_else(|| Adapter::capabilities_for(agent), |a| a.capabilities()),
+                hub_sync: crate::hub::bundle::restorable(agent),
+                schema,
+                unmigrated,
+            }
+        })
+        .collect();
+    CapabilitiesReport {
+        asm_version: env!("CARGO_PKG_VERSION"),
+        json_contract_version: crate::contract::JSON_CONTRACT_VERSION,
+        ir_version: crate::ir::IR_VERSION,
+        index_schema_version: crate::index::SCHEMA_VERSION,
+        agents,
+    }
+}
+
+/// What a listing keeps beyond `SessionFilter`: a state and free text. Kept
+/// apart from the filter because the filter is built literally in many
+/// places and narrows what adapters read, where this narrows what was read.
+#[derive(Debug, Clone, Default)]
+pub struct ListQuery {
+    /// `live`, `idle` or `archived`.
+    pub state: Option<String>,
+    /// Case-insensitive substring of the title, slug, id or project path.
+    pub text: Option<String>,
+}
+
+impl ListQuery {
+    pub fn keep(&self, session: &Session) -> bool {
+        if let Some(state) = &self.state
+            && session.status.state() != state
+        {
+            return false;
+        }
+        if let Some(text) = self.text.as_deref().map(str::to_lowercase).filter(|t| !t.is_empty()) {
+            let hay = [
+                session.title.as_deref().unwrap_or(""),
+                session.slug.as_deref().unwrap_or(""),
+                &session.handle.native_id,
+                &session.project_root.to_string_lossy(),
+            ];
+            return hay.iter().any(|h| h.to_lowercase().contains(&text));
+        }
+        true
+    }
+}
+
+/// One message of a session as `asm messages` prints it: its place in the
+/// transcript and what the IR holds of it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MessageRow {
+    /// Position in the whole transcript, counted before any filtering.
+    pub index: usize,
+    pub role: crate::ir::IrRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ts: Option<jiff::Timestamp>,
+    pub parts: Vec<crate::ir::IrPart>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_id: Option<String>,
+}
+
+/// Which messages. Applied in this order: `range`, then `role` and
+/// `text_only`, then `tail`.
+#[derive(Debug, Clone, Default)]
+pub struct MessageQuery {
+    /// `user`, `assistant`, `system`, or `tool`: a message holding a tool
+    /// call or a tool result (the IR gives those to the assistant and the
+    /// user).
+    pub role: Option<String>,
+    /// Indexes `start..end`, end exclusive and open when `None`.
+    pub range: Option<(usize, Option<usize>)>,
+    /// Keep only `text` parts, and only messages that have one.
+    pub text_only: bool,
+    /// The last N of what is left.
+    pub tail: Option<usize>,
+}
+
+impl MessageQuery {
+    pub const ROLES: [&'static str; 4] = ["user", "assistant", "system", "tool"];
+
+    /// `A..B`, `A..` or `..B`.
+    pub fn parse_range(text: &str) -> Result<(usize, Option<usize>), String> {
+        let bad = || format!("'{text}' is not a range: write A..B, A.. or ..B");
+        let (a, b) = text.split_once("..").ok_or_else(bad)?;
+        let a = if a.is_empty() { 0 } else { a.parse().map_err(|_| bad())? };
+        let b = if b.is_empty() { None } else { Some(b.parse().map_err(|_| bad())?) };
+        Ok((a, b))
+    }
+}
+
+/// [`messages`] over an IR already in hand.
+pub fn messages_from_ir(ir: &crate::ir::IrSession, query: &MessageQuery) -> Vec<MessageRow> {
+    use crate::ir::{IrPart, IrRole};
+    let (start, end) = query.range.unwrap_or((0, None));
+    let mut rows: Vec<MessageRow> = ir
+        .messages
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(end.map_or(usize::MAX, |e| e.saturating_sub(start)))
+        .filter(|(_, m)| match query.role.as_deref() {
+            None => true,
+            Some("user") => m.role == IrRole::User,
+            Some("assistant") => m.role == IrRole::Assistant,
+            Some("system") => m.role == IrRole::System,
+            Some(_) => m.parts.iter().any(|p| matches!(p, IrPart::ToolCall { .. } | IrPart::ToolResult { .. })),
+        })
+        .map(|(index, m)| MessageRow {
+            index,
+            role: m.role,
+            ts: m.timestamp,
+            parts: if query.text_only {
+                m.parts.iter().filter(|p| matches!(p, IrPart::Text { .. })).cloned().collect()
+            } else {
+                m.parts.clone()
+            },
+            source_id: m.source_id.clone(),
+        })
+        .filter(|row| !query.text_only || !row.parts.is_empty())
+        .collect();
+    if let Some(n) = query.tail {
+        rows.drain(..rows.len().saturating_sub(n));
+    }
+    rows
+}
+
+/// A session's messages, read through the IR every agent exports to.
+pub fn messages(session: &Session, query: &MessageQuery) -> Result<Vec<MessageRow>, CoreError> {
+    Ok(messages_from_ir(&export_ir(session)?, query))
+}
+
+/// How a session changed between two looks at the stores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKind {
+    Added,
+    Changed,
+    Removed,
+}
+
+#[derive(Debug, Clone)]
+pub struct Change {
+    pub kind: ChangeKind,
+    /// As it is now; for `Removed`, as it was last seen.
+    pub session: Session,
+}
+
+/// Remembers the listing and says what differs from it the next time. The
+/// first `poll` only learns the baseline.
+// ponytail: a change is "the session's JSON differs", found by listing every
+// store each poll; fine at a poll every few seconds, and a per-store
+// fingerprint walk is the upgrade if listings ever get slow enough to hurt.
+#[derive(Default)]
+pub struct SessionWatch {
+    seen: Option<std::collections::HashMap<(AgentKind, String), (serde_json::Value, Session)>>,
+}
+
+impl SessionWatch {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Changes since the last poll (none, the first time), and what could
+    /// not be read. A poll that could not read a store reports no removals:
+    /// its sessions are unseen, not gone.
+    pub fn poll(&mut self, filter: &SessionFilter, query: &ListQuery) -> (Vec<Change>, Vec<String>) {
+        let (listed, problems) = list_sessions_partial(filter);
+        let mut now = std::collections::HashMap::new();
+        for session in listed.into_iter().filter(|s| query.keep(s)) {
+            let json = serde_json::to_value(&session).unwrap_or_default();
+            now.insert((session.handle.agent, session.handle.native_id.clone()), (json, session));
+        }
+        let Some(before) = self.seen.as_mut() else {
+            self.seen = Some(now);
+            return (Vec::new(), problems);
+        };
+        let mut changes = Vec::new();
+        if problems.is_empty() {
+            for (key, (_, session)) in before.iter() {
+                if !now.contains_key(key) {
+                    changes.push(Change { kind: ChangeKind::Removed, session: session.clone() });
+                }
+            }
+        }
+        for (key, (json, session)) in &now {
+            match before.get(key) {
+                None => changes.push(Change { kind: ChangeKind::Added, session: session.clone() }),
+                Some((old, _)) if old != json => {
+                    changes.push(Change { kind: ChangeKind::Changed, session: session.clone() })
+                }
+                Some(_) => {}
+            }
+        }
+        // A stable order, whatever the map's.
+        changes.sort_by(|a, b| {
+            (a.session.handle.agent.as_str(), &a.session.handle.native_id)
+                .cmp(&(b.session.handle.agent.as_str(), &b.session.handle.native_id))
+        });
+        if problems.is_empty() {
+            *before = now;
+        } else {
+            before.extend(now);
+        }
+        (changes, problems)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

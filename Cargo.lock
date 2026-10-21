@@ -84,31 +84,36 @@ dependencies = [
 
 [[package]]
 name = "asm"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "asm-cli",
  "asm-tui",
  "asm-web",
+ "clap",
  "libc",
+ "rusqlite",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
 name = "asm-cli"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "asm-core",
  "clap",
  "etcetera",
  "jiff",
+ "libc",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "asm-core"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "etcetera",
  "jiff",
@@ -123,7 +128,7 @@ dependencies = [
 
 [[package]]
 name = "asm-tui"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "asm-core",
@@ -134,12 +139,13 @@ dependencies = [
 
 [[package]]
 name = "asm-web"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "anyhow",
  "asm-core",
  "axum",
  "mime_guess",
+ "rusqlite",
  "rust-embed",
  "serde",
  "serde_json",

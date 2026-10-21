@@ -75,7 +75,7 @@ fn fetch(url: &str, dest: &Path) -> Result<()> {
         if status.success() {
             return Ok(());
         }
-        bail!("could not download {url}");
+        fail!(Unreachable, "could not download {url}");
     }
     if which("wget") {
         let status = Command::new("wget")
@@ -87,9 +87,9 @@ fn fetch(url: &str, dest: &Path) -> Result<()> {
         if status.success() {
             return Ok(());
         }
-        bail!("could not download {url}");
+        fail!(Unreachable, "could not download {url}");
     }
-    bail!("neither curl nor wget is installed; asm update needs one of them")
+    fail!(Unsupported, "neither curl nor wget is installed; asm update needs one of them")
 }
 
 fn fetch_text(url: &str) -> Result<String> {
@@ -159,10 +159,7 @@ pub fn run(check: bool, force: bool, want: Option<String>, json: bool) -> Result
     let current = env!("CARGO_PKG_VERSION");
     let target = target_triple();
     if target.is_empty() {
-        bail!(
-            "asm update has no release build for this platform; \
-             build from source instead"
-        );
+        fail!(Unsupported, "asm update has no release build for this platform; build from source instead");
     }
 
     let version = match want {
@@ -171,19 +168,17 @@ pub fn run(check: bool, force: bool, want: Option<String>, json: bool) -> Result
     };
     let newer = is_newer(&version, current);
 
-    if json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "current": current,
-                "latest": version,
-                "update_available": newer,
-                "target": target,
-            })
-        );
-        if check {
-            return Ok(());
-        }
+    // One document, whatever happens: the same fields for `--check`, and the
+    // outcome added to them when something was (or was not) installed.
+    let mut doc = serde_json::json!({
+        "current": current,
+        "latest": version,
+        "update_available": newer,
+        "target": target,
+    });
+    if json && check {
+        println!("{doc}");
+        return Ok(());
     } else if check {
         if newer {
             println!("asm {current} is installed; {version} is available");
@@ -195,7 +190,10 @@ pub fn run(check: bool, force: bool, want: Option<String>, json: bool) -> Result
     }
 
     if !newer && !force {
-        if !json {
+        if json {
+            doc["updated"] = false.into();
+            println!("{doc}");
+        } else {
             println!("asm {current} is already the latest version.");
             println!("Use --force to reinstall it anyway.");
         }
@@ -216,7 +214,8 @@ pub fn run(check: bool, force: bool, want: Option<String>, json: bool) -> Result
     // let `cargo run -- update` replace a freshly built binary with a
     // release one. Recoverable, but confusing enough to be worth refusing.
     if is_cargo_build(&exe) && !force {
-        bail!(
+        fail!(
+            Usage,
             "{} looks like a cargo build directory, not an installed asm.\n\
              Updating it would replace your build with a release binary. \
              Re-run with --force if that is what you meant.",
@@ -240,7 +239,14 @@ pub fn run(check: bool, force: bool, want: Option<String>, json: bool) -> Result
         .with_context(|| format!("creating {}", staging.display()))?;
     let result = install(&version, target, &staging, &exe, current, json);
     let _ = std::fs::remove_dir_all(&staging);
-    result
+    result?;
+    if json {
+        doc["updated"] = true.into();
+        doc["updated_to"] = version.into();
+        doc["path"] = serde_json::json!(exe);
+        println!("{doc}");
+    }
+    Ok(())
 }
 
 /// `…/target/debug/asm` or `…/target/release/asm` — where `cargo build`
@@ -333,9 +339,7 @@ fn install(
     std::fs::rename(&fresh, exe)
         .with_context(|| format!("replacing {}", exe.display()))?;
 
-    if json {
-        println!("{}", serde_json::json!({ "updated_to": version, "path": exe }));
-    } else {
+    if !json {
         println!("Updated to {version}: {}", exe.display());
     }
     Ok(())

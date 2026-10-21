@@ -36,6 +36,18 @@ pub enum CoreError {
 
     #[error("{msg}")]
     Invalid { msg: String },
+
+    /// A machine the operation needs (the hub, a peer) did not answer.
+    /// Separate from `Invalid` so a caller can tell "try again later" from
+    /// "fix the request".
+    #[error("{msg}")]
+    Unreachable { msg: String },
+
+    /// The agent's installed version has no such operation (OpenCode 2.x has
+    /// no archive). Like `NotSupported`, but the sentence is the agent's to
+    /// word.
+    #[error("{msg}")]
+    Unsupported { msg: String },
 }
 
 impl CoreError {

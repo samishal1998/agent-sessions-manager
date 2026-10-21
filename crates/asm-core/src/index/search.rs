@@ -46,11 +46,13 @@ pub struct SearchQuery {
     pub agent: Option<AgentKind>,
     pub project: Option<PathBuf>,
     pub limit: usize,
+    /// `live`, `idle` or `archived`.
+    pub state: Option<String>,
 }
 
 impl Default for SearchQuery {
     fn default() -> Self {
-        SearchQuery { text: String::new(), agent: None, project: None, limit: 30 }
+        SearchQuery { text: String::new(), agent: None, project: None, limit: 30, state: None }
     }
 }
 
@@ -81,14 +83,13 @@ pub struct SearchHit {
     /// "idle" | "live" | "archived". Archived sessions are searchable but
     /// absent from `asm list` until they are restored.
     pub status: String,
+    /// The same word as `status`, under the name `Session` JSON uses for it
+    /// (there `status` is an object and `state` the flat string).
+    pub state: String,
 }
 
 fn status_name(status: &crate::model::SessionStatus) -> &'static str {
-    match status {
-        crate::model::SessionStatus::Live { .. } => "live",
-        crate::model::SessionStatus::Idle => "idle",
-        crate::model::SessionStatus::Archived => "archived",
-    }
+    status.state()
 }
 
 /// An opaque string that changes whenever a session's content changes.
@@ -621,6 +622,10 @@ impl Index {
             binds.push(Box::new(project.display().to_string()));
             sql.push_str(&format!(" AND s.project_root = ?{}", binds.len()));
         }
+        if let Some(state) = &query.state {
+            binds.push(Box::new(state.clone()));
+            sql.push_str(&format!(" AND COALESCE(s.status, 'idle') = ?{}", binds.len()));
+        }
         sql.push_str(" ORDER BY bm25(message_fts) LIMIT ?");
         binds.push(Box::new(query.limit as i64));
         sql.push_str(&binds.len().to_string());
@@ -629,6 +634,7 @@ impl Index {
         let refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
         let rows = stmt
             .query_map(refs.as_slice(), |row| {
+                let status = row.get::<_, Option<String>>(9)?.unwrap_or_else(|| "idle".into());
                 Ok(SearchHit {
                     agent: row.get(0)?,
                     native_id: row.get(1)?,
@@ -639,7 +645,8 @@ impl Index {
                     timestamp: row.get(6)?,
                     snippet: row.get(7)?,
                     score: row.get(8)?,
-                    status: row.get::<_, Option<String>>(9)?.unwrap_or_else(|| "idle".into()),
+                    state: status.clone(),
+                    status,
                     parent: row.get(10)?,
                 })
             })

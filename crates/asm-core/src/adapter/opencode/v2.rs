@@ -831,6 +831,32 @@ CREATE UNIQUE INDEX `session_pending_session_admitted_seq_idx` ON `session_pendi
         sessions.iter().find(|s| s.handle.native_id == id).unwrap_or_else(|| panic!("{id} not listed"))
     }
 
+    /// The machine interface on a 2.x store: the message view and the schema
+    /// label, with and without sessions still waiting to be migrated.
+    #[test]
+    fn messages_and_the_schema_label_read_a_2x_store() {
+        let store = store();
+        let adapter = store.adapter();
+        let sessions = adapter.sessions(&SessionFilter::default()).unwrap();
+        let ir = adapter.export_ir(find(&sessions, "ses_busy")).unwrap();
+
+        let all = crate::ops::messages_from_ir(&ir, &Default::default());
+        assert_eq!(all.len(), ir.messages.len());
+        assert!(all.iter().enumerate().all(|(i, r)| r.index == i));
+        let tool = crate::ops::messages_from_ir(&ir, &crate::ops::MessageQuery { role: Some("tool".into()), ..Default::default() });
+        assert!(!tool.is_empty() && tool.len() < all.len(), "the assistant turn with its tool calls, and the results");
+        let text = crate::ops::messages_from_ir(&ir, &crate::ops::MessageQuery { text_only: true, ..Default::default() });
+        assert!(text.iter().all(|r| r.parts.iter().all(|p| matches!(p, IrPart::Text { .. }))));
+        let user = crate::ops::messages_from_ir(&ir, &crate::ops::MessageQuery { role: Some("user".into()), tail: Some(1), ..Default::default() });
+        assert_eq!(user.len(), 1);
+
+        let label = || crate::ops::store_schema(&crate::adapter::Adapter::OpenCode(store.adapter()));
+        assert_eq!(label(), (Some("v2"), Some(false)));
+        // A 1.x session 2.x has not copied yet: still 2.x, and says it is migrating.
+        store.conn.execute_batch("CREATE TABLE session (id TEXT PRIMARY KEY); INSERT INTO session VALUES ('ses_unmigrated');").unwrap();
+        assert_eq!(label(), (Some("v2"), Some(true)));
+    }
+
     #[test]
     fn lists_sessions_hiding_children() {
         let store = store();

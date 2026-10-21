@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+description = "Read, search, move and carry across the on-disk sessions of Claude Code, OpenCode, jcode, Codex and Antigravity: the core library behind the asm CLI, TUI and web UI"
+repository = "https://github.com/samishal1998/agent-sessions-manager"
+homepage = "https://samishal1998.github.io/agent-sessions-manager/"
+documentation = "https://samishal1998.github.io/agent-sessions-manager/docs/"
+readme = "../../README.md"
+keywords = ["claude-code", "opencode", "codex", "sessions", "coding-agents"]
+categories = ["development-tools"]
 
 # Dependency discipline: asm-core must never depend on clap, ratatui, axum,
 # tokio, or anyhow. Frontends stay thin; core stays synchronous.

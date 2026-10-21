@@ -2,7 +2,7 @@
 //! Vue frontend. Defaults to loopback — this is a personal dashboard, not a
 //! service — and says so loudly when bound anywhere else.
 
-mod api;
+pub mod api;
 pub mod hub;
 mod statics;
 
@@ -10,7 +10,9 @@ use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 
 use anyhow::Context;
 
-pub fn run(host: &str, port: u16) -> anyhow::Result<()> {
+/// Serve the UI and the API. With a `token`, every `/api/` request must
+/// carry it as a bearer token; the UI's own files stay open.
+pub fn run(host: &str, port: u16, token: Option<String>) -> anyhow::Result<()> {
     let addr = resolve_bind(host, port)?;
 
     if !addr.ip().is_loopback() {
@@ -24,11 +26,16 @@ pub fn run(host: &str, port: u16) -> anyhow::Result<()> {
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
-        let app = api::router().fallback(statics::serve_static);
+        let app = api::router(token.clone()).fallback(statics::serve_static);
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .with_context(|| format!("cannot bind {addr}"))?;
-        eprintln!("asm web ui on http://{}/  (ctrl-c to stop)", display_addr(&addr));
+        // The address actually bound: with `--port 0` the system chose it.
+        let bound = listener.local_addr().unwrap_or(addr);
+        eprintln!("asm web ui on http://{}/  (ctrl-c to stop)", display_addr(&bound));
+        if token.is_some() {
+            eprintln!("the API needs `Authorization: Bearer <token>`; the bundled UI sends none and will not load data.");
+        }
         axum::serve(listener, app).await?;
         Ok(())
     })
@@ -98,6 +105,21 @@ mod tests {
         assert!(v6.is_ipv6());
         assert_eq!(v6.port(), 7433);
         assert!(v6.ip().is_loopback());
+    }
+
+    /// The token guards `/api/` and nothing else: the page loads, so a person
+    /// at a browser is told what is wrong rather than shown nothing.
+    #[tokio::test]
+    async fn the_token_does_not_cover_the_static_files() {
+        use tower::ServiceExt;
+        let app = api::router(Some("t0ken".into())).fallback(statics::serve_static);
+        let get = |uri: &str| {
+            let app = app.clone();
+            let request = axum::http::Request::builder().uri(uri).body(axum::body::Body::empty()).unwrap();
+            async move { app.oneshot(request).await.unwrap().status() }
+        };
+        assert_eq!(get("/").await, axum::http::StatusCode::OK);
+        assert_eq!(get("/api/meta").await, axum::http::StatusCode::UNAUTHORIZED);
     }
 
     #[test]

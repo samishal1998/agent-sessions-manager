@@ -3,7 +3,7 @@ title: The command line
 description: How the asm CLI behaves — refs, filters, JSON output and exit behaviour.
 ---
 
-Every capability is a command, and every command takes `--json` for scripting. The [reference](/reference/cli/overview/) lists every command and option; this page covers the behaviour they share.
+Every capability is a command, and every command that prints a result takes `--json` for scripting. The [reference](/reference/cli/overview/) lists every command and option; this page covers the behaviour they share.
 
 ## Referring to a session
 
@@ -58,12 +58,19 @@ See [Organize sessions](/guides/organize/) for what each does per agent.
 
 ## Scripting
 
-`--json` switches output to JSON on every command. Errors go to stderr with a non-zero exit status. Tables are only drawn when stdout is a terminal; piped, `asm` with no command prints the plain session table instead of opening the TUI.
+`--json` switches output to JSON: a bare array or object on stdout, nothing else there. The exceptions are the commands that cannot have a document: `tui`, `serve`, `hub serve`, the foreground `daemon` and `resume`. A failure prints one `{"error": {"code", "message"}}` object to stderr and exits with a status for its code (10 not found, 11 ambiguous, 12 session in use, and so on). A command that would prompt, such as `delete`, refuses under `--json` unless you pass `--yes`. Tables are only drawn when stdout is a terminal; piped, `asm` with no command prints the plain session table instead of opening the TUI. The full contract, every output shape and the exit codes are in [JSON and exit codes](/reference/json/).
 
 ```sh
-asm list --json | jq -r '.[] | select(.status == "live") | .title'
+asm list --json | jq -r '.[] | select(.state == "live") | .title'
+asm list --status live --ids-only | xargs -n1 asm show
+asm children ses_71c4 --json            # the subagent tree under a session
+asm messages 4c93a826 --role assistant --tail 3
+asm events                              # one JSON line per session that is added, changed or removed
+asm capabilities --json                 # versions, and what each agent's store can do
 asm export 4c93a826 -o session.ir.json
 ```
+
+`select(.state == "live")` works on a session and on a search hit alike; a session's `status` is an object (`{"state": "live"}`) and a search hit's is a bare string, so compare `state`.
 
 ## Safety
 

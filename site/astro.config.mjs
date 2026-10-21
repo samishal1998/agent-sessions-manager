@@ -94,6 +94,7 @@ export default defineConfig({
           items: [
             { label: 'Command line', collapsed: true, items: [{ autogenerate: { directory: 'reference/cli' } }] },
             { slug: 'reference/tui-keys' },
+            { slug: 'reference/json' },
             { slug: 'reference/web-api' },
             { slug: 'reference/agents' },
             { slug: 'reference/data-files' },

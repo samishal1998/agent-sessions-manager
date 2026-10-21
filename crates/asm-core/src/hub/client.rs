@@ -243,7 +243,7 @@ pub(super) fn run_curl(
             } else {
                 ""
             };
-            return Err(invalid(format!("could not reach the hub at {url}: {stderr}{hint}")));
+            return Err(CoreError::Unreachable { msg: format!("could not reach the hub at {url}: {stderr}{hint}") });
         }
         let status: u16 = String::from_utf8_lossy(&output.stdout)
             .trim()

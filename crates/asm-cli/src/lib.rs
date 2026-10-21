@@ -1,5 +1,14 @@
 //! Command-line frontend: clap definitions and handlers over `asm_core::ops`.
 
+/// `return Err(..)` with a typed error: `fail!(Usage, "say {what}")`. The
+/// code is what `--json` reports and what the exit status says; see
+/// `asm_core::contract`.
+macro_rules! fail {
+    ($code:ident, $($arg:tt)*) => {
+        return Err($crate::coded(asm_core::contract::ErrorCode::$code, format!($($arg)*)))
+    };
+}
+
 mod control_cmd;
 mod daemon_ctl;
 mod format;
@@ -7,18 +16,85 @@ mod update;
 
 use std::path::PathBuf;
 
-use anyhow::{Context, bail};
-use clap::{Parser, Subcommand};
+use anyhow::Context;
+use clap::{CommandFactory, Parser, Subcommand};
 
 use asm_core::adapter::SessionFilter;
+use asm_core::contract::{self, CodedError, ErrorCode};
 use asm_core::live::LiveEvent;
-use asm_core::model::AgentKind;
-use asm_core::ops;
+use asm_core::model::{AgentKind, Session};
+use asm_core::ops::{self, ListQuery};
+
+pub(crate) fn coded(code: ErrorCode, message: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(CodedError::new(code, message))
+}
+
+/// Whether failures are printed as a JSON object. Set once the arguments
+/// are parsed (or found to be unparseable under `--json`).
+static JSON_ERRORS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Say why the command failed and give the exit status for it. With `--json`
+/// that is one `{"error": {...}}` object on stderr and nothing else; without
+/// it, the text anyhow always printed. The status is the error's code in
+/// `asm_core::contract::ErrorCode::exit_code`.
+pub fn report_error(error: &anyhow::Error) -> i32 {
+    let mut body = contract::classify(error.as_ref());
+    if JSON_ERRORS.load(std::sync::atomic::Ordering::Relaxed) {
+        // The whole chain, so a command's context is not lost; a cause the
+        // message already says (an I/O error quotes its own source) is not
+        // said twice.
+        let mut message = error.to_string();
+        for cause in error.chain().skip(1) {
+            let cause = cause.to_string();
+            if !message.contains(&cause) {
+                message = format!("{message}: {cause}");
+            }
+        }
+        body.message = message;
+        eprintln!("{}", body.envelope());
+    } else {
+        eprintln!("Error: {error:?}");
+    }
+    body.code.exit_code()
+}
+
+/// Say a failure that ends the process by some other status than the error's
+/// own (`control --wait` keeps its exit codes): the JSON object under
+/// `--json`, the plain text otherwise.
+pub(crate) fn say_failure(code: ErrorCode, message: String) {
+    if JSON_ERRORS.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("{}", contract::ErrorBody::new(code, message).envelope());
+    } else {
+        eprintln!("{message}");
+    }
+}
+
+/// `ASM_JSON=1` (or true, yes, on) is `--json`.
+fn json_from_env() -> bool {
+    std::env::var("ASM_JSON").is_ok_and(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+}
+
+/// A command line clap rejected. Help and version are clap's to print; a
+/// real mistake under `--json` becomes a `usage` error like any other,
+/// and otherwise clap prints and exits (2) as it always did.
+fn parse_failure(e: clap::Error) -> anyhow::Error {
+    let wants_json = std::env::args_os().any(|a| a == "--json") || json_from_env();
+    if !e.use_stderr() || !wants_json {
+        e.exit();
+    }
+    JSON_ERRORS.store(true, std::sync::atomic::Ordering::Relaxed);
+    // What clap says before it gets to `Usage:` and the hints.
+    let rendered = e.render().to_string();
+    let said: Vec<&str> = rendered.lines().take_while(|l| !l.starts_with("Usage:")).map(str::trim).filter(|l| !l.is_empty()).collect();
+    coded(ErrorCode::Usage, said.join(" ").trim_start_matches("error: "))
+}
 
 #[derive(Parser)]
 #[command(name = "asm", version, about = "Cross-agent session manager")]
 pub struct Cli {
-    /// Emit machine-readable JSON instead of tables.
+    /// Emit machine-readable JSON instead of tables. A failure is then one
+    /// `{"error": {"code", "message"}}` object on stderr. `ASM_JSON=1` is the
+    /// same flag.
     #[arg(long, global = true)]
     json: bool,
 
@@ -48,7 +124,54 @@ enum Command {
     /// `--include-children` they are listed under it, indented, with the
     /// parent's id in a PARENT column. `--json` is an array of sessions in
     /// listing order, each with its `parent` (null for a top-level session).
-    List,
+    List(ListOpts),
+    /// The sessions under a session (subagents, spawned threads), at any
+    /// depth, in tree order. `--json` is a flat array of sessions, each with
+    /// its `depth` (1 for a direct child) and `parent`.
+    Children {
+        /// Session to act on: a native id, a unique id prefix, or `agent:id-prefix`.
+        r#ref: String,
+        #[command(flatten)]
+        select: Select,
+    },
+    /// A session's messages, one JSON object per line: `index`, `role`,
+    /// `ts`, `parts` (the IR's parts). Read through the same export `asm
+    /// export` uses, so every agent that exports has them.
+    Messages {
+        /// Session to act on: a native id, a unique id prefix, or `agent:id-prefix`.
+        r#ref: String,
+        /// Only this role. `tool` is a message holding a tool call or result.
+        #[arg(long, value_parser = ops::MessageQuery::ROLES)]
+        role: Option<String>,
+        /// Only the last N messages (after the other filters).
+        #[arg(long, value_name = "N")]
+        tail: Option<usize>,
+        /// Only messages whose index is in A..B (end excluded; `A..` and
+        /// `..B` are open).
+        #[arg(long, value_name = "A..B")]
+        range: Option<String>,
+        /// Keep only text: drop tool calls, reasoning and files, and the
+        /// messages that have no text left.
+        #[arg(long)]
+        text: bool,
+        /// ndjson: one message per line. json: one array.
+        #[arg(long, default_value = "ndjson", value_parser = ["ndjson", "json"])]
+        format: String,
+    },
+    /// Follow the sessions on disk: a JSON line `{"event":"ready"}`, then
+    /// `{"event":"added|changed|removed","session":{...}}` as they change.
+    /// Polls; runs until stopped.
+    Events {
+        /// Only sessions in this state.
+        #[arg(long, value_parser = ["live", "idle", "archived"])]
+        status: Option<String>,
+        /// Seconds between looks at the stores (at least 0.5).
+        #[arg(long, default_value = "2", value_parser = parse_interval)]
+        interval: f64,
+    },
+    /// What this asm and each agent's store can do, as JSON a program can
+    /// plan from: versions, contract version, per-agent capabilities.
+    Capabilities,
     /// List projects with session counts. A project is a git repository —
     /// every worktree of it, plus sessions started in subdirectories — not
     /// a single directory.
@@ -157,6 +280,8 @@ enum Command {
         /// Search the existing index without bringing it up to date.
         #[arg(long)]
         no_refresh: bool,
+        #[command(flatten)]
+        select: Select,
     },
     /// Rebuild the search index and report on it.
     Index {
@@ -280,6 +405,11 @@ enum Command {
         /// API to your network.
         #[arg(long, default_value = "127.0.0.1")]
         host: String,
+        /// Require `Authorization: Bearer <token>` on every `/api/` request,
+        /// the token being this file's contents (or $ASM_WEB_TOKEN). The
+        /// bundled UI sends none: this is for programs calling the API.
+        #[arg(long, value_name = "PATH")]
+        token_file: Option<PathBuf>,
     },
 }
 
@@ -448,16 +578,57 @@ enum PeerCommand {
     },
 }
 
+/// The command tree, for tests that must not drift from it.
+pub fn command() -> clap::Command {
+    Cli::command()
+}
+
+/// What to do with a listing beyond showing it. Shared by every command that
+/// lists sessions or hits.
+#[derive(clap::Args, Clone, Default)]
+struct Select {
+    /// Only sessions in this state.
+    #[arg(long, value_parser = ["live", "idle", "archived"])]
+    status: Option<String>,
+    /// Print only session ids, one per line (`--json` does not apply).
+    #[arg(long)]
+    ids_only: bool,
+    /// `--ids-only`, with each id ended by NUL instead of a newline, for
+    /// `xargs -0`.
+    #[arg(short = '0', long)]
+    null: bool,
+}
+
+#[derive(clap::Args, Clone, Default)]
+struct ListOpts {
+    #[command(flatten)]
+    select: Select,
+    /// Keep running and print each change as JSON lines instead of the
+    /// listing: the same as `asm events`.
+    #[arg(long)]
+    follow: bool,
+    /// With --follow: seconds between looks at the stores (at least 0.5).
+    #[arg(long, default_value = "2", value_parser = parse_interval, requires = "follow")]
+    interval: f64,
+}
+
+fn parse_interval(text: &str) -> Result<f64, String> {
+    let secs: f64 = text.parse().map_err(|_| format!("'{text}' is not a number of seconds"))?;
+    if secs.is_finite() && secs >= 0.5 { Ok(secs) } else { Err("the interval is at least 0.5 seconds".into()) }
+}
+
 /// A frontend the binary should launch after argument parsing (the CLI
 /// crate stays free of TUI/web dependencies).
 pub enum Frontend {
     Tui,
-    Serve { host: String, port: u16 },
+    Serve { host: String, port: u16, token: Option<String> },
     Hub { host: String, port: u16, max_file_bytes: u64, peer: bool },
 }
 
 pub fn run() -> anyhow::Result<Option<Frontend>> {
-    let cli = Cli::parse();
+    let mut cli = Cli::try_parse().map_err(parse_failure)?;
+    cli.json |= json_from_env();
+    JSON_ERRORS.store(cli.json, std::sync::atomic::Ordering::Relaxed);
     let filter = build_filter(&cli)?;
 
     // Bare `asm` on a terminal opens the interactive browser; piped or
@@ -465,12 +636,26 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
     let default_command = if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         Command::Tui
     } else {
-        Command::List
+        Command::List(ListOpts::default())
     };
 
     match cli.command.unwrap_or(default_command) {
         Command::Tui => return Ok(Some(Frontend::Tui)),
-        Command::Serve { port, host } => return Ok(Some(Frontend::Serve { host, port })),
+        Command::Serve { port, host, token_file } => {
+            let token = match token_file {
+                Some(path) => Some(
+                    std::fs::read_to_string(&path)
+                        .map_err(|e| anyhow::Error::new(asm_core::CoreError::io(&path, e)))?
+                        .trim()
+                        .to_string(),
+                ),
+                None => std::env::var("ASM_WEB_TOKEN").ok(),
+            };
+            if token.as_deref() == Some("") {
+                fail!(Usage, "the web token is empty; give --token-file a file with the token in it");
+            }
+            return Ok(Some(Frontend::Serve { host, port, token }));
+        }
         Command::Hub(HubCommand::Serve { port, host, max_file_mb, peer }) => {
             let max_file_bytes = max_file_mb.saturating_mul(1024 * 1024);
             return Ok(Some(Frontend::Hub { host, port, max_file_bytes, peer }));
@@ -485,7 +670,7 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
         }
         Command::Push { refs, all, force, move_away, to: Some(peer), project_dir } => {
             if all || force || move_away {
-                bail!("--to sends one session to a peer as it is; --all, --force and --move are for the hub");
+                fail!(Usage, "--to sends one session to a peer as it is; --all, --force and --move are for the hub");
             }
             push_to(&peer, &refs, project_dir.as_deref(), &filter, cli.json)
         }
@@ -494,10 +679,10 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
         }
         Command::Daemon { action: Some(action), .. } => match action {
             DaemonCommand::Status => daemon_status(cli.json),
-            DaemonCommand::Start(o) => daemon_ctl::start(o.into()),
-            DaemonCommand::Stop => daemon_ctl::stop(),
-            DaemonCommand::Install { opts, no_start } => daemon_ctl::install(opts.into(), !no_start),
-            DaemonCommand::Uninstall => daemon_ctl::uninstall(),
+            DaemonCommand::Start(o) => daemon_ctl::start(o.into(), cli.json),
+            DaemonCommand::Stop => daemon_ctl::stop(cli.json),
+            DaemonCommand::Install { opts, no_start } => daemon_ctl::install(opts.into(), !no_start, cli.json),
+            DaemonCommand::Uninstall => daemon_ctl::uninstall(cli.json),
         },
         Command::Daemon { action: None, opts: DaemonOpts { interval, active_within } } => {
             let remote = asm_core::hub::client::load()?;
@@ -513,9 +698,9 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
         }
         Command::Pull { r#ref, all, project_dir, from: Some(peer) } => {
             if all {
-                bail!("--from takes one session from a peer; --all is for the hub");
+                fail!(Usage, "--from takes one session from a peer; --all is for the hub");
             }
-            let Some(query) = r#ref else { bail!("name the session to pull from {peer}") };
+            let Some(query) = r#ref else { fail!(Usage, "name the session to pull from {peer}") };
             pull_from(&peer, &query, project_dir.as_deref(), cli.json)
         }
         Command::Pull { r#ref, all, project_dir, from: None } => {
@@ -524,15 +709,21 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
         Command::Remote(command) => remote(command, &filter, cli.json),
         Command::Peer(command) => peer(command, &filter, cli.json),
         Command::Control(command) => control_cmd::run(command, cli.json),
-        Command::List => list(&filter, cli.json),
+        Command::List(opts) => list(&filter, &opts, cli.json),
+        Command::Children { r#ref, select } => children(&r#ref, &filter, &select, cli.json),
+        Command::Messages { r#ref, role, tail, range, text, format } => {
+            messages(&r#ref, &filter, role, tail, range.as_deref(), text, &format)
+        }
+        Command::Events { status, interval } => follow(&filter, status, interval),
+        Command::Capabilities => capabilities(cli.json),
         Command::Projects { worktrees } => projects(cli.json, worktrees),
         Command::Show { r#ref } => show(&r#ref, &filter, cli.json),
         Command::Resume { r#ref } => resume(&r#ref, &filter),
-        Command::Rename { r#ref, title } => rename(&r#ref, &title, &filter),
-        Command::Move { r#ref, new_dir } => move_session(&r#ref, &new_dir, &filter),
-        Command::Archive { r#ref } => archive(&r#ref, &filter),
-        Command::Unarchive { r#ref } => unarchive(&r#ref, &filter),
-        Command::Delete { r#ref, yes } => delete(&r#ref, yes, &filter),
+        Command::Rename { r#ref, title } => rename(&r#ref, &title, &filter, cli.json),
+        Command::Move { r#ref, new_dir } => move_session(&r#ref, &new_dir, &filter, cli.json),
+        Command::Archive { r#ref } => archive(&r#ref, &filter, cli.json),
+        Command::Unarchive { r#ref } => unarchive(&r#ref, &filter, cli.json),
+        Command::Delete { r#ref, yes } => delete(&r#ref, yes, &filter, cli.json),
         Command::Send { r#ref, message } => send(&r#ref, &message, &filter, cli.json),
         Command::Import { r#ref, to, project_dir, mode, dry_run, show_toolmap } => import(
             &r#ref,
@@ -544,10 +735,10 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
             &filter,
             cli.json,
         ),
-        Command::Export { r#ref, output } => export(&r#ref, output.as_deref(), &filter),
+        Command::Export { r#ref, output } => export(&r#ref, output.as_deref(), &filter, cli.json),
         Command::Worktrees { repo } => worktrees(repo.as_deref(), cli.json),
-        Command::Search { query, limit, no_refresh } => {
-            search(&query.join(" "), limit, !no_refresh, &filter, cli.json)
+        Command::Search { query, limit, no_refresh, select } => {
+            search(&query.join(" "), limit, !no_refresh, &filter, &select, cli.json)
         }
         Command::Index { stats } => index(stats, cli.json),
         Command::Doctor => doctor(cli.json),
@@ -586,12 +777,13 @@ fn search(
     limit: usize,
     refresh: bool,
     filter: &SessionFilter,
+    select: &Select,
     json: bool,
 ) -> anyhow::Result<()> {
     use asm_core::index::{Index, SearchQuery};
 
     if query.trim().is_empty() {
-        bail!("nothing to search for");
+        fail!(Usage, "nothing to search for");
     }
     let mut index = Index::open()?;
     if refresh {
@@ -609,8 +801,14 @@ fn search(
         agent: filter.agent,
         project: filter.project.clone(),
         limit,
+        state: select.status.clone(),
     })?;
 
+    if select.ids_only || select.null {
+        // A session with several hits is named once.
+        let mut seen = std::collections::HashSet::new();
+        return print_ids(hits.iter().filter(|h| seen.insert((&h.agent, &h.native_id))).map(|h| h.native_id.as_str()), select.null);
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&hits)?);
         return Ok(());
@@ -779,11 +977,17 @@ fn import(
 ) -> anyhow::Result<()> {
     use asm_core::import::{ImportMode, ImportOpts, toolmap};
 
-    let target = AgentKind::parse(to)
-        .with_context(|| format!("unknown target agent '{to}' (try: claude-code, opencode)"))?;
+    let Some(target) = AgentKind::parse(to) else {
+        fail!(Usage, "unknown target agent '{to}' (try: claude-code, opencode)");
+    };
 
     if show_toolmap {
-        for (from, to) in toolmap::table(target) {
+        let table = toolmap::table(target);
+        if json {
+            let pairs: Vec<_> = table.iter().map(|(from, to)| serde_json::json!({ "from": from, "to": to })).collect();
+            return print_json(&serde_json::json!({ "target": target, "tools": pairs }));
+        }
+        for (from, to) in table {
             println!("{from} -> {to}");
         }
         return Ok(());
@@ -792,7 +996,7 @@ fn import(
     let mode = match mode {
         "full" => ImportMode::Full,
         "seed" => ImportMode::Seed,
-        other => anyhow::bail!("unknown mode '{other}' (full | seed)"),
+        other => fail!(Usage, "unknown mode '{other}' (full | seed)"),
     };
     let session = resolve(query, filter)?;
     let opts = ImportOpts { mode, project: project_dir.map(|p| p.to_path_buf()), dry_run };
@@ -831,13 +1035,18 @@ fn export(
     query: &str,
     output: Option<&std::path::Path>,
     filter: &SessionFilter,
+    as_json: bool,
 ) -> anyhow::Result<()> {
     let session = resolve(query, filter)?;
     let ir = ops::export_ir(&session)?;
     let json = serde_json::to_string_pretty(&ir)?;
     match output {
         Some(path) => {
-            std::fs::write(path, &json)?;
+            std::fs::write(path, &json).map_err(|e| asm_core::CoreError::io(path, e))?;
+            if as_json {
+                // The IR went to the file; stdout says where.
+                return print_json(&mutated(&session, serde_json::json!({ "path": path, "messages": ir.messages.len() })));
+            }
             eprintln!(
                 "Exported {} ({} messages) to {}.",
                 session.short_id(),
@@ -856,11 +1065,21 @@ fn worktrees(repo: Option<&std::path::Path>, json: bool) -> anyhow::Result<()> {
         None => std::env::current_dir()?,
     };
     let worktrees = asm_core::git::worktrees(&repo)?;
-    if json {
-        println!("{}", serde_json::to_string_pretty(&worktrees)?);
-        return Ok(());
-    }
     let sessions = ops::list_sessions(&SessionFilter::default())?;
+    if json {
+        // Each worktree as git reports it, plus the sessions living in it.
+        let full: Vec<serde_json::Value> = worktrees
+            .iter()
+            .map(|wt| {
+                let here: Vec<&Session> = sessions.iter().filter(|s| s.project_root == wt.path).collect();
+                let mut value = serde_json::to_value(wt)?;
+                value["session_count"] = here.len().into();
+                value["sessions"] = serde_json::to_value(&here)?;
+                Ok::<_, serde_json::Error>(value)
+            })
+            .collect::<Result<_, _>>()?;
+        return print_json(&full);
+    }
     for wt in &worktrees {
         let here: Vec<&asm_core::model::Session> =
             sessions.iter().filter(|s| s.project_root == wt.path).collect();
@@ -892,20 +1111,41 @@ fn worktrees(repo: Option<&std::path::Path>, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn resolve(query: &str, filter: &SessionFilter) -> anyhow::Result<asm_core::model::Session> {
-    ops::resolve_ref(query, filter).map_err(|e| anyhow::anyhow!("{e}"))
+/// The one session `query` names. The error stays typed (not found, or
+/// ambiguous with its candidates) so the top level can report which.
+fn resolve(query: &str, filter: &SessionFilter) -> anyhow::Result<Session> {
+    Ok(ops::resolve_ref(query, filter)?)
+}
+
+/// `{"ok": true, "agent", "id", ...extra}`: what a command that changed one
+/// session says about it. `extra` is the operation's own outcome, flattened.
+fn mutated(session: &Session, extra: impl serde::Serialize) -> serde_json::Value {
+    let mut value = serde_json::json!({ "ok": true, "agent": session.handle.agent, "id": session.handle.native_id });
+    if let (Some(base), Ok(serde_json::Value::Object(more))) = (value.as_object_mut(), serde_json::to_value(extra)) {
+        base.extend(more);
+    }
+    value
+}
+
+/// One id per line (or NUL-ended), nothing else.
+fn print_ids<'a>(ids: impl Iterator<Item = &'a str>, null: bool) -> anyhow::Result<()> {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    for id in ids {
+        write!(out, "{id}{}", if null { '\0' } else { '\n' })?;
+    }
+    Ok(())
 }
 
 fn build_filter(cli: &Cli) -> anyhow::Result<SessionFilter> {
     let agent = match &cli.agent {
-        Some(name) => Some(
-            AgentKind::parse(name)
-                .with_context(|| {
-                    format!(
-                        "unknown agent '{name}' (try: claude-code, opencode, jcode, codex, antigravity)"
-                    )
-                })?,
-        ),
+        Some(name) => match AgentKind::parse(name) {
+            Some(agent) => Some(agent),
+            None => fail!(
+                Usage,
+                "unknown agent '{name}' (try: claude-code, opencode, jcode, codex, antigravity)"
+            ),
+        },
         None => None,
     };
     let project = match &cli.project {
@@ -918,7 +1158,14 @@ fn build_filter(cli: &Cli) -> anyhow::Result<SessionFilter> {
     Ok(SessionFilter { agent, project, include_children: cli.include_children, include_debug: false })
 }
 
-fn list(filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
+fn list(filter: &SessionFilter, opts: &ListOpts, json: bool) -> anyhow::Result<()> {
+    let select = &opts.select;
+    if opts.follow {
+        if select.ids_only || select.null {
+            fail!(Usage, "--follow prints JSON events, not ids: drop --ids-only / -0");
+        }
+        return follow(filter, select.status.clone(), opts.interval);
+    }
     // Children are read either way: the `+N` after a session counts them,
     // and `--include-children` nests them under it.
     let (sessions, problems) =
@@ -929,15 +1176,21 @@ fn list(filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
     for note in ops::store_notes() {
         eprintln!("asm: {note}");
     }
+    // A match whose parent did not match stands on its own in the tree.
+    let query = ListQuery { state: select.status.clone(), text: None };
+    let sessions: Vec<Session> = sessions.into_iter().filter(|s| query.keep(s)).collect();
     let tree = ops::group_children(&sessions);
-    if json {
+    if json || select.ids_only || select.null {
         // A flat array in listing order, nested or not. Without
         // `--include-children` it is the roots, as it always was.
-        let listed: Vec<&asm_core::model::Session> = if filter.include_children {
+        let listed: Vec<&Session> = if filter.include_children {
             sessions.iter().collect()
         } else {
             tree.iter().map(|n| &sessions[n.index]).collect()
         };
+        if select.ids_only || select.null {
+            return print_ids(listed.iter().map(|s| s.handle.native_id.as_str()), select.null);
+        }
         println!("{}", serde_json::to_string_pretty(&listed)?);
         return Ok(());
     }
@@ -946,22 +1199,9 @@ fn list(filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
         return Ok(());
     }
     if filter.include_children {
-        // A parent goes by the id its own row shows (a jcode session by its
-        // name); one that is not listed by what its id begins with.
-        let goes_by: std::collections::HashMap<(AgentKind, &str), &str> =
-            sessions.iter().map(|s| ((s.handle.agent, s.handle.native_id.as_str()), s.short_id())).collect();
         let rows: Vec<format::Row> = ops::flatten(&tree, &|_| true)
             .into_iter()
-            .map(|(i, depth)| {
-                let s = &sessions[i];
-                let parent = s.parent.as_deref().map(|p| {
-                    goes_by
-                        .get(&(s.handle.agent, p))
-                        .map_or_else(|| asm_core::model::short_id_of(s.handle.agent, p, None), |id| *id)
-                        .to_string()
-                });
-                format::Row { session: s, depth, below: 0, parent }
-            })
+            .map(|(i, depth)| format::Row { session: &sessions[i], depth, below: 0, parent: parent_label(&sessions, &sessions[i]) })
             .collect();
         format::session_rows(&rows, true);
     } else {
@@ -970,6 +1210,173 @@ fn list(filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
             .map(|n| format::Row { session: &sessions[n.index], depth: 0, below: n.descendants(), parent: None })
             .collect();
         format::session_rows(&rows, false);
+    }
+    Ok(())
+}
+
+/// The id a session's parent goes by in `among`: a parent is shown by the id
+/// its own row shows (a jcode session by its name); one that is not listed
+/// by what its id begins with.
+fn parent_label(among: &[Session], s: &Session) -> Option<String> {
+    let parent = s.parent.as_deref()?;
+    Some(
+        among
+            .iter()
+            .find(|p| p.handle.agent == s.handle.agent && p.handle.native_id == parent)
+            .map_or_else(|| asm_core::model::short_id_of(s.handle.agent, parent, None), |p| p.short_id())
+            .to_string(),
+    )
+}
+
+fn children(query: &str, filter: &SessionFilter, select: &Select, json: bool) -> anyhow::Result<()> {
+    let session = resolve(query, filter)?;
+    let keep = ListQuery { state: select.status.clone(), text: None };
+    let below: Vec<(usize, Session)> =
+        ops::descendants(&session)?.into_iter().filter(|(_, s)| keep.keep(s)).collect();
+    if select.ids_only || select.null {
+        return print_ids(below.iter().map(|(_, s)| s.handle.native_id.as_str()), select.null);
+    }
+    if json {
+        let rows: Vec<serde_json::Value> = below
+            .iter()
+            .map(|(depth, s)| {
+                let mut value = serde_json::to_value(s)?;
+                value["depth"] = (*depth).into();
+                Ok::<_, serde_json::Error>(value)
+            })
+            .collect::<Result<_, _>>()?;
+        return print_json(&rows);
+    }
+    if below.is_empty() {
+        println!("No sessions under {}.", session.short_id());
+        return Ok(());
+    }
+    let mut known: Vec<Session> = below.iter().map(|(_, s)| s.clone()).collect();
+    known.push(session);
+    let rows: Vec<format::Row> =
+        below.iter().map(|(depth, s)| format::Row { session: s, depth: *depth, below: 0, parent: parent_label(&known, s) }).collect();
+    format::session_rows(&rows, true);
+    Ok(())
+}
+
+fn messages(
+    query: &str,
+    filter: &SessionFilter,
+    role: Option<String>,
+    tail: Option<usize>,
+    range: Option<&str>,
+    text_only: bool,
+    format: &str,
+) -> anyhow::Result<()> {
+    use std::io::Write;
+    let range = match range {
+        Some(r) => Some(ops::MessageQuery::parse_range(r).map_err(|e| coded(ErrorCode::Usage, e))?),
+        None => None,
+    };
+    let session = resolve(query, filter)?;
+    let rows = ops::messages(&session, &ops::MessageQuery { role, range, text_only, tail })?;
+    if format == "json" {
+        return print_json(&rows);
+    }
+    let mut out = std::io::stdout().lock();
+    for row in &rows {
+        writeln!(out, "{}", serde_json::to_string(row)?)?;
+    }
+    Ok(())
+}
+
+/// `asm events`: print each change to the listing as a line of JSON, until
+/// stopped. A closed stdout ends it quietly.
+fn follow(filter: &SessionFilter, status: Option<String>, interval: f64) -> anyhow::Result<()> {
+    use std::io::Write;
+    let query = ListQuery { state: status, text: None };
+    let mut watch = ops::SessionWatch::new();
+    let mut shown: Vec<String> = Vec::new();
+    let mut out = std::io::stdout().lock();
+    let mut emit = |value: serde_json::Value| -> bool {
+        writeln!(out, "{value}").and_then(|_| out.flush()).is_ok()
+    };
+    let report = |problems: Vec<String>, shown: &mut Vec<String>| {
+        // Said when it starts or changes, not at every look.
+        if problems != *shown {
+            for problem in &problems {
+                eprintln!("asm: could not read {problem}");
+            }
+            *shown = problems;
+        }
+    };
+    let (_, problems) = watch.poll(filter, &query);
+    report(problems, &mut shown);
+    if !emit(serde_json::json!({ "event": "ready" })) {
+        return Ok(());
+    }
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs_f64(interval));
+        // A reader that left is otherwise noticed only by the next write,
+        // which may be hours away.
+        if stdout_closed() {
+            return Ok(());
+        }
+        let (changes, problems) = watch.poll(filter, &query);
+        report(problems, &mut shown);
+        for change in changes {
+            if !emit(serde_json::json!({ "event": change.kind, "session": change.session })) {
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Whether whoever reads stdout has gone (a closed pipe), without writing.
+#[cfg(unix)]
+fn stdout_closed() -> bool {
+    let mut fd = libc::pollfd { fd: 1, events: 0, revents: 0 };
+    // Safety: one valid pollfd and a zero timeout; poll only reports.
+    unsafe { libc::poll(&mut fd, 1, 0) };
+    fd.revents & (libc::POLLERR | libc::POLLHUP) != 0
+}
+
+#[cfg(not(unix))]
+fn stdout_closed() -> bool {
+    false
+}
+
+fn capabilities(json: bool) -> anyhow::Result<()> {
+    let report = ops::capabilities_report();
+    if json {
+        return print_json(&report);
+    }
+    println!(
+        "asm {}  json contract {}  ir {}  index schema {}",
+        report.asm_version, report.json_contract_version, report.ir_version, report.index_schema_version
+    );
+    for a in &report.agents {
+        let c = a.capabilities;
+        let can: Vec<&str> = [
+            ("list", c.list),
+            ("read", c.read_transcript),
+            ("live", c.liveness),
+            ("rename", c.rename),
+            ("archive", c.archive),
+            ("move", c.relocate),
+            ("delete", c.delete),
+            ("import", c.import_ir),
+            ("export", c.export_ir),
+            ("resume", c.resume_native),
+            ("send", c.send_message),
+            ("hub", a.hub_sync),
+        ]
+        .into_iter()
+        .filter_map(|(name, on)| on.then_some(name))
+        .collect();
+        let store = match (&a.store_root, a.installed) {
+            (Some(root), true) => root.display().to_string(),
+            _ => "not installed".to_string(),
+        };
+        let schema = a.schema.map_or(String::new(), |s| {
+            format!("  schema {s}{}", if a.unmigrated == Some(true) { " (migrating)" } else { "" })
+        });
+        println!("{:<12} {store}{schema}\n             {}", a.agent, can.join(" "));
     }
     Ok(())
 }
@@ -996,10 +1403,7 @@ fn projects(json: bool, show_worktrees: bool) -> anyhow::Result<()> {
 }
 
 fn show(query: &str, filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
-    let session = match ops::resolve_ref(query, filter) {
-        Ok(s) => s,
-        Err(e) => bail!("{e}"),
-    };
+    let session = resolve(query, filter)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&session)?);
         return Ok(());
@@ -1008,9 +1412,12 @@ fn show(query: &str, filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn rename(query: &str, title: &str, filter: &SessionFilter) -> anyhow::Result<()> {
+fn rename(query: &str, title: &str, filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
     let session = resolve(query, filter)?;
     ops::rename(&session, title)?;
+    if json {
+        return print_json(&mutated(&session, serde_json::json!({ "title": title })));
+    }
     println!("Renamed {} to \"{title}\".", session.short_id());
     Ok(())
 }
@@ -1065,9 +1472,15 @@ fn daemon_status(json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn move_session(query: &str, new_dir: &std::path::Path, filter: &SessionFilter) -> anyhow::Result<()> {
+fn move_session(query: &str, new_dir: &std::path::Path, filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
     let session = resolve(query, filter)?;
     let outcome = ops::relocate(&session, new_dir)?;
+    if json {
+        return print_json(&mutated(
+            &session,
+            serde_json::json!({ "dir": new_dir, "new_transcript": outcome.new_transcript, "warnings": outcome.warnings }),
+        ));
+    }
     for warning in &outcome.warnings {
         eprintln!("warning: {warning}");
     }
@@ -1083,9 +1496,12 @@ fn move_session(query: &str, new_dir: &std::path::Path, filter: &SessionFilter) 
     Ok(())
 }
 
-fn archive(query: &str, filter: &SessionFilter) -> anyhow::Result<()> {
+fn archive(query: &str, filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
     let session = resolve(query, filter)?;
     let outcome = ops::archive(&session)?;
+    if json {
+        return print_json(&mutated(&session, &outcome));
+    }
     match &outcome.archived_to {
         Some(dir) => println!("Archived {} to {}.", session.short_id(), dir.display()),
         None => println!("Archived {} (native flag).", session.short_id()),
@@ -1093,8 +1509,15 @@ fn archive(query: &str, filter: &SessionFilter) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn unarchive(query: &str, filter: &SessionFilter) -> anyhow::Result<()> {
-    match ops::unarchive(query, filter)? {
+fn unarchive(query: &str, filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
+    let restored = ops::unarchive(query, filter)?;
+    if json {
+        // The session may be one only the archive store knows, so it is
+        // named as it was asked for; `restored_to` is null for an agent that
+        // clears a flag in place.
+        return print_json(&serde_json::json!({ "ok": true, "query": query, "restored_to": restored }));
+    }
+    match restored {
         Some(path) => println!("Restored to {}.", path.display()),
         None => println!("Unarchived {query}."),
     }
@@ -1142,7 +1565,11 @@ fn delete_prompt(
     prompt
 }
 
-fn delete(query: &str, yes: bool, filter: &SessionFilter) -> anyhow::Result<()> {
+fn delete(query: &str, yes: bool, filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
+    // A program cannot answer a prompt: say what is missing instead.
+    if json && !yes {
+        fail!(Usage, "confirmation required: pass --yes");
+    }
     let session = resolve(query, filter)?;
     if !yes {
         // Asked before anything is deleted, and only when it is to be shown.
@@ -1156,6 +1583,9 @@ fn delete(query: &str, yes: bool, filter: &SessionFilter) -> anyhow::Result<()> 
         }
     }
     let report = ops::delete(&session)?;
+    if json {
+        return print_json(&mutated(&session, &report));
+    }
     if let Some(backup) = &report.backup_dir {
         println!("Backed up to {}.", backup.display());
     }
@@ -1175,8 +1605,8 @@ fn delete(query: &str, yes: bool, filter: &SessionFilter) -> anyhow::Result<()> 
 }
 
 fn resume(query: &str, filter: &SessionFilter) -> anyhow::Result<()> {
-    let session = ops::resolve_ref(query, filter).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let mut cmd = ops::resume_command(&session).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let session = resolve(query, filter)?;
+    let mut cmd = ops::resume_command(&session)?;
     let program = cmd.get_program().to_string_lossy().into_owned();
     let status = cmd
         .status()
@@ -1226,7 +1656,7 @@ fn send(
 ) -> anyhow::Result<()> {
     use std::io::Write;
 
-    let session = asm_core::ops::resolve_ref(r#ref, filter)?;
+    let session = resolve(r#ref, filter)?;
     let message = if message == "-" {
         let mut buf = String::new();
         std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
@@ -1235,7 +1665,7 @@ fn send(
         message.to_string()
     };
     if message.trim().is_empty() {
-        anyhow::bail!("refusing to send an empty message");
+        fail!(Usage, "refusing to send an empty message");
     }
 
     if !json {
@@ -1288,7 +1718,7 @@ fn send(
     })?;
 
     match failure {
-        Some(error) => anyhow::bail!("{error}"),
+        Some(error) => Err(coded(ErrorCode::Internal, error)),
         None => Ok(()),
     }
 }
@@ -1350,7 +1780,7 @@ fn hub(command: HubCommand, json: bool) -> anyhow::Result<()> {
             }
         }
         HubCommand::Revoke { machine } => {
-            let removed = store.revoke(&machine).map_err(|e| anyhow::anyhow!("{machine}: {e}"))?;
+            let removed = store.revoke(&machine).with_context(|| format!("revoking {machine}"))?;
             if json {
                 return print_json(&removed);
             }
@@ -1369,15 +1799,16 @@ fn join_token(token: Option<&str>) -> anyhow::Result<String> {
             Ok(line.trim().to_string())
         }
         Some(token) => Ok(token.to_string()),
-        None => std::env::var("ASM_JOIN_TOKEN")
-            .context("set ASM_JOIN_TOKEN to the token `asm hub token` prints, or pass --token -"),
+        None => std::env::var("ASM_JOIN_TOKEN").map_err(|_| {
+            coded(ErrorCode::Usage, "set ASM_JOIN_TOKEN to the token `asm hub token` prints, or pass --token -")
+        }),
     }
 }
 
 fn machine_name(name: Option<&str>) -> anyhow::Result<String> {
     name.map(String::from)
         .or_else(asm_core::process::hostname)
-        .context("could not tell this machine's name; pass --name")
+        .ok_or_else(|| coded(ErrorCode::Usage, "could not tell this machine's name; pass --name"))
 }
 
 fn join(url: &str, token: Option<&str>, name: Option<&str>, insecure_http: bool, json: bool) -> anyhow::Result<()> {
@@ -1402,7 +1833,7 @@ fn push(
 ) -> anyhow::Result<()> {
     use asm_core::bulk::ItemOutcome;
     if move_away && all {
-        bail!("--move takes the sessions to move by name, not --all");
+        fail!(Usage, "--move takes the sessions to move by name, not --all");
     }
     let sessions = match (all, refs.is_empty()) {
         (true, true) => ops::list_sessions(filter)?,
@@ -1410,8 +1841,8 @@ fn push(
             .iter()
             .map(|r| ops::resolve_ref(r, filter).with_context(|| format!("resolving {r}")))
             .collect::<anyhow::Result<Vec<_>>>()?,
-        (true, false) => bail!("name sessions or pass --all, not both"),
-        (false, true) => bail!("name the sessions to push, or pass --all"),
+        (true, false) => fail!(Usage, "name sessions or pass --all, not both"),
+        (false, true) => fail!(Usage, "name the sessions to push, or pass --all"),
     };
     // Checked before anything is pushed: a move that uploads and then
     // cannot archive here is a copy the user did not ask for.
@@ -1422,7 +1853,8 @@ fn push(
                     .is_some_and(|a| asm_core::adapter::AgentRead::capabilities(&a).archive)
         })
     {
-        bail!(
+        fail!(
+            Unsupported,
             "{} sessions cannot both be restored elsewhere and archived here, so {} is not \
              moved; push it without --move",
             s.handle.agent,
@@ -1436,7 +1868,8 @@ fn push(
                     if std::fs::metadata(path.with_extension("journal.jsonl")).is_ok_and(|m| m.len() > 0))
         })
     {
-        bail!(
+        fail!(
+            Conflict,
             "jcode has turns of {} it has not written into the session yet; resume it once so it \
              does, then move it",
             s.short_id()
@@ -1512,7 +1945,7 @@ fn pull(
             }
             return Ok(());
         }
-        _ => bail!("name the session to pull, or pass --all"),
+        _ => fail!(Usage, "name the session to pull, or pass --all"),
     };
     let pulled = asm_core::hub::actions::pull(&remote, query, project_dir)?;
     report_pulled(
@@ -1565,7 +1998,8 @@ fn report_pulled(
         InstallOutcome::Ahead => {
             println!("{label} here is ahead of {theirs}; nothing changed. {ahead}.")
         }
-        InstallOutcome::Diverged => bail!(
+        InstallOutcome::Diverged => fail!(
+            Conflict,
             "{label} has been continued both here and on {from} since they last synced, so \
              neither copy contains the other. Nothing was changed. {diverged}"
         ),
@@ -1592,7 +2026,7 @@ fn push_to(
     json: bool,
 ) -> anyhow::Result<()> {
     use asm_core::hub::bundle::InstallOutcome;
-    let [query] = refs else { bail!("--to sends one session; name it") };
+    let [query] = refs else { fail!(Usage, "--to sends one session; name it") };
     let peer = asm_core::hub::peer::get(peer_name)?;
     let session = resolve(query, filter)?;
     let sent = asm_core::hub::peer::push_to(&peer, &session, project_dir)?;
@@ -1621,7 +2055,8 @@ fn push_to(
         InstallOutcome::Ahead => println!(
             "{peer_name}'s copy of {label} is ahead of this one; nothing changed. `asm pull --from {peer_name}` it."
         ),
-        InstallOutcome::Diverged => bail!(
+        InstallOutcome::Diverged => fail!(
+            Conflict,
             "{label} has been continued both here and on {peer_name} since the two last agreed, so \
              neither copy contains the other. Nothing was changed. {PEER_DIVERGED}"
         ),

@@ -41,7 +41,7 @@ pub struct Usage {
     pub cache_write_tokens: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Session {
     #[serde(rename = "ref")]
     pub handle: SessionRef,
@@ -68,6 +68,46 @@ pub struct Session {
     /// computed for every session on every listing.
     #[serde(default)]
     pub size_bytes: Option<u64>,
+}
+
+impl SessionStatus {
+    /// `live`, `idle` or `archived`: the flat spelling of the state, for
+    /// `--status`, the `state` field and the search index.
+    pub fn state(&self) -> &'static str {
+        match self {
+            SessionStatus::Live { .. } => "live",
+            SessionStatus::Idle => "idle",
+            SessionStatus::Archived => "archived",
+        }
+    }
+}
+
+/// The JSON shape is the fields below, in order, plus two flat conveniences
+/// for readers that should not have to dig: `id` (the native id) and
+/// `state` (see [`SessionStatus::state`]). Written by hand rather than
+/// derived so the struct, which is built literally all over, stays as it is.
+/// Deserializing ignores both: they are derived from `ref` and `status`.
+impl Serialize for Session {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("Session", 15)?;
+        s.serialize_field("ref", &self.handle)?;
+        s.serialize_field("id", &self.handle.native_id)?;
+        s.serialize_field("title", &self.title)?;
+        s.serialize_field("slug", &self.slug)?;
+        s.serialize_field("project_root", &self.project_root)?;
+        s.serialize_field("git_branch", &self.git_branch)?;
+        s.serialize_field("created", &self.created)?;
+        s.serialize_field("updated", &self.updated)?;
+        s.serialize_field("model", &self.model)?;
+        s.serialize_field("usage", &self.usage)?;
+        s.serialize_field("status", &self.status)?;
+        s.serialize_field("state", self.status.state())?;
+        s.serialize_field("parent", &self.parent)?;
+        s.serialize_field("agent_version", &self.agent_version)?;
+        s.serialize_field("size_bytes", &self.size_bytes)?;
+        s.end()
+    }
 }
 
 impl Session {

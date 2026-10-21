@@ -453,7 +453,7 @@ fn ssh(host: &str, args: &[&str], stdin: Option<&Path>, stdout: Option<&Path>) -
     // 255 is ssh's own failure; anything else came from the remote shell or
     // from asm there.
     Err(if output.status.code() == Some(255) {
-        invalid(format!("could not reach {host} over ssh: {stderr}"))
+        CoreError::Unreachable { msg: format!("could not reach {host} over ssh: {stderr}") }
     } else if stderr.contains("not found") {
         invalid(format!(
             "asm is not on the PATH of a non-interactive shell on {host} ({stderr}); put it where \

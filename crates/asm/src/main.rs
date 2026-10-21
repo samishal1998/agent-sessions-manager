@@ -11,14 +11,19 @@ fn restore_sigpipe() {
 #[cfg(not(unix))]
 fn restore_sigpipe() {}
 
-fn main() -> anyhow::Result<()> {
+fn main() {
     restore_sigpipe();
-    match asm_cli::run()? {
-        Some(asm_cli::Frontend::Tui) => asm_tui::run(),
-        Some(asm_cli::Frontend::Serve { host, port }) => asm_web::run(&host, port),
-        Some(asm_cli::Frontend::Hub { host, port, max_file_bytes, peer }) => {
+    let result = match asm_cli::run() {
+        Ok(Some(asm_cli::Frontend::Tui)) => asm_tui::run(),
+        Ok(Some(asm_cli::Frontend::Serve { host, port, token })) => asm_web::run(&host, port, token),
+        Ok(Some(asm_cli::Frontend::Hub { host, port, max_file_bytes, peer })) => {
             asm_web::hub::run(&host, port, max_file_bytes, peer)
         }
-        None => Ok(()),
+        Ok(None) => Ok(()),
+        Err(e) => Err(e),
+    };
+    if let Err(e) = result {
+        // The status says what kind of failure it was; see `asm_cli::report_error`.
+        std::process::exit(asm_cli::report_error(&e));
     }
 }

@@ -169,7 +169,7 @@ pub(crate) fn v1_store_with_v2_binary() -> CoreError {
 
 /// The refusal for an operation OpenCode 2.x has no way to do.
 fn v2_unsupported(op: &str) -> CoreError {
-    CoreError::Invalid { msg: format!("OpenCode 2.x has no {op}") }
+    CoreError::Unsupported { msg: format!("OpenCode 2.x has no {op}") }
 }
 
 impl OpenCodeAdapter {

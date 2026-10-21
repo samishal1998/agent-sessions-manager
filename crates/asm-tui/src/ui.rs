@@ -1368,6 +1368,7 @@ mod tests {
             snippet: "the \u{1}retry\u{2} loop".into(),
             score: 0.0,
             status: "idle".into(),
+            state: "idle".into(),
         }]);
         let screen = render(&app, 120, 12);
         assert!(screen.contains("↳ in Billing webhook retries"), "{screen}");
