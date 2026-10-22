@@ -740,7 +740,7 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
         Command::Search { query, limit, no_refresh, select } => {
             search(&query.join(" "), limit, !no_refresh, &filter, &select, cli.json)
         }
-        Command::Index { stats } => index(stats, cli.json),
+        Command::Index { stats } => index(stats, &filter, cli.json),
         Command::Doctor => doctor(cli.json),
         Command::Update { check, force, version } => update::run(check, force, version, cli.json),
         Command::Sync(command) => sync(command, cli.json),
@@ -848,12 +848,12 @@ fn search(
     Ok(())
 }
 
-fn index(stats_only: bool, json: bool) -> anyhow::Result<()> {
+fn index(stats_only: bool, filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
     use asm_core::index::Index;
 
     let mut index = Index::open()?;
     let report =
-        if stats_only { None } else { Some(index.refresh(progress_reporter())?) };
+        if stats_only { None } else { Some(index.refresh_where(filter, progress_reporter())?) };
     clear_progress();
     // Re-extracting sessions leaves free pages behind; this is the
     // maintenance path where reclaiming them is worth the extra moment.

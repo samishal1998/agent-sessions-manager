@@ -234,6 +234,31 @@ fn vanished_sessions_are_dropped_from_the_index() {
     );
 }
 
+/// `asm index --agent codex` reads codex: what it says nothing about is
+/// kept, not taken for gone.
+#[test]
+fn a_subset_refresh_leaves_the_rest_of_the_index_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ta, tb) = (dir.path().join("a.jsonl"), dir.path().join("b.jsonl"));
+    std::fs::write(&ta, "a").unwrap();
+    std::fs::write(&tb, "b").unwrap();
+    let exporter = Exporter::new();
+    exporter.set("a", ir("a", vec![text_message(IrRole::User, "apricot")]));
+    exporter.set("b", ir("b", vec![text_message(IrRole::User, "blueberry")]));
+
+    let mut index = open_index(dir.path());
+    let both = vec![session("a", &ta, "/proj/one"), session("b", &tb, "/proj/two")];
+    index.refresh_with(&both, |s| exporter.export(s), |_| {}).unwrap();
+
+    std::fs::write(&ta, "a and more").unwrap();
+    exporter.set("a", ir("a", vec![text_message(IrRole::User, "apricot and cherry")]));
+    let report = index.refresh_subset(&both[..1], |s| exporter.export(s), |_| {}).unwrap();
+    assert_eq!((report.reindexed, report.removed), (1, 0));
+    assert_eq!(index.stats().unwrap().sessions, 2);
+    assert_eq!(hits(&index, "cherry"), 1);
+    assert_eq!(hits(&index, "blueberry"), 1, "b was outside the subset and is still there");
+}
+
 #[test]
 fn filters_narrow_results() {
     let dir = tempfile::tempdir().unwrap();

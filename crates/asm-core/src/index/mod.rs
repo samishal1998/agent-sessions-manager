@@ -22,7 +22,7 @@ mod search;
 
 pub use search::{
     IndexStats, MATCH_END, MATCH_START, RefreshProgress, RefreshReport, SearchHit, SearchQuery,
-    fingerprint,
+    Watermarks, fingerprint, fingerprint_with,
 };
 
 use std::path::{Path, PathBuf};

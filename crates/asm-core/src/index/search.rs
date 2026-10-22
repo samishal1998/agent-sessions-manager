@@ -97,6 +97,11 @@ fn status_name(status: &crate::model::SessionStatus) -> &'static str {
 /// Also the hub daemon's "did anything happen" pre-filter, which is why it
 /// is public: two definitions of "changed" would drift.
 pub fn fingerprint(session: &Session) -> String {
+    fingerprint_with(session, &Watermarks::default())
+}
+
+/// `fingerprint`, with the row-backed stores' watermarks already in hand.
+pub fn fingerprint_with(session: &Session, marks: &Watermarks) -> String {
     let updated_ms = session.updated.map(|t| t.as_millisecond()).unwrap_or(0);
     match &session.handle.location {
         // Transcripts are append-only, so size plus mtime is decisive.
@@ -107,7 +112,7 @@ pub fn fingerprint(session: &Session) -> String {
             // session's on the busiest sessions, so trusting the session
             // row alone silently loses streamed tool output from the index.
             // Ask the message table instead.
-            match message_watermark(db, table, &session.handle.native_id) {
+            match marks.get(db, table, &session.handle.native_id) {
                 Some((count, max_updated)) => format!("rows:{count}:{max_updated}:{updated_ms}"),
                 // No message table (Antigravity keeps one database per
                 // conversation). New steps land in the WAL, and in the
@@ -144,28 +149,79 @@ fn stat(path: &std::path::Path) -> String {
     format!("{size}:{mtime_ms}")
 }
 
-/// (message count, newest message timestamp) for a row-backed session.
-fn message_watermark(db: &std::path::Path, session_table: &str, session_id: &str) -> Option<(i64, i64)> {
-    let conn = rusqlite::Connection::open_with_flags(
+/// (message count, newest message timestamp) of every session in each
+/// row-backed store, read once per store. A connection per session was most
+/// of a no-change refresh on a big OpenCode store, and the TUI refreshes
+/// after every scan.
+///
+/// Keyed by store and session table: in a 2.x store, a session still only
+/// in the 1.x tables (not migrated yet) has its messages in `message`.
+/// `None` for a store with no message table (Antigravity keeps one database
+/// per conversation).
+#[derive(Debug, Default)]
+pub struct Watermarks(HashMap<(PathBuf, String), Option<StoreMarks>>);
+
+/// Session id → (message count, newest message timestamp).
+type StoreMarks = HashMap<String, (i64, i64)>;
+
+impl Watermarks {
+    pub fn of(sessions: &[Session]) -> Self {
+        let mut marks = Self::default();
+        for session in sessions {
+            if let SessionLocation::SqliteRow { db, table } = &session.handle.location {
+                marks.0.entry((db.clone(), table.clone())).or_insert_with(|| {
+                    open_ro(db).and_then(|conn| store_watermarks(&conn, table))
+                });
+            }
+        }
+        marks
+    }
+
+    /// Falls back to asking the store for one session when it was not
+    /// among the sessions this was built from.
+    fn get(&self, db: &std::path::Path, table: &str, session_id: &str) -> Option<(i64, i64)> {
+        match self.0.get(&(db.to_path_buf(), table.to_string())) {
+            Some(Some(store)) => Some(store.get(session_id).copied().unwrap_or((0, 0))),
+            Some(None) => None,
+            None => message_watermark(db, table, session_id),
+        }
+    }
+}
+
+fn open_ro(db: &std::path::Path) -> Option<rusqlite::Connection> {
+    rusqlite::Connection::open_with_flags(
         db,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
-    .ok()?;
-    // OpenCode 1.x keeps messages in `message`, 2.x in `session_message`. A
-    // 2.x database keeps its 1.x tables after migrating, with the old
-    // messages frozen in them, so the table follows the schema (the same
-    // test as everywhere else), not whichever exists.
-    // A session still only in the 1.x tables (not migrated yet) has its
-    // messages in `message`, schema or no.
-    let table = match crate::adapter::opencode::schema_of(&conn).ok()? {
+    .ok()
+}
+
+/// OpenCode 1.x keeps messages in `message`, 2.x in `session_message`. A
+/// 2.x database keeps its 1.x tables after migrating, with the old
+/// messages frozen in them, so the table follows the schema (the same
+/// test as everywhere else), not whichever exists.
+fn message_table(conn: &rusqlite::Connection, session_table: &str) -> Option<&'static str> {
+    Some(match crate::adapter::opencode::schema_of(conn).ok()? {
         crate::adapter::opencode::Schema::V2 if session_table != "session" => "session_message",
         _ => "message",
-    };
+    })
+}
+
+const WATERMARK: &str = "COUNT(*), COALESCE(MAX(MAX(COALESCE(time_updated,0), COALESCE(time_created,0))), 0)";
+
+fn store_watermarks(conn: &rusqlite::Connection, session_table: &str) -> Option<StoreMarks> {
+    let table = message_table(conn, session_table)?;
+    let mut stmt = conn.prepare(&format!("SELECT session_id, {WATERMARK} FROM {table} GROUP BY session_id")).ok()?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?)))).ok()?;
+    rows.collect::<Result<_, _>>().ok()
+}
+
+/// One session's watermark, for a session outside any batch.
+fn message_watermark(db: &std::path::Path, session_table: &str, session_id: &str) -> Option<(i64, i64)> {
+    let conn = open_ro(db)?;
+    let table = message_table(&conn, session_table)?;
     conn.query_row(
-        &format!(
-            "SELECT COUNT(*), COALESCE(MAX(MAX(COALESCE(time_updated,0), COALESCE(time_created,0))), 0)
-             FROM {table} WHERE session_id = ?1"
-        ),
+        &format!("SELECT {WATERMARK} FROM {table} WHERE session_id = ?1"),
         [session_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )
@@ -308,15 +364,30 @@ impl Index {
     /// Bring the index in line with the agents' stores. `progress` is called
     /// with a short message per session actually re-extracted.
     pub fn refresh(&mut self, progress: impl FnMut(RefreshProgress)) -> Result<RefreshReport, CoreError> {
+        self.refresh_where(&SessionFilter::default(), progress)
+    }
+
+    /// `refresh` narrowed to `filter`'s agent and project. Sessions outside
+    /// it are neither read nor dropped: the rest of the index is left as it
+    /// was, since nothing was learned about it.
+    pub fn refresh_where(
+        &mut self,
+        filter: &SessionFilter,
+        progress: impl FnMut(RefreshProgress),
+    ) -> Result<RefreshReport, CoreError> {
         // Subagent sessions are included: their content is worth finding
         // even though the pickers hide them. So are jcode's debug sessions,
         // which the index has always held.
-        let filter = SessionFilter { include_children: true, include_debug: true, ..SessionFilter::default() };
+        let filter = SessionFilter { include_children: true, include_debug: true, ..filter.clone() };
         let (mut sessions, unreadable) = ops::list_sessions_partial(&filter);
         // Archived sessions have left their agent's store but not our
         // archive, and "where did I do that thing" should still find them.
-        sessions.extend(crate::sync::archived_sessions().unwrap_or_default());
-        let mut report = self.refresh_with(&sessions, ops::export_ir, progress)?;
+        sessions.extend(crate::sync::archived_sessions().unwrap_or_default().into_iter().filter(|s| {
+            filter.agent.is_none_or(|a| a == s.handle.agent)
+                && filter.project.as_ref().is_none_or(|p| *p == s.project_root)
+        }));
+        let whole = filter.agent.is_none() && filter.project.is_none();
+        let mut report = self.refresh_inner(&sessions, ops::export_ir, progress, whole)?;
         // An agent whose store could not be read does not stop the refresh.
         report.failed.extend(unreadable);
         Ok(report)
@@ -459,10 +530,34 @@ impl Index {
         &mut self,
         sessions: &[Session],
         export: impl Fn(&Session) -> Result<crate::ir::IrSession, CoreError> + Sync,
+        progress: impl FnMut(RefreshProgress),
+    ) -> Result<RefreshReport, CoreError> {
+        self.refresh_inner(sessions, export, progress, true)
+    }
+
+    /// `refresh_with` for a part of what the index holds: nothing outside
+    /// `sessions` is dropped.
+    pub fn refresh_subset(
+        &mut self,
+        sessions: &[Session],
+        export: impl Fn(&Session) -> Result<crate::ir::IrSession, CoreError> + Sync,
+        progress: impl FnMut(RefreshProgress),
+    ) -> Result<RefreshReport, CoreError> {
+        self.refresh_inner(sessions, export, progress, false)
+    }
+
+    /// `whole` says `sessions` is everything there is, so what the index
+    /// holds beyond it has gone away.
+    fn refresh_inner(
+        &mut self,
+        sessions: &[Session],
+        export: impl Fn(&Session) -> Result<crate::ir::IrSession, CoreError> + Sync,
         mut progress: impl FnMut(RefreshProgress),
+        whole: bool,
     ) -> Result<RefreshReport, CoreError> {
         let mut report = RefreshReport { scanned: sessions.len(), ..RefreshReport::default() };
         let known = self.known()?;
+        let marks = Watermarks::of(sessions);
         let mut seen: HashSet<(String, String)> = HashSet::new();
         let mut changed: Vec<&Session> = Vec::new();
         let mut relabel: Vec<&Session> = Vec::new();
@@ -471,7 +566,7 @@ impl Index {
             let key = (session.handle.agent.to_string(), session.handle.native_id.clone());
             seen.insert(key.clone());
             match known.get(&key) {
-                Some(labels) if labels.fingerprint == fingerprint(session) => {
+                Some(labels) if labels.fingerprint == fingerprint_with(session, &marks) => {
                     // The conversation is unchanged, but cheap metadata can
                     // still have moved — a session goes live and idle again
                     // without its transcript changing, and archiving moves
@@ -500,6 +595,7 @@ impl Index {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Extracted>(readers * 2);
         let changed = &changed;
         let export = &export;
+        let marks = &marks;
         std::thread::scope(|scope| -> Result<(), CoreError> {
             for _ in 0..readers {
                 let tx = tx.clone();
@@ -508,7 +604,10 @@ impl Index {
                     loop {
                         let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some(session) = changed.get(i) else { break };
-                        let before = fingerprint(session);
+                        // Taken from before the session is read (the batch
+                        // predates the loop), so a turn written meanwhile
+                        // is read again next time, never missed.
+                        let before = fingerprint_with(session, marks);
                         let extracted = match export(session) {
                             Ok(ir) => Extracted::Read(Documents::of(session, &ir, before)),
                             // One unreadable session must not abort the refresh.
@@ -559,6 +658,9 @@ impl Index {
             self.write(&batch)
         })?;
 
+        if !whole {
+            return Ok(report);
+        }
         // Drop sessions that have gone away (deleted, or archived out).
         let stale: Vec<(String, String)> = {
             let mut stmt = self

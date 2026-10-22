@@ -5,6 +5,11 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
+## 0.16.1 — 2026-10-22
+
+- **A refresh of the index opens each OpenCode store once, not once per session.** Every refresh (after every scan in the TUI, before every `asm search`) asked each row-backed session's store for its message count and newest timestamp over a connection of its own; a store of thousands of sessions paid thousands of opens to learn nothing had changed. The watermarks are now read in one query per store. Fingerprints are unchanged, so nothing is re-extracted on upgrade.
+- **`asm index --agent AGENT` and `--project DIR` now mean it.** The flags were accepted and ignored: `asm index --agent codex` read every store. A narrowed refresh reads only what it names and leaves the rest of the index as it was.
+
 ## 0.16.0 — 2026-10-21
 
 - **The CLI and the web API are a dependable machine interface.** [JSON and exit codes](/reference/json/) is the contract: every `--json` shape, a `json_contract_version` (1) that is bumped only when a shape stops being additive, and the promise that within a version a shape only gains. Nothing that was printed before changed: `list --json` and every other `--json` output are the same bare arrays and objects with the same fields.

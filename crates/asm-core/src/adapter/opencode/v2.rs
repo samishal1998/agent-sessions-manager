@@ -1578,6 +1578,35 @@ CREATE UNIQUE INDEX `session_pending_session_admitted_seq_idx` ON `session_pendi
         assert_ne!(after, crate::index::fingerprint(&session));
     }
 
+    /// The index reads every session's watermark in one query per store; it
+    /// must say what asking per session says, for migrated rows (in
+    /// `session_message`) and unmigrated ones (still in `message`) alike,
+    /// and for a session with no messages at all.
+    #[test]
+    fn watermarks_read_in_one_query_match_the_per_session_ones() {
+        use crate::index::{Watermarks, fingerprint, fingerprint_with};
+        let store = store();
+        store.conn.execute_batch(V1_DDL).unwrap();
+        store.conn.execute("INSERT INTO session (id, project_id, title, time_created, time_updated) VALUES ('ses_old_one', 'prj_1', 'Old', 1, 2)", []).unwrap();
+        store.conn.execute("INSERT INTO message VALUES ('m1','ses_old_one',1,2,'{\"role\":\"user\"}')", []).unwrap();
+        store.session("ses_empty", None, Some("No messages"), 1_800_000_200_000, None, None);
+        let all = store.adapter().sessions(&SessionFilter { include_children: true, ..SessionFilter::default() }).unwrap();
+        assert!(all.iter().any(|s| s.handle.native_id == "ses_old_one") && all.len() >= 5);
+        let marks = Watermarks::of(&all);
+        for session in &all {
+            assert_eq!(fingerprint_with(session, &marks), fingerprint(session), "{}", session.handle.native_id);
+        }
+        // And a change in either table is seen by the batch too.
+        store.conn.execute("UPDATE session_message SET time_updated = time_updated + 5000 WHERE id = 'msg_2'", []).unwrap();
+        store.conn.execute("INSERT INTO message VALUES ('m2','ses_old_one',1,9,'{\"role\":\"assistant\"}')", []).unwrap();
+        let again = Watermarks::of(&all);
+        for id in ["ses_plain", "ses_old_one"] {
+            let s = find(&all, id);
+            assert_ne!(fingerprint_with(s, &marks), fingerprint_with(s, &again), "{id}");
+            assert_eq!(fingerprint_with(s, &again), fingerprint(s), "{id}");
+        }
+    }
+
     /// A failed query must not look like "no sessions": the daemon skips the
     /// pass instead of pushing a changed (empty) session.
     #[test]
