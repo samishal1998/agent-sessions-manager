@@ -5,6 +5,11 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
+## Unreleased
+
+- **`asm join` says when the hub's name does not resolve.** A plain-HTTP join to a name this machine could not look up (a Tailscale name with MagicDNS off, say) was refused as "plain HTTP to an address outside loopback, a private LAN or a VPN". It now says the name does not resolve and suggests the hub's 100.x address.
+- **`asm join` pointed at the web UI says so.** Joining `asm serve`'s port (7433) instead of the hub's (7434) failed with `hub answered 200: <!doctype html>…`. It now says the address served a web page, not a hub, and names both default ports.
+
 ## 0.16.1 — 2026-10-22
 
 - **A refresh of the index opens each OpenCode store once, not once per session.** Every refresh (after every scan in the TUI, before every `asm search`) asked each row-backed session's store for its message count and newest timestamp over a connection of its own; a store of thousands of sessions paid thousands of opens to learn nothing had changed. The watermarks are now read in one query per store. Fingerprints are unchanged, so nothing is re-extracted on upgrade.

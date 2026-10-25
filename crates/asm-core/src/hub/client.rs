@@ -144,6 +144,10 @@ fn private_ip(ip: std::net::IpAddr) -> bool {
     }
 }
 
+fn resolves(url: &str) -> bool {
+    host_and_port(url).is_some_and(|hp| hp.to_socket_addrs().is_ok_and(|mut a| a.next().is_some()))
+}
+
 /// Plain HTTP carries every transcript and the credential in the clear, so
 /// it is only accepted to an address no one on the internet can sit between:
 /// loopback, a private LAN range, or a VPN's.
@@ -304,6 +308,15 @@ pub fn join(url: &str, token: &str, name: &str, insecure_http: bool) -> Result<R
 /// the caller (`join` keeps it as the hub; a peer keeps it in `peers.json`).
 pub(super) fn exchange(url: &str, token: &str, name: &str, insecure_http: bool) -> Result<Remote, CoreError> {
     let url = normalize_url(url)?;
+    // A name this machine cannot look up is not "outside the VPN"; say what it is.
+    if url.starts_with("http://") && !insecure_http && !resolves(&url) {
+        let host = host_and_port(&url).map(|(h, _)| h).unwrap_or_default();
+        return Err(invalid(format!(
+            "{host} does not resolve on this machine. If it is a Tailscale name, check that \
+             this machine is on the tailnet with MagicDNS on (`tailscale status`), or join \
+             with the hub's 100.x address instead"
+        )));
+    }
     if url.starts_with("http://") && !insecure_http && !plain_http_is_private(&url) {
         return Err(invalid(format!(
             "{url} is plain HTTP to an address outside loopback, a private LAN or a VPN, so \
@@ -326,6 +339,13 @@ pub(super) fn exchange(url: &str, token: &str, name: &str, insecure_http: bool) 
             "the hub did not accept that join token; `asm hub token` on the hub prints the \
              current one",
         ));
+    }
+    // A web page instead of the hub's JSON: usually `asm serve` (7433) given for the hub (7434).
+    if response.status != 201 && response.body.trim_ascii_start().starts_with(b"<") {
+        return Err(invalid(format!(
+            "{url} answered with a web page, not an asm hub. Is that the web UI (`asm serve`, \
+             port 7433 by default)? The hub is `asm hub serve`, port 7434 by default"
+        )));
     }
     let response = expect(response, &[201], "joining the hub")?;
     let joined: Joined = parse(&response, "joining the hub")?;
@@ -629,5 +649,12 @@ mod tests {
         for bad in ["http://8.8.8.8", "http://100.200.0.1", "http://172.40.0.1"] {
             assert!(!plain_http_is_private(bad), "{bad}");
         }
+    }
+
+    /// A name that does not resolve is reported as that, not as a public address.
+    #[test]
+    fn an_unresolvable_hub_name_says_so() {
+        let err = exchange("http://no-such-host.invalid:7434", "t", "m", false).err().unwrap().to_string();
+        assert!(err.contains("does not resolve"), "{err}");
     }
 }
