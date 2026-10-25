@@ -61,6 +61,9 @@ pub enum Response {
     Doctor(Vec<String>, usize),
     Done(String),
     Error(String),
+    /// An error answering something the user asked for, as opposed to a
+    /// preview or a search: the TUI counts these answers.
+    Failed(String),
     /// (the verb, the per-item report)
     Bulk(String, asm_core::bulk::BulkReport),
     /// One step of a reply in progress.
@@ -153,7 +156,11 @@ pub fn spawn() -> Worker {
                 }
                 continue;
             }
-            let response = handle(request);
+            let answers = !matches!(request, Request::LoadPreview(_) | Request::Search(_) | Request::Hub(_));
+            let response = match handle(request) {
+                Response::Error(message) if answers => Response::Failed(message),
+                response => response,
+            };
             if resp_tx.send(response).is_err() {
                 break;
             }
@@ -204,7 +211,7 @@ fn handle(request: Request) -> Response {
         Request::Send(..) => unreachable!("streamed in the worker loop"),
         Request::Bulk(sessions, action) => {
             let verb = action.verb().to_string();
-            Response::Bulk(verb, asm_core::bulk::run(&sessions, &action))
+            Response::Bulk(verb, asm_core::bulk::run(&sessions, &action, |_, _| {}))
         }
         Request::Hub(sessions) => {
             Response::Hub(Box::new(asm_core::hub::actions::hub_status(&sessions)), asm_core::hub::daemon::status().ok())

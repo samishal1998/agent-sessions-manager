@@ -264,7 +264,7 @@ fn run_push(remote: &Remote, work: &Work) -> Result<Report, CoreError> {
     }
     let k = key(work.agent, &work.session);
     let mut revs = HashMap::new();
-    let pushed = actions::push_collecting(remote, &[session], false, work.exact.unwrap_or(false), &mut revs)?;
+    let pushed = actions::push_collecting(remote, &[session], false, work.exact.unwrap_or(false), &mut revs, |_, _| {})?;
     let Some(item) = pushed.items.first() else {
         return Ok(report(Code::Failed, "nothing was pushed"));
     };

@@ -1926,7 +1926,7 @@ fn pull(
         (Some(query), false) => query,
         (None, true) => {
             let report =
-                asm_core::hub::actions::pull_all(&remote, filter.agent, filter.project.as_deref())?;
+                asm_core::hub::actions::pull_all(&remote, filter.agent, filter.project.as_deref(), |_, _| {})?;
             if json {
                 print_json(&report)?;
             } else {

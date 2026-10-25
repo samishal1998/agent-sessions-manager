@@ -47,6 +47,8 @@ const props = defineProps({
   // Secondary actions go behind a menu: on a phone, or with the transcript
   // open beside the list, there is no room for nine buttons.
   compact: { type: Boolean, default: false },
+  // What the server is doing to it right now: 'Pushing…', 'Pulling…', or ''.
+  doing: { type: String, default: '' },
 })
 const emit = defineEmits(['open', 'fold', 'tick', 'copy', 'push', 'pull', 'rename', 'archive', 'move', 'import', 'delete'])
 
@@ -115,8 +117,8 @@ const irHref = computed(() => `/api/session/${s.value.ref.agent}/${s.value.ref.n
 // The same verbs as the buttons, for the menu. Push and pull appear only when
 // they could apply; a disabled entry says why in its label.
 const menu = computed(() => [
-  ...(pushing.value ? [{ id: 'push', label: push.value.label, disabled: !push.value.ok }] : []),
-  ...(pulling.value ? [{ id: 'pull', label: pullLabel.value, disabled: !props.hub?.connected }] : []),
+  ...(pushing.value ? [{ id: 'push', label: props.doing === 'Pushing…' ? props.doing : push.value.label, disabled: !push.value.ok || !!props.doing }] : []),
+  ...(pulling.value ? [{ id: 'pull', label: props.doing === 'Pulling…' ? props.doing : pullLabel.value, disabled: !props.hub?.connected || !!props.doing }] : []),
   { id: 'rename', label: 'Rename', disabled: !can('rename') },
   { id: 'archive', label: archiveLabel.value, disabled: !can('archive') },
   { id: 'move', label: 'Move to another project', disabled: !can('relocate') },
@@ -157,11 +159,11 @@ function choose(id) {
         />
         <HBadge :tone="statusTone" :dot="state === 'live'" :label="statusLabel" :title="statusHint" />
         <HBadge
-          v-if="hubRow"
-          :tone="hubTone(hubRow.state)"
+          v-if="hubRow || doing"
+          :tone="doing ? 'info' : hubTone(hubRow.state)"
           :class="{ 'is-stale': hub?.stale }"
-          :label="hubRow.label"
-          :title="hubRow.hint + (hub?.stale ? ' (last known)' : '')"
+          :label="doing || hubRow.label"
+          :title="doing || hubRow.hint + (hub?.stale ? ' (last known)' : '')"
         />
       </span>
     </template>
@@ -195,9 +197,9 @@ function choose(id) {
           <HDropdownMenu class="s-more" :label="`More actions for ${title}`" :items="menu" placement="bottom" @select="choose" />
         </template>
         <template v-else>
-          <IconButton v-if="pushing" :label="push.label" :icon="CloudUpload" :disabled="!push.ok" @click="emit('push')" />
+          <IconButton v-if="pushing" :label="doing === 'Pushing…' ? doing : push.label" :icon="CloudUpload" :disabled="!push.ok" :busy="doing === 'Pushing…'" @click="emit('push')" />
           <span v-else class="s-slot" aria-hidden="true" />
-          <IconButton v-if="pulling" :label="pullLabel" :disabled="!hub?.connected" :icon="CloudDownload" @click="emit('pull')" />
+          <IconButton v-if="pulling" :label="doing === 'Pulling…' ? doing : pullLabel" :disabled="!hub?.connected" :icon="CloudDownload" :busy="doing === 'Pulling…'" @click="emit('pull')" />
           <span v-else class="s-slot" aria-hidden="true" />
           <IconButton label="Rename" :icon="Pencil" :disabled="!can('rename')" @click="emit('rename')" />
           <IconButton :label="archiveLabel" :icon="state === 'archived' ? ArchiveRestore : Archive" :disabled="!can('archive')" @click="emit('archive')" />

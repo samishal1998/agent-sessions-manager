@@ -1,7 +1,7 @@
 <script setup>
 import { HAlert, HBadge, HButton, HChipGroup } from '@hearth-ui/vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { ArrowDown, ArrowRight, ArrowUp, RefreshCw } from 'lucide-vue-next'
+import { ArrowDown, ArrowRight, ArrowUp, LoaderCircle, RefreshCw } from 'lucide-vue-next'
 
 // How this machine stands with the hub, in one place: whether it answered,
 // what is out of step, and what is on the hub that is not here yet. The
@@ -17,6 +17,9 @@ const props = defineProps({
   // 'line' is the one-line status; 'chips' is only the sync-state filter, which
   // the toolbar shows beside the agent chips.
   mode: { type: String, default: 'line' },
+  // A push or a pull from here is under way on the server.
+  pushing: { type: Boolean, default: false },
+  pulling: { type: Boolean, default: false },
 })
 const emit = defineEmits(['update:modelValue', 'check', 'push-needed', 'pull-all', 'open'])
 
@@ -130,23 +133,25 @@ const daemonTitle = computed(() =>
           v-if="summary.to_push"
           variant="secondary"
           size="compact"
-          :disabled="!fresh"
+          :disabled="!fresh || pushing"
           :title="fresh ? 'Push every session that is new or changed here' : 'The hub cannot be reached'"
           @click="emit('push-needed')"
         >
-          <ArrowUp :size="14" aria-hidden="true" />
-          <span>Push {{ summary.to_push }}</span>
+          <LoaderCircle v-if="pushing" :size="14" class="spin" aria-hidden="true" />
+          <ArrowUp v-else :size="14" aria-hidden="true" />
+          <span>{{ pushing ? 'Pushing…' : `Push ${summary.to_push}` }}</span>
         </HButton>
         <HButton
           v-if="summary.to_pull"
           variant="secondary"
           size="compact"
-          :disabled="!fresh"
+          :disabled="!fresh || pulling"
           :title="fresh ? 'Pull every session that is new or newer on the hub' : 'The hub cannot be reached'"
           @click="emit('pull-all')"
         >
-          <ArrowDown :size="14" aria-hidden="true" />
-          <span>Pull {{ summary.to_pull }}</span>
+          <LoaderCircle v-if="pulling" :size="14" class="spin" aria-hidden="true" />
+          <ArrowDown v-else :size="14" aria-hidden="true" />
+          <span>{{ pulling ? 'Pulling…' : `Pull ${summary.to_pull}` }}</span>
         </HButton>
         <HButton variant="secondary" size="compact" @click="emit('open')">
           <ArrowRight :size="14" aria-hidden="true" />

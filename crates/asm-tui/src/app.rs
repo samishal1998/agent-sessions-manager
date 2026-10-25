@@ -1,7 +1,7 @@
 //! App state and event loop. Panel-local state stays here; anything slow
 //! goes through the worker.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -167,6 +167,10 @@ pub struct App {
     /// Set by anything that has something to say, so the scan that follows
     /// does not overwrite it with a session count.
     status_sticky: bool,
+    /// What the user asked the worker for and has not heard back about, in
+    /// the order asked. The worker is serial, so the front is the one
+    /// running and the rest wait behind it (and behind any scan).
+    pub in_flight: VecDeque<String>,
     /// How far the background index has got, while it is running.
     pub indexing: Option<asm_core::index::RefreshProgress>,
     /// How this machine stood with the hub at the last check. `None` until
@@ -245,6 +249,7 @@ impl App {
             streaming: true,
             rescan_pending: false,
             status_sticky: false,
+            in_flight: VecDeque::new(),
             indexing: None,
             hub: None,
             hub_checking: false,
@@ -409,8 +414,7 @@ impl App {
                 let key = (row.agent, row.id.clone());
                 match self.sessions.iter().find(|s| Self::key_of(s) == key).cloned() {
                     Some(session) => {
-                        self.status = format!("pushing {}…", row.short_id);
-                        let _ = self.worker.tx.send(Request::Bulk(vec![session], BulkAction::Push));
+                        self.dispatch(format!("pushing {}…", row.short_id), Request::Bulk(vec![session], BulkAction::Push));
                     }
                     None => self.status = "that session is not on this machine".to_string(),
                 }
@@ -419,8 +423,7 @@ impl App {
                 self.status = format!("{} sessions are backed up on the hub but cannot be restored yet", row.agent);
             }
             Some(SyncAction::Pull) => {
-                self.status = format!("pulling {}…", row.short_id);
-                let _ = self.worker.tx.send(Request::Pull(row.agent, row.id, None));
+                self.dispatch(format!("pulling {}…", row.short_id), Request::Pull(row.agent, row.id, None));
             }
         }
     }
@@ -460,8 +463,7 @@ impl App {
                 if let Some((agent, id)) = self.pending_pull.take()
                     && !dir.is_empty()
                 {
-                    self.status = "pulling…".to_string();
-                    let _ = self.worker.tx.send(Request::Pull(agent, id, Some(dir.into())));
+                    self.dispatch("pulling…".to_string(), Request::Pull(agent, id, Some(dir.into())));
                 }
             }
             KeyCode::Backspace => {
@@ -475,6 +477,16 @@ impl App {
     /// How many sessions there are, and whether more are still coming.
     pub fn found(&self) -> usize {
         self.sessions.len().max(self.incoming.len())
+    }
+
+    /// Hand the worker something the user asked for. It may wait behind a
+    /// scan or a hub check, so what it says stays up — over the scan's
+    /// count — until its own answer comes back.
+    fn dispatch(&mut self, label: String, request: Request) {
+        self.status = label.clone();
+        self.status_sticky = true;
+        self.in_flight.push_back(label);
+        let _ = self.worker.tx.send(request);
     }
 
     pub fn request_scan(&mut self) {
@@ -587,8 +599,8 @@ impl App {
     fn send_bulk(&mut self) {
         let sessions = std::mem::take(&mut self.pending_batch);
         if let Some(action) = self.pending_action.take() {
-            self.status = format!("{} {} session(s)…", action.verb().to_lowercase(), sessions.len());
-            let _ = self.worker.tx.send(Request::Bulk(sessions, action));
+            let label = format!("{} {} session(s)…", action.verb().to_lowercase(), sessions.len());
+            self.dispatch(label, Request::Bulk(sessions, action));
         }
         self.mode = Mode::Normal;
     }
@@ -1186,8 +1198,8 @@ impl App {
         // as a keystroke that did not register.
         self.push_live(PreviewKind::Role, "you".to_string());
         self.push_live(PreviewKind::Text, message.clone());
-        self.status = format!("sending to {}… (esc stops)", session.handle.agent);
-        let _ = self.worker.tx.send(Request::Send(Box::new(session), message));
+        let label = format!("sending to {}… (esc stops)", session.handle.agent);
+        self.dispatch(label, Request::Send(Box::new(session), message));
     }
 
     /// The native id of the session whose reply is streaming, if the
@@ -1253,6 +1265,7 @@ impl App {
             LiveEvent::Raw { line } => self.push_live(PreviewKind::Meta, first_line(&line)),
             LiveEvent::Done { ok, error } => {
                 self.sending = false;
+                self.in_flight.pop_front();
                 self.status = match (ok, error) {
                     (true, _) => "reply complete".to_string(),
                     (false, Some(error)) => format!("send failed: {error}"),
@@ -1293,7 +1306,7 @@ impl App {
                     self.problems = problems;
                     // Whatever the last action said stands: a count is not
                     // worth erasing "archived 4c0d9a71" with.
-                    if !self.status_sticky {
+                    if !self.status_sticky && self.in_flight.is_empty() {
                         self.status = self.count_status();
                     }
                     // Now that the list is up, keep the index current and ask
@@ -1309,7 +1322,7 @@ impl App {
                 Response::Indexing(progress) => self.indexing = Some(progress),
                 Response::Indexed(reindexed, failed) => {
                     self.indexing = None;
-                    if reindexed > 0 && !self.status_sticky {
+                    if reindexed > 0 && !self.status_sticky && self.in_flight.is_empty() {
                         self.status = format!(
                             "{} — indexed {reindexed}{}",
                             self.count_status(),
@@ -1334,6 +1347,7 @@ impl App {
                     self.take_hub(*status)
                 }
                 Response::PullFailed { agent, id, message, needs_dir } => {
+                    self.in_flight.pop_front();
                     self.status = format!("pull failed: {message}");
                     self.status_sticky = true;
                     if needs_dir {
@@ -1370,11 +1384,13 @@ impl App {
                     self.preview_hit();
                 }
                 Response::Done(message) => {
+                    self.in_flight.pop_front();
                     self.status = message;
                     self.status_sticky = true;
                     self.request_scan();
                 }
                 Response::Bulk(verb, report) => {
+                    self.in_flight.pop_front();
                     self.status = report.summary(&verb);
                     self.status_sticky = true;
                     // Only interrupt with the detail when there is detail;
@@ -1389,6 +1405,11 @@ impl App {
                     self.status = format!("error: {message}");
                     self.status_sticky = true;
                     self.scanning = false;
+                }
+                Response::Failed(message) => {
+                    self.in_flight.pop_front();
+                    self.status = format!("error: {message}");
+                    self.status_sticky = true;
                 }
             }
         }
@@ -1689,8 +1710,7 @@ impl App {
                 if !self.selection.is_empty() {
                     self.begin_bulk(BulkAction::Push, None);
                 } else if let Some(session) = self.selected_session().cloned() {
-                    self.status = "pushing…".to_string();
-                    let _ = self.worker.tx.send(Request::Bulk(vec![session], BulkAction::Push));
+                    self.dispatch("pushing…".to_string(), Request::Bulk(vec![session], BulkAction::Push));
                 }
             }
             KeyCode::Char('r') => {
@@ -1722,8 +1742,7 @@ impl App {
                     } else {
                         Request::Archive(Box::new(session.clone()))
                     };
-                    self.status = "working…".to_string();
-                    let _ = self.worker.tx.send(request);
+                    self.dispatch("working…".to_string(), request);
                 }
             }
             KeyCode::Char('d') => {
@@ -1882,8 +1901,7 @@ impl App {
                     && !self.input.is_empty()
                 {
                     let path = std::path::PathBuf::from(self.input.clone());
-                    let _ = self.worker.tx.send(Request::Export(Box::new(session), path));
-                    self.status = "exporting…".to_string();
+                    self.dispatch("exporting…".to_string(), Request::Export(Box::new(session), path));
                 }
                 self.mode = Mode::Normal;
             }
@@ -1906,8 +1924,7 @@ impl App {
                     && !self.input.is_empty()
                 {
                     let dir = std::path::PathBuf::from(self.input.clone());
-                    let _ = self.worker.tx.send(Request::Move(Box::new(session), dir));
-                    self.status = "moving…".to_string();
+                    self.dispatch("moving…".to_string(), Request::Move(Box::new(session), dir));
                 }
                 self.mode = Mode::Normal;
             }
@@ -1925,8 +1942,7 @@ impl App {
                 // Target is derived from the captured session, not the
                 // selection, which may have moved under a rescan.
                 if let (Some(target), Some(session)) = (self.import_target(), self.pending.take()) {
-                    let _ = self.worker.tx.send(Request::Import(Box::new(session), target));
-                    self.status = "importing…".to_string();
+                    self.dispatch("importing…".to_string(), Request::Import(Box::new(session), target));
                 }
                 self.mode = Mode::Normal;
             }
@@ -1992,11 +2008,8 @@ impl App {
             }
             KeyCode::Enter => {
                 if let Some(session) = self.pending.take() {
-                    let _ = self
-                        .worker
-                        .tx
-                        .send(Request::Rename(Box::new(session), self.input.clone()));
-                    self.status = "renaming…".to_string();
+                    let request = Request::Rename(Box::new(session), self.input.clone());
+                    self.dispatch("renaming…".to_string(), request);
                 }
                 self.mode = Mode::Normal;
             }
@@ -2012,8 +2025,7 @@ impl App {
         match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 if let Some(session) = self.pending.take() {
-                    let _ = self.worker.tx.send(Request::Delete(Box::new(session)));
-                    self.status = "deleting…".to_string();
+                    self.dispatch("deleting…".to_string(), Request::Delete(Box::new(session)));
                 }
                 self.mode = Mode::Normal;
             }
@@ -2639,5 +2651,34 @@ mod tests {
         app.take_batch(vec![at(AgentKind::OpenCode, "plan", None, 100)]);
         assert_eq!(rows(&app), ["plan+1", "other"]);
         assert_eq!(under_cursor(&app), "other");
+    }
+
+    /// A push queued behind a scan stays on screen until its own answer
+    /// arrives, and a second one is counted rather than hidden.
+    #[test]
+    fn what_is_in_flight_outlasts_the_scan_in_front_of_it() {
+        let (respond, rx) = std::sync::mpsc::channel();
+        let mut app = app();
+        app.worker.rx = rx;
+        let text = |app: &App| {
+            crate::ui::status_line_of(app).spans.iter().map(|s| s.content.to_string()).collect::<String>()
+        };
+        press(&mut app, KeyCode::Char('p'));
+        assert_eq!(app.in_flight.len(), 1);
+        // A key in between clears an ordinary message, not this one.
+        press(&mut app, KeyCode::Down);
+        respond.send(Response::ScanDone(Vec::new())).unwrap();
+        app.drain_worker();
+        assert_eq!(app.status, "pushing…", "the scan's count did not overwrite it");
+
+        press(&mut app, KeyCode::Char('p'));
+        assert!(text(&app).contains("⟳ 2 queued"), "{}", text(&app));
+        respond.send(Response::Failed("no hub".into())).unwrap();
+        app.drain_worker();
+        assert!(text(&app).contains("⟳ pushing…"), "{}", text(&app));
+        respond.send(Response::Bulk("Push".into(), BulkReport::default())).unwrap();
+        app.drain_worker();
+        assert!(app.in_flight.is_empty());
+        assert!(!text(&app).contains("pushing"), "{}", text(&app));
     }
 }

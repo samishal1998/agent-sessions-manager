@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ArrowLeft, RefreshCw } from 'lucide-vue-next'
+import { ArrowLeft, LoaderCircle, RefreshCw } from 'lucide-vue-next'
 import {
   HAlert,
   HBadge,
@@ -24,6 +24,7 @@ import { uniqueTails } from './paths.js'
 import { useTheme } from './useTheme.js'
 import ColorModeSwitch from './components/ColorModeSwitch.vue'
 import { dismiss, notify, toasts } from './toasts.js'
+import { busy, busyUnder, covers, poll as pollTasks, run } from './tasks.js'
 import TranscriptView from './TranscriptView.vue'
 import AgentMark from './components/AgentMark.vue'
 import DialogHost from './components/DialogHost.vue'
@@ -31,6 +32,7 @@ import HubPanel from './components/HubPanel.vue'
 import HubView from './components/HubView.vue'
 import SessionRow from './components/SessionRow.vue'
 import SessionToolbar from './components/SessionToolbar.vue'
+import TaskPanel from './components/TaskPanel.vue'
 import './styles/shell.css'
 
 const { resolved, tokens } = useTheme()
@@ -247,6 +249,21 @@ function pushRow(row) {
   if (s) doPush(s)
 }
 const hubRow = (s) => hubRows.value[`${s.ref.agent}:${s.ref.native_id}`]
+
+// Push, pull, compare and the bulk verbs run as tasks on the server
+// (./tasks.js), keyed by what they do: `bulk:<action>:<agent:id,…>` with the
+// sessions sorted, `pull:<agent:id>`, `compare:<agent:id>`, `pull-all`.
+const refOf = (s) => `${s.ref.agent}:${s.ref.native_id}`
+const bulkKey = (action, batch) => `bulk:${action}:${batch.map(refOf).sort().join(',')}`
+const pushingAny = computed(() => busyUnder('bulk:push:'))
+// What the server is doing to one session right now, as its row says it.
+function doing(agent, id) {
+  const ref = `${agent}:${id}`
+  if (covers('bulk:push:', ref)) return 'Pushing…'
+  if (busy(`pull:${ref}`) || (busy('pull-all') && hubRows.value[ref]?.action === 'pull')) return 'Pulling…'
+  if (busy(`compare:${ref}`)) return 'Comparing…'
+  return ''
+}
 // Where this session stands with the hub, as the core words it: the label,
 // the hint and the next step all come from `RowState` in asm-core.
 async function loadDoctor() {
@@ -263,6 +280,7 @@ onMounted(() => {
   loadDoctor()
   loadHub()
   pollIndex()
+  pollTasks()
   narrowQuery.addEventListener('change', onNarrowChange)
   window.addEventListener('hashchange', onHash)
   window.addEventListener('scroll', measureRows, { passive: true })
@@ -490,7 +508,9 @@ async function runBulk(action) {
   progress(`${action.action} ${batch.length} session(s)…`)
   bulkProblems.value = null
   try {
-    const report = await api.bulk(batch, action)
+    const report = await run('/api/bulk', api.bulkBody(batch, action))
+    // Null: the same batch is already under way, and the task panel shows it.
+    if (!report) return
     say(report.summary + (report.unresolved?.length ? `; not done: ${report.unresolved.join('; ')}` : ''))
     // Only interrupt when there is something to say beyond the count.
     if (report.problems?.length) bulkProblems.value = report
@@ -501,6 +521,12 @@ async function runBulk(action) {
   }
 }
 
+// The buttons over the ticked sessions; each is busy while its verb runs on them.
+// A move, export or import key ends in `|<where to>`; any destination counts as busy.
+const bulkBusy = (action) => {
+  const key = bulkKey(action, tickedSessions.value)
+  return busy(key) || busyUnder(`${key}|`)
+}
 const bulkArchive = () => runBulk({ action: 'archive' })
 const bulkPush = () => runBulk({ action: 'push' }).then(loadHub)
 const bulkUnarchive = () => runBulk({ action: 'unarchive' })
@@ -552,9 +578,20 @@ async function bulkImport() {
   if (ok) runBulk({ action: 'import', to })
 }
 
+const bulkButtons = [
+  { action: 'archive', label: 'Archive', run: bulkArchive },
+  { action: 'unarchive', label: 'Unarchive', run: bulkUnarchive },
+  { action: 'import', label: 'Import', run: bulkImport },
+  { action: 'move', label: 'Move', run: bulkMove },
+  { action: 'export', label: 'Export', run: bulkExport },
+  { action: 'push', label: 'Push', run: bulkPush },
+  { action: 'delete', label: 'Delete', run: bulkDelete },
+]
+
 /* Actions ------------------------------------------------------------- */
-// `fn` may return the message to show instead of the stock sentence. What the
-// server answers (e.g. `{archived_to: …}`) is data, never the message.
+// `fn` may return the message to show instead of the stock sentence, or false
+// to say nothing (the same work was already running). What the server answers
+// (e.g. `{archived_to: …}`) is data, never the message.
 const DONE = {
   Archive: 'Archived.',
   Unarchive: 'Restored from the archive.',
@@ -567,6 +604,7 @@ async function act(name, fn) {
   progress(`${name}…`)
   try {
     const msg = await fn()
+    if (msg === false) return
     say(typeof msg === 'string' && msg ? msg : DONE[name] || `${name} complete.`)
     await refresh()
   } catch (e) {
@@ -590,7 +628,8 @@ async function pushNeeded() {
   if (!batch.length) return
   progress(`Pushing ${batch.length}…`)
   try {
-    const report = await api.push(batch)
+    const report = await run('/api/bulk', api.bulkBody(batch, { action: 'push' }))
+    if (!report) return
     say(report.summary)
     if (report.problems?.length) bulkProblems.value = report
   } catch (e) {
@@ -603,7 +642,8 @@ async function pushNeeded() {
 async function pullAll() {
   progress('Pulling from the hub…')
   try {
-    const report = await api.pullAll()
+    const report = await run('/api/hub/pull-all', {})
+    if (!report) return
     say(report.summary)
     if (report.problems?.length) bulkProblems.value = report
   } catch (e) {
@@ -614,7 +654,8 @@ async function pullAll() {
 
 function doPush(s) {
   act('Push', async () => {
-    const report = await api.push([s])
+    const report = await run('/api/bulk', api.bulkBody([s], { action: 'push' }))
+    if (!report) return false
     // A skip is not a push either: say why, rather than "complete".
     if (report.failed || report.skipped || report.unresolved?.length)
       throw new Error([...report.problems, ...(report.unresolved || [])].join('; '))
@@ -627,7 +668,8 @@ function doPush(s) {
 async function doPull(row, projectDir) {
   progress(`Pulling ${row.short_id}…`)
   try {
-    const pulled = await api.pull(row.agent, row.id, projectDir)
+    const pulled = await run('/api/hub/pull', { agent: row.agent, id: row.id, project_dir: projectDir || null })
+    if (!pulled) return
     const outcome = pulled.outcome?.result
     if (outcome === 'diverged')
       say(`${row.short_id} was continued both here and on ${pulled.from}; nothing changed.`, { tone: 'warning' })
@@ -651,7 +693,8 @@ async function doPull(row, projectDir) {
 async function doCompare(row) {
   progress(`Comparing ${row.short_id}…`)
   try {
-    const c = await api.compare(row.agent, row.id)
+    const c = await run('/api/hub/compare', { agent: row.agent, id: row.id })
+    if (!c) return
     const id = row.short_id
     if (c.verdict === 'identical' || c.relation === 'same') say(`${id} is identical on the hub: now synced.`)
     else if (c.relation === 'local_ahead') say(`${id} is ahead of the hub: push it.`)
@@ -816,6 +859,9 @@ function scrollToOpened() {
             :checking="hubChecking"
             :checked-at="hubCheckedAt"
             :home="home"
+            :pushing="pushingAny"
+            :pulling="busy('pull-all')"
+            :doing="(r) => doing(r.agent, r.id)"
             @check="loadHub"
             @push="pushRow"
             @pull="doPull"
@@ -900,6 +946,8 @@ function scrollToOpened() {
                 :hub="hub"
                 :checking="hubChecking"
                 :checked-at="hubCheckedAt"
+                :pushing="pushingAny"
+                :pulling="busy('pull-all')"
                 @check="loadHub"
                 @push-needed="pushNeeded"
                 @pull-all="pullAll"
@@ -932,13 +980,18 @@ function scrollToOpened() {
                     @change="toggleAllVisible"
                   />
                   <HButtonBar v-if="ticked.size" label="Actions for the selected sessions" align="end">
-                    <HButton variant="secondary" size="compact" @click="bulkArchive">Archive</HButton>
-                    <HButton variant="secondary" size="compact" @click="bulkUnarchive">Unarchive</HButton>
-                    <HButton variant="secondary" size="compact" @click="bulkImport">Import</HButton>
-                    <HButton variant="secondary" size="compact" @click="bulkMove">Move</HButton>
-                    <HButton variant="secondary" size="compact" @click="bulkExport">Export</HButton>
-                    <HButton v-if="hub?.joined" variant="secondary" size="compact" @click="bulkPush">Push</HButton>
-                    <HButton variant="danger" size="compact" @click="bulkDelete">Delete</HButton>
+                    <template v-for="b in bulkButtons" :key="b.action">
+                      <HButton
+                        v-if="b.action !== 'push' || hub?.joined"
+                        :variant="b.action === 'delete' ? 'danger' : 'secondary'"
+                        size="compact"
+                        :disabled="bulkBusy(b.action)"
+                        @click="b.run"
+                      >
+                        <LoaderCircle v-if="bulkBusy(b.action)" :size="14" class="spin" aria-hidden="true" />
+                        <span>{{ b.label }}</span>
+                      </HButton>
+                    </template>
                     <HButton variant="ghost" size="compact" @click="clearTicks">Clear</HButton>
                   </HButtonBar>
                 </div>
@@ -969,6 +1022,7 @@ function scrollToOpened() {
                     :caps="capabilities[r.session.ref.agent]"
                     :compact="isNarrow || !!selected"
                     :dir="shortDir(r.session.project_root)"
+                    :doing="doing(r.session.ref.agent, r.session.ref.native_id)"
                     @open="selected = r.session"
                     @fold="fold(r.session)"
                     @tick="toggleTick(r.session)"
@@ -1005,6 +1059,7 @@ function scrollToOpened() {
     <!-- Kept mounted so updates are announced as changes, not new content. -->
     <div class="sr-only" role="status" aria-live="polite">{{ live }}</div>
     <HToaster :items="toasts" @dismiss="dismiss" />
+    <TaskPanel />
     <DialogHost />
   </HTheme>
 </template>

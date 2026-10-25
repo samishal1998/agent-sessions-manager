@@ -60,6 +60,41 @@ async fn blocking<T: Send + 'static>(
     tokio::task::spawn_blocking(f).await.map_err(internal)?
 }
 
+#[derive(Deserialize)]
+struct AsyncFlag {
+    /// `1` or `true`: answer `202 {"job": id}` at once and run it as a task
+    /// (`/api/tasks`), rather than answering when it is done.
+    #[serde(default, rename = "async")]
+    run_async: Option<String>,
+}
+
+impl AsyncFlag {
+    fn on(&self) -> bool {
+        matches!(self.run_async.as_deref(), Some("1" | "true"))
+    }
+}
+
+/// The message an error body carries, in either shape.
+fn message_of((_, Json(body)): ApiError) -> String {
+    body["error"].as_str().or(body["error"]["message"].as_str()).unwrap_or("failed").to_string()
+}
+
+/// Run `work` as the route always has, or with `?async=1` as a task: the same
+/// body becomes the task's `result`, and an error its `error`.
+async fn run_or_submit(
+    flag: AsyncFlag,
+    task: (&'static str, String, String, u64, crate::tasks::Lane),
+    work: impl FnOnce(&mut dyn FnMut(usize, usize)) -> Result<Value, ApiError> + Send + 'static,
+) -> Result<axum::response::Response, ApiError> {
+    if !flag.on() {
+        return blocking(move || work(&mut |_, _| {})).await.map(|v| Json(v).into_response());
+    }
+    let (kind, key, label, total, lane) = task;
+    let (id, existing) = crate::tasks::submit(kind, key, label, total, lane, move |progress| work(progress).map_err(message_of));
+    let body = if existing { json!({ "job": id, "existing": true }) } else { json!({ "job": id }) };
+    Ok((StatusCode::ACCEPTED, Json(body)).into_response())
+}
+
 fn lookup(agent: &str, id: &str) -> Result<Session, ops::ResolveError> {
     ops::resolve_ref(&format!("{agent}:{id}"), &SessionFilter::default())
 }
@@ -183,6 +218,17 @@ fn routes() -> axum::Router {
         .route("/api/hub/pull", post(hub_pull))
         .route("/api/hub/compare", post(hub_compare))
         .route("/api/hub/pull-all", post(hub_pull_all))
+        .route("/api/tasks", get(tasks))
+        .route("/api/tasks/{id}", get(task_one))
+}
+
+/// What `?async=1` started, newest first: the last 50, forgotten on restart.
+async fn tasks() -> Json<Value> {
+    Json(json!({ "tasks": crate::tasks::list() }))
+}
+
+async fn task_one(Path(id): Path<u64>) -> Result<Json<crate::tasks::Job>, ApiError> {
+    crate::tasks::get(id).map(Json).ok_or_else(|| err(StatusCode::NOT_FOUND, "no such task"))
 }
 
 /// The UI shortens `/home/you/code/x` to `~/code/x`, which it cannot do
@@ -225,10 +271,12 @@ async fn hub() -> ApiResult<Value> {
 
 /// Pull everything on the hub (`asm pull --all` with no filters), reporting
 /// like a bulk action so the UI can reuse its list of what could not land.
-async fn hub_pull_all() -> ApiResult<Value> {
-    blocking(|| {
+async fn hub_pull_all(Query(flag): Query<AsyncFlag>) -> Result<axum::response::Response, ApiError> {
+    use crate::tasks::Lane;
+    let task = ("pull-all", "pull-all".to_string(), "Pull everything".to_string(), 0, Lane::Hub);
+    run_or_submit(flag, task, |progress| {
         let remote = asm_core::hub::client::load().map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
-        let report = asm_core::hub::actions::pull_all(&remote, None, None)
+        let report = asm_core::hub::actions::pull_all(&remote, None, None, progress)
             .map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
         serde_json::to_value(json!({
             "verb": "Pull",
@@ -242,7 +290,6 @@ async fn hub_pull_all() -> ApiResult<Value> {
         .map_err(internal)
     })
     .await
-    .map(Json)
 }
 
 #[derive(Deserialize)]
@@ -252,8 +299,9 @@ struct PullBody {
     project_dir: Option<std::path::PathBuf>,
 }
 
-async fn hub_pull(Json(body): Json<PullBody>) -> ApiResult<Value> {
-    blocking(move || {
+async fn hub_pull(Query(flag): Query<AsyncFlag>, Json(body): Json<PullBody>) -> Result<axum::response::Response, ApiError> {
+    let task = ("pull", format!("pull:{}:{}", body.agent, body.id), format!("Pull {} {}", body.agent, short(&body.id)), 0, crate::tasks::Lane::Hub);
+    run_or_submit(flag, task, move |_| {
         let remote = asm_core::hub::client::load().map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
         let pulled = asm_core::hub::actions::pull(
             &remote,
@@ -264,7 +312,11 @@ async fn hub_pull(Json(body): Json<PullBody>) -> ApiResult<Value> {
         serde_json::to_value(pulled).map_err(internal)
     })
     .await
-    .map(Json)
+}
+
+/// An id as the UI shortens it, for a task's label.
+fn short(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
 }
 
 /// Compare one session here with the hub's copy without installing anything:
@@ -272,8 +324,9 @@ async fn hub_pull(Json(body): Json<PullBody>) -> ApiResult<Value> {
 /// copy read (up to 256 MiB) to say which side is ahead (`relation`), or, when
 /// it cannot be proven, an advisory `lean` from times and sizes. This is the
 /// "Compare" button.
-async fn hub_compare(Json(body): Json<PullBody>) -> ApiResult<Value> {
-    blocking(move || {
+async fn hub_compare(Query(flag): Query<AsyncFlag>, Json(body): Json<PullBody>) -> Result<axum::response::Response, ApiError> {
+    let task = ("compare", format!("compare:{}:{}", body.agent, body.id), format!("Compare {} {}", body.agent, short(&body.id)), 0, crate::tasks::Lane::Hub);
+    run_or_submit(flag, task, move |_| {
         use asm_core::hub::{actions, state::SyncState};
         let remote = asm_core::hub::client::load().map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
         let heads = remote.heads().map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
@@ -291,7 +344,6 @@ async fn hub_compare(Json(body): Json<PullBody>) -> ApiResult<Value> {
         serde_json::to_value(found).map_err(internal)
     })
     .await
-    .map(Json)
 }
 
 #[derive(Deserialize)]
@@ -722,8 +774,27 @@ struct BulkTarget {
 /// A round trip per session would be slower, but more importantly it would
 /// leave the browser deciding what to do when the fourth of ten fails.
 /// The core batch answers that once, for both frontends.
-async fn bulk(Json(body): Json<BulkBody>) -> ApiResult<Value> {
-    blocking(move || {
+async fn bulk(Query(flag): Query<AsyncFlag>, Json(body): Json<BulkBody>) -> Result<axum::response::Response, ApiError> {
+    use crate::tasks::Lane;
+    let verb = body.action.verb();
+    let mut refs: Vec<String> = body.sessions.iter().map(|t| format!("{}:{}", t.agent, t.native_id)).collect();
+    refs.sort();
+    let n = body.sessions.len();
+    let label = format!("{verb} {n} session{}", if n == 1 { "" } else { "s" });
+    // Where it goes is part of what it is: an export to /b is not a repeat of one to /a.
+    let to = match &body.action {
+        asm_core::bulk::BulkAction::Move { dir } | asm_core::bulk::BulkAction::Export { dir } => {
+            format!("|{}", dir.display())
+        }
+        asm_core::bulk::BulkAction::Import { to } => format!("|{to}"),
+        _ => String::new(),
+    };
+    let key = format!("bulk:{}:{}{to}", verb.to_lowercase(), refs.join(","));
+    let task = match body.action {
+        asm_core::bulk::BulkAction::Push => ("push", key, label, n as u64, Lane::Hub),
+        _ => ("bulk", key, label, n as u64, Lane::Local),
+    };
+    run_or_submit(flag, task, move |progress| {
         // A session that cannot be resolved is reported as a failed item,
         // not as a failed request: the rest of the batch still runs.
         let mut sessions = Vec::new();
@@ -740,7 +811,7 @@ async fn bulk(Json(body): Json<BulkBody>) -> ApiResult<Value> {
                 )),
             }
         }
-        let report = asm_core::bulk::run(&sessions, &body.action);
+        let report = asm_core::bulk::run(&sessions, &body.action, progress);
         let verb = body.action.verb();
         serde_json::to_value(json!({
             "verb": verb,
@@ -755,7 +826,6 @@ async fn bulk(Json(body): Json<BulkBody>) -> ApiResult<Value> {
         .map_err(internal)
     })
     .await
-    .map(Json)
 }
 
 #[derive(Deserialize)]

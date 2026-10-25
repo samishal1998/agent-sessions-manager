@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 asm-core = { workspace = true }
 anyhow = { workspace = true }
+jiff = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }

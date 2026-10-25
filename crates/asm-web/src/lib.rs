@@ -4,6 +4,7 @@
 
 pub mod api;
 pub mod hub;
+pub mod tasks;
 mod statics;
 
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};

@@ -1,4 +1,4 @@
-async function request(path, options) {
+export async function request(path, options) {
   const response = await fetch(path, options)
   const body = await response.json().catch(() => ({}))
   if (!response.ok) {
@@ -7,7 +7,7 @@ async function request(path, options) {
   return body
 }
 
-const post = (path, body) =>
+export const post = (path, body) =>
   request(path, {
     method: 'POST',
     // X-Asm-Request marks this as a real request from the asm UI: a
@@ -22,13 +22,14 @@ const sessionPath = (s, action) =>
 
 const api = {
   meta: () => request('/api/meta'),
-  // One verb over many sessions. `action` is the tagged BulkAction the
-  // core defines: {action:'archive'} | {action:'move',dir} | …
-  bulk: (sessions, action) =>
-    post('/api/bulk', {
-      sessions: sessions.map((s) => ({ agent: s.ref.agent, native_id: s.ref.native_id })),
-      ...action,
-    }),
+  // The body of /api/bulk: one verb over many sessions. `action` is the
+  // tagged BulkAction the core defines: {action:'archive'} | {action:'move',dir}
+  // | … It and the hub routes run as tasks (./tasks.js), so the page can show
+  // them going on.
+  bulkBody: (sessions, action) => ({
+    sessions: sessions.map((s) => ({ agent: s.ref.agent, native_id: s.ref.native_id })),
+    ...action,
+  }),
   sessions: (all) => request(`/api/sessions?all=${all ? 'true' : 'false'}`),
 
   // Sessions as the stores give them up, one JSON line per batch, so a
@@ -85,12 +86,6 @@ const api = {
   // The hub this machine joined, with every session here and there side by
   // side; {joined:false} when there is none.
   hub: () => request('/api/hub'),
-  push: (sessions) => api.bulk(sessions, { action: 'push' }),
-  pullAll: () => post('/api/hub/pull-all', {}),
-  // Compare a session with the hub's copy, installing nothing.
-  compare: (agent, id) => post('/api/hub/compare', { agent, id }),
-  pull: (agent, id, projectDir) =>
-    post('/api/hub/pull', { agent, id, project_dir: projectDir || null }),
   rename: (s, title) => post(sessionPath(s, 'rename'), { title }),
   archive: (s) => post(sessionPath(s, 'archive')),
   unarchive: (s) => post(sessionPath(s, 'unarchive')),

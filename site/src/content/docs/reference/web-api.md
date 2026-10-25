@@ -22,6 +22,7 @@ All routes are under `asm serve` (default `http://127.0.0.1:7433`; `--port 0` pi
 | `GET /api/index` | Index statistics. |
 | `GET /api/session/{agent}/{id}/ir` | The session as IR. |
 | `GET /api/hub` | Hub status: joined, connected, url, machine, error, a summary, one row per session with its sync state — and `daemon`: the local daemon's state and last-written status (or `null`). |
+| `GET /api/tasks` · `GET /api/tasks/{id}` | `{"tasks": [job…]}`, newest first, or one job (404 `{"error": "no such task"}` for an id it does not know). See [Tasks](#tasks). |
 
 ## Act
 
@@ -37,6 +38,12 @@ All routes are under `asm serve` (default `http://127.0.0.1:7433`; `--port 0` pi
 | `POST /api/hub/pull` | `{"agent","id","project_dir"?}` |
 | `POST /api/hub/pull-all` | — a bulk-style report. |
 | `POST /api/hub/compare` | `{"agent","id"}` — compares one session here with the hub's copy and installs nothing: `{"verdict": "identical"\|"differs", "local_size", "hub_size", "relation", "lean"}`. Identical copies are recorded as synced. For a copy that differs, the hub's copy (up to 256 MiB) is read and related to this one the way a pull would: `relation` is `same`, `local_ahead` (also recorded as the base a push needs), `hub_ahead` or `diverged`, and `null` when it could not be proven (the agent has no such comparison, the hub did not answer). Then `lean` is `"local"`, `"hub"` or `null`: an advisory guess from the two `updated` times and sizes when both agree, and `null` whenever `relation` is set. `GET /api/hub` rows carry the same object as `compare`. |
+
+### Tasks
+
+`POST /api/bulk`, `/api/hub/pull`, `/api/hub/pull-all` and `/api/hub/compare` take `?async=1`. With it the route answers `202 {"job": id}` at once and does the work as a task; without it, it answers when done, as it always has. A request while the same one is still queued or running (the same action over the same sessions, or a pull or compare of the same session) starts nothing and answers `202 {"job": id, "existing": true}` with that task's id.
+
+A job is `{"id", "kind": "push"|"pull"|"pull-all"|"compare"|"bulk", "key", "label", "state": "queued"|"running"|"ok"|"failed", "done", "total", "started", "ended", "result", "error"}`. `done` of `total` counts sessions as they finish; a `total` of 0 means not known. `started` and `ended` are RFC 3339 (`ended` is `null` until it ends). `result` is the body the route answers without `?async`; when the route would answer an HTTP error instead, the state is `failed` and `error` holds its message. Hub work (pushes, pulls, compares) runs one task at a time, and so do local changes; a task waiting its turn is `queued`. The last 50 tasks are kept, in memory only: a restart forgets them.
 
 ## The hub protocol
 

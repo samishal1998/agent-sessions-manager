@@ -5,10 +5,13 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
-## Unreleased
+## 0.17.0 — 2026-10-25
 
+- **The web API can run a push, pull or bulk action as a task.** `POST /api/bulk`, `/api/hub/pull`, `/api/hub/pull-all` and `/api/hub/compare` take `?async=1`: they answer `202 {"job": id}` at once, and `GET /api/tasks` and `/api/tasks/{id}` follow the job through `queued`, `running`, and `ok` with the body the route would have answered or `failed` with its error, counting sessions done as it goes. The same request again while it runs is the same job. Without `?async` nothing changes.
 - **`asm join` says when the hub's name does not resolve.** A plain-HTTP join to a name this machine could not look up (a Tailscale name with MagicDNS off, say) was refused as "plain HTTP to an address outside loopback, a private LAN or a VPN". It now says the name does not resolve and suggests the hub's 100.x address.
 - **`asm join` pointed at the web UI says so.** Joining `asm serve`'s port (7433) instead of the hub's (7434) failed with `hub answered 200: <!doctype html>…`. It now says the address served a web page, not a hub, and names both default ports.
+- **The TUI keeps saying what it is doing until it is done.** A push, pull, send or other action asked for while a scan or a hub check was running showed nothing, and the scan's session count then overwrote "pushing…". What was asked for now stays on the status line until its own answer arrives, and more than one waiting is shown as `⟳ N queued`.
+- **The web UI shows that a push, pull or bulk action was heard, is running, and finished.** Clicking Push, Pull, Compare, Pull all or a bulk verb gave no sign of anything until the work was done. The clicked button now turns into a spinner at once and stays disabled until its task ends, hub rows being worked on read "Pushing…" / "Pulling…", and a tasks button beside the toolbar's status (and in the Hub view) opens a panel of the server's recent tasks: each one's state, how long it took, how far it got and what it said, with a failure's error or a report's problems one click away. Clicking the same thing again while it runs starts nothing and points at the task already doing it.
 
 ## 0.16.1 — 2026-10-22
 

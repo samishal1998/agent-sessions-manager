@@ -2,6 +2,8 @@
 import { computed } from 'vue'
 import { HBadge, HButton, HChipGroup, HCombobox, HInput, HPageHeader, HSwitch } from '@hearth-ui/vue'
 import ColorModeSwitch from './ColorModeSwitch.vue'
+import TasksButton from './TasksButton.vue'
+import { tasks } from '../tasks.js'
 import { FilterX, GitBranch, RefreshCw } from 'lucide-vue-next'
 
 // The Sessions page head and its filters. The filter values belong to the
@@ -75,7 +77,9 @@ const chipOptions = computed(() =>
       <slot name="chips" />
     </div>
 
-    <div v-if="scanning || indexing || anyFilter || worktrees.length" class="s-status">
+    <div v-if="scanning || indexing || anyFilter || worktrees.length || tasks.length" class="s-status">
+      <!-- Push, pull and bulk work going on in the server; opens the task panel. -->
+      <TasksButton />
       <HBadge v-if="scanning" tone="info" title="Reading the agents' stores">
         <RefreshCw :size="12" class="spin" aria-hidden="true" /> Reading… {{ found }}
       </HBadge>

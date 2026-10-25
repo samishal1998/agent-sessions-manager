@@ -96,18 +96,20 @@ fn human(bytes: u64) -> String {
 /// move) reads every session and settles for nothing less than the hub
 /// holding exactly this copy, sidecars included.
 pub fn push(remote: &Remote, sessions: &[Session], force: bool, exact: bool) -> Result<BulkReport, CoreError> {
-    push_collecting(remote, sessions, force, exact, &mut HashMap::new())
+    push_collecting(remote, sessions, force, exact, &mut HashMap::new(), |_, _| {})
 }
 
 /// `push`, also saying which hub revision each session that went through is
 /// now at (`key` → rev): the one just created, or the head that already held
 /// exactly this copy. Remote control reports it so a pull can be pinned to it.
+/// `progress(done, total)` is called after each session given.
 pub fn push_collecting(
     remote: &Remote,
     sessions: &[Session],
     force: bool,
     exact: bool,
     revs: &mut HashMap<String, String>,
+    mut progress: impl FnMut(usize, usize),
 ) -> Result<BulkReport, CoreError> {
     let heads: HashMap<String, Head> = remote
         .heads()?
@@ -147,10 +149,11 @@ pub fn push_collecting(
     let mut origins = HashMap::new();
     let mut report = BulkReport::default();
     let mut done = std::collections::HashSet::new();
-    for session in sessions {
+    for (i, session) in sessions.iter().enumerate() {
         let (agent, id) = (session.handle.agent, &session.handle.native_id);
         let k = key(agent, id);
         if !done.insert(k.clone()) {
+            progress(i + 1, sessions.len());
             continue;
         }
         let copies = places[&k].len();
@@ -166,6 +169,7 @@ pub fn push_collecting(
                 label: format!("{agent} {}", session.short_id()),
                 outcome: ItemOutcome::Skipped { reason: "it travels with its parent session".into() },
             });
+            progress(i + 1, sessions.len());
             continue;
         }
         let outcome = if copies > 1 {
@@ -185,6 +189,7 @@ pub fn push_collecting(
             label: format!("{agent} {}", session.short_id()),
             outcome,
         });
+        progress(i + 1, sessions.len());
     }
     Ok(report)
 }
@@ -441,10 +446,12 @@ fn head_matches(head: &Head, agent: Option<AgentKind>, project: Option<&Path>) -
 /// Pull everything on the hub that the filters match, each session at its
 /// own place. Every one is attempted: a session with nowhere to land here,
 /// or one that diverged, is listed per session and stops nothing else.
+/// `progress(done, total)` is called after each session.
 pub fn pull_all(
     remote: &Remote,
     agent: Option<AgentKind>,
     project: Option<&Path>,
+    mut progress: impl FnMut(usize, usize),
 ) -> Result<BulkReport, CoreError> {
     let heads: Vec<Head> =
         remote.heads()?.into_iter().filter(|h| head_matches(h, agent, project)).collect();
@@ -482,6 +489,7 @@ pub fn pull_all(
             ),
             outcome,
         });
+        progress(report.items.len(), heads.len());
     }
     Ok(report)
 }

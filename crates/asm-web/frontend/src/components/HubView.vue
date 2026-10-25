@@ -5,8 +5,9 @@ import {
   HSwitch, HTimeline, tableCellSlot,
 } from '@hearth-ui/vue'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ArrowDown, ArrowUp, ArrowUpDown, Check, Monitor, RefreshCw, Scale } from 'lucide-vue-next'
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, LoaderCircle, Monitor, RefreshCw, Scale } from 'lucide-vue-next'
 import AgentMark from './AgentMark.vue'
+import TasksButton from './TasksButton.vue'
 import { ago, agoUnix, bytes, hubTone } from '../format.js'
 import { shortProject } from '../ids.js'
 import '../styles/hubview.css'
@@ -19,6 +20,11 @@ const props = defineProps({
   checking: { type: Boolean, default: false },
   checkedAt: { type: Number, default: 0 },
   home: { type: String, default: null },
+  // A push-everything or pull-everything is under way on the server.
+  pushing: { type: Boolean, default: false },
+  pulling: { type: Boolean, default: false },
+  // What is being done to a row right now ('Pushing…'), or ''.
+  doing: { type: Function, default: () => '' },
 })
 const emit = defineEmits(['check', 'push', 'pull', 'compare', 'push-needed', 'pull-all'])
 
@@ -145,6 +151,8 @@ const iconOf = (r) => STATE_ICON[r.state] || ArrowDown
 // What the row's button does, or why it cannot.
 function buttonOf(r) {
   if (!r.action) return null
+  const doing = props.doing(r)
+  if (doing) return { text: doing, off: null, busy: true }
   if (!fresh.value) return { text: r.action === 'push' ? 'Push' : 'Pull', off: 'The hub cannot be reached' }
   if (r.action === 'resolve') return { text: 'Resolve', off: null, resolve: true }
   if (r.action === 'pull' && !r.restorable)
@@ -230,19 +238,22 @@ const detailItems = computed(() => {
           <span>{{ fresh ? 'Check now' : 'Retry' }}</span>
         </HButton>
         <HButton
-          v-if="summary.to_push" variant="secondary" size="compact" :disabled="!fresh"
-          :aria-label="`Push ${summary.to_push}${fresh ? '' : ' (unavailable: the hub cannot be reached)'}`"
-          :title="fresh ? '' : 'The hub cannot be reached'" @click="emit('push-needed')"
+          v-if="summary.to_push" variant="secondary" size="compact"
+          :aria-label="`${pushing ? 'Pushing' : 'Push'} ${summary.to_push}${fresh ? '' : ' (unavailable: the hub cannot be reached)'}`"
+          :title="fresh ? '' : 'The hub cannot be reached'" :disabled="!fresh || pushing" @click="emit('push-needed')"
         >
-          <ArrowUp :size="15" /><span>Push {{ summary.to_push }}</span>
+          <LoaderCircle v-if="pushing" :size="15" class="spin" /><ArrowUp v-else :size="15" />
+          <span>{{ pushing ? 'Pushing…' : `Push ${summary.to_push}` }}</span>
         </HButton>
         <HButton
-          v-if="summary.to_pull" variant="secondary" size="compact" :disabled="!fresh"
-          :aria-label="`Pull ${summary.to_pull}${fresh ? '' : ' (unavailable: the hub cannot be reached)'}`"
-          :title="fresh ? '' : 'The hub cannot be reached'" @click="emit('pull-all')"
+          v-if="summary.to_pull" variant="secondary" size="compact"
+          :aria-label="`${pulling ? 'Pulling' : 'Pull'} ${summary.to_pull}${fresh ? '' : ' (unavailable: the hub cannot be reached)'}`"
+          :title="fresh ? '' : 'The hub cannot be reached'" :disabled="!fresh || pulling" @click="emit('pull-all')"
         >
-          <ArrowDown :size="15" /><span>Pull {{ summary.to_pull }}</span>
+          <LoaderCircle v-if="pulling" :size="15" class="spin" /><ArrowDown v-else :size="15" />
+          <span>{{ pulling ? 'Pulling…' : `Pull ${summary.to_pull}` }}</span>
         </HButton>
+        <TasksButton />
       </div>
     </HPageHeader>
 
@@ -311,7 +322,7 @@ const detailItems = computed(() => {
         >
           <template #leading><AgentMark :agent="r.agent" :size="15" /></template>
           <template #trailing>
-            <HBadge :tone="hubTone(r.state)"><component :is="iconOf(r)" :size="12" aria-hidden="true" /> {{ r.label }}</HBadge>
+            <HBadge :tone="doing(r) ? 'info' : hubTone(r.state)"><component :is="iconOf(r)" :size="12" aria-hidden="true" /> {{ doing(r) || r.label }}</HBadge>
           </template>
         </HListItem>
       </HList>
@@ -320,8 +331,8 @@ const detailItems = computed(() => {
         :rows="tableRows" :columns="columns" :page-size="25"
       >
           <template v-for="r in shown" :key="'s'+rowKey(r)" #[cell(r,`sync`)]>
-            <HBadge :tone="hubTone(r.state)" :title="r.hint" :style="hub.stale ? 'opacity:.75' : ''">
-              <component :is="iconOf(r)" :size="12" aria-hidden="true" /> {{ r.label }}
+            <HBadge :tone="doing(r) ? 'info' : hubTone(r.state)" :title="r.hint" :style="hub.stale ? 'opacity:.75' : ''">
+              <component :is="iconOf(r)" :size="12" aria-hidden="true" /> {{ doing(r) || r.label }}
             </HBadge>
           </template>
           <template v-for="r in shown" :key="'n'+rowKey(r)" #[cell(r,`session`)]>
@@ -341,12 +352,13 @@ const detailItems = computed(() => {
           <template v-for="r in shown" :key="'a'+rowKey(r)" #[cell(r,`act`)]>
             <div class="hv-rowact">
               <HButton
-                v-if="buttonOf(r)" variant="secondary" size="compact" :disabled="!!buttonOf(r).off"
+                v-if="buttonOf(r)" variant="secondary" size="compact" :disabled="!!buttonOf(r).off || buttonOf(r).busy"
                 :title="buttonOf(r).off || r.hint"
                 :aria-label="`${buttonOf(r).text} ${r.title || r.short_id}${buttonOf(r).off ? ' (unavailable: ' + buttonOf(r).off + ')' : ''}`"
                 @click="press(r)"
               >
-                <ArrowUp v-if="r.action === 'push'" :size="14" />
+                <LoaderCircle v-if="buttonOf(r).busy" :size="14" class="spin" />
+                <ArrowUp v-else-if="r.action === 'push'" :size="14" />
                 <ArrowUpDown v-else-if="r.action === 'resolve'" :size="14" />
                 <Scale v-else-if="buttonOf(r).compare" :size="14" />
                 <ArrowDown v-else :size="14" />
@@ -363,7 +375,7 @@ const detailItems = computed(() => {
           <HCopyField v-if="command(detail)" label="Same from a terminal" :value="command(detail)" />
         </div>
         <template #footer>
-          <HButton v-if="detail && buttonOf(detail) && !buttonOf(detail).resolve" variant="primary" :disabled="!!buttonOf(detail).off" :title="buttonOf(detail).off" @click="press(detail)">
+          <HButton v-if="detail && buttonOf(detail) && !buttonOf(detail).resolve" variant="primary" :disabled="!!buttonOf(detail).off || buttonOf(detail).busy" :title="buttonOf(detail).off" @click="press(detail)">
             {{ buttonOf(detail).text }}
           </HButton>
           <HButton variant="ghost" @click="detailKey = null">Close</HButton>

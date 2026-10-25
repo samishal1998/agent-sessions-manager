@@ -152,12 +152,14 @@ fn unsupported(agent: AgentKind, action: &BulkAction) -> Option<String> {
 }
 
 /// Run `action` over `sessions`, in order, attempting every one.
-pub fn run(sessions: &[Session], action: &BulkAction) -> BulkReport {
+/// `progress(done, total)` is called after each item.
+pub fn run(sessions: &[Session], action: &BulkAction, mut progress: impl FnMut(usize, usize)) -> BulkReport {
     // One pass against the hub for the whole batch: it lists the hub's
     // heads once, and already attempts every item.
     if let BulkAction::Push = action {
-        let pushed = crate::hub::client::load()
-            .and_then(|remote| crate::hub::actions::push(&remote, sessions, false, false));
+        let pushed = crate::hub::client::load().and_then(|remote| {
+            crate::hub::actions::push_collecting(&remote, sessions, false, false, &mut Default::default(), progress)
+        });
         return pushed.unwrap_or_else(|e| BulkReport {
             items: sessions
                 .iter()
@@ -200,6 +202,7 @@ pub fn run(sessions: &[Session], action: &BulkAction) -> BulkReport {
             label,
             outcome,
         });
+        progress(report.items.len(), sessions.len());
     }
     report
 }
@@ -460,7 +463,7 @@ mod tests {
 
     #[test]
     fn an_empty_batch_is_not_an_error() {
-        let r = run(&[], &BulkAction::Archive);
+        let r = run(&[], &BulkAction::Archive, |_, _| {});
         assert_eq!(r.items.len(), 0);
         assert_eq!(r.summary("Archive"), "Archive: 0 of 0 succeeded");
     }

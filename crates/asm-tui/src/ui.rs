@@ -846,8 +846,16 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, filters: &[String]) {
 
 /// The left-hand side of the status line: what asm is doing, and anything
 /// it wants the user to know about the stores.
-fn status_line_of(app: &App) -> Line<'static> {
+pub(crate) fn status_line_of(app: &App) -> Line<'static> {
     let mut spans = vec![Span::raw(" "), Span::raw(app.status.clone())];
+    // What the user asked for and the worker has yet to answer. One is
+    // named, unless the status already says it; more are counted.
+    match app.in_flight.len() {
+        0 => {}
+        1 if app.in_flight[0] == app.status => {}
+        1 => spans.push(Span::styled(format!("  ⟳ {}", app.in_flight[0]), Style::default().fg(theme::ACCENT))),
+        n => spans.push(Span::styled(format!("  ⟳ {n} queued"), Style::default().fg(theme::ACCENT))),
+    }
     if app.scanning {
         spans.push(Span::styled("  ⟳ scanning", Style::default().fg(theme::ACCENT)));
     }
