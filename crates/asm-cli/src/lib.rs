@@ -106,6 +106,17 @@ pub struct Cli {
     #[arg(long, global = true)]
     project: Option<PathBuf>,
 
+    /// Restrict to sessions of the checkout you are in: the git worktree
+    /// containing the current directory (a linked worktree, not its main
+    /// one), and its subdirectories. Outside git, the current directory.
+    #[arg(long, global = true, conflicts_with = "project")]
+    here: bool,
+
+    /// Like --here, but every worktree of the current directory's
+    /// repository. Outside git, the same as --here.
+    #[arg(short = 'W', long = "all-worktrees", global = true, conflicts_with = "project")]
+    all_worktrees: bool,
+
     /// Include subagent/child sessions (hidden by default). `list` shows them
     /// nested under their parent.
     #[arg(long = "include-children", global = true)]
@@ -620,7 +631,9 @@ fn parse_interval(text: &str) -> Result<f64, String> {
 /// A frontend the binary should launch after argument parsing (the CLI
 /// crate stays free of TUI/web dependencies).
 pub enum Frontend {
-    Tui,
+    /// `here` is set by `--here`/`--all-worktrees`: where the TUI starts
+    /// narrowed to, and whether to all of the repository's worktrees.
+    Tui { here: Option<(asm_core::ops::Here, bool)> },
     Serve { host: String, port: u16, token: Option<String> },
     Hub { host: String, port: u16, max_file_bytes: u64, peer: bool },
 }
@@ -640,7 +653,13 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
     };
 
     match cli.command.unwrap_or(default_command) {
-        Command::Tui => return Ok(Some(Frontend::Tui)),
+        Command::Tui => {
+            let here = match cli.here || cli.all_worktrees {
+                true => Some((here_of_cwd()?, cli.all_worktrees)),
+                false => None,
+            };
+            return Ok(Some(Frontend::Tui { here }));
+        }
         Command::Serve { port, host, token_file } => {
             let token = match token_file {
                 Some(path) => Some(
@@ -716,7 +735,7 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
         }
         Command::Events { status, interval } => follow(&filter, status, interval),
         Command::Capabilities => capabilities(cli.json),
-        Command::Projects { worktrees } => projects(cli.json, worktrees),
+        Command::Projects { worktrees } => projects(cli.json, worktrees, &filter),
         Command::Show { r#ref } => show(&r#ref, &filter, cli.json),
         Command::Resume { r#ref } => resume(&r#ref, &filter),
         Command::Rename { r#ref, title } => rename(&r#ref, &title, &filter, cli.json),
@@ -736,7 +755,7 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
             cli.json,
         ),
         Command::Export { r#ref, output } => export(&r#ref, output.as_deref(), &filter, cli.json),
-        Command::Worktrees { repo } => worktrees(repo.as_deref(), cli.json),
+        Command::Worktrees { repo } => worktrees(repo.as_deref(), cli.json, &filter),
         Command::Search { query, limit, no_refresh, select } => {
             search(&query.join(" "), limit, !no_refresh, &filter, &select, cli.json)
         }
@@ -800,6 +819,8 @@ fn search(
         text: query.to_string(),
         agent: filter.agent,
         project: filter.project.clone(),
+        within: filter.within.clone(),
+        without: filter.without.clone(),
         limit,
         state: select.status.clone(),
     })?;
@@ -1059,12 +1080,14 @@ fn export(
     Ok(())
 }
 
-fn worktrees(repo: Option<&std::path::Path>, json: bool) -> anyhow::Result<()> {
+/// `scope` is the global filters; only `--here`/`--all-worktrees` apply.
+fn worktrees(repo: Option<&std::path::Path>, json: bool, scope: &SessionFilter) -> anyhow::Result<()> {
     let repo = match repo {
         Some(p) => p.to_path_buf(),
         None => std::env::current_dir()?,
     };
-    let worktrees = asm_core::git::worktrees(&repo)?;
+    let mut worktrees = asm_core::git::worktrees(&repo)?;
+    worktrees.retain(|wt| scope.in_scope(&wt.path));
     let sessions = ops::list_sessions(&SessionFilter::default())?;
     if json {
         // Each worktree as git reports it, plus the sessions living in it.
@@ -1155,7 +1178,19 @@ fn build_filter(cli: &Cli) -> anyhow::Result<SessionFilter> {
         ),
         None => None,
     };
-    Ok(SessionFilter { agent, project, include_children: cli.include_children, include_debug: false })
+    let (within, without) = match cli.here || cli.all_worktrees {
+        true => {
+            let here = here_of_cwd()?;
+            (here.roots(cli.all_worktrees), here.without(cli.all_worktrees))
+        }
+        false => (Vec::new(), Vec::new()),
+    };
+    Ok(SessionFilter { agent, project, within, without, include_children: cli.include_children, include_debug: false })
+}
+
+fn here_of_cwd() -> anyhow::Result<asm_core::ops::Here> {
+    let cwd = std::env::current_dir().context("the current directory is unreadable")?;
+    Ok(ops::here(&cwd))
 }
 
 fn list(filter: &SessionFilter, opts: &ListOpts, json: bool) -> anyhow::Result<()> {
@@ -1381,8 +1416,17 @@ fn capabilities(json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn projects(json: bool, show_worktrees: bool) -> anyhow::Result<()> {
-    let projects = ops::list_projects()?;
+fn projects(json: bool, show_worktrees: bool, scope: &SessionFilter) -> anyhow::Result<()> {
+    let mut projects = ops::list_projects()?;
+    // `--here` keeps the project you are in, and of it only this worktree;
+    // `-W` keeps every worktree of it.
+    if !scope.within.is_empty() {
+        projects.retain_mut(|p| {
+            p.worktrees.retain(|w| scope.in_scope(&w.path));
+            p.session_count = p.worktrees.iter().map(|w| w.session_count).sum();
+            !p.worktrees.is_empty()
+        });
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&projects)?);
         return Ok(());
@@ -1925,8 +1969,8 @@ fn pull(
     let query = match (query, all) {
         (Some(query), false) => query,
         (None, true) => {
-            let report =
-                asm_core::hub::actions::pull_all(&remote, filter.agent, filter.project.as_deref(), |_, _| {})?;
+            let projects: Vec<PathBuf> = filter.project.iter().chain(&filter.within).cloned().collect();
+            let report = asm_core::hub::actions::pull_all(&remote, filter.agent, &projects, |_, _| {})?;
             if json {
                 print_json(&report)?;
             } else {
@@ -2199,6 +2243,23 @@ mod tests {
         assert!(parse(&["pull", "--all", "--agent", "codex", "--project", "/x"]).is_ok());
         assert!(parse(&["pull", "7f3a1c88", "--all"]).is_err());
         assert!(parse(&["pull", "--all", "--project-dir", "/x"]).is_err());
+    }
+
+    /// `--here` and `--all-worktrees` narrow to where asm runs; either one
+    /// against `--project` is a contradiction, and `-W` is `--here` widened.
+    #[test]
+    fn here_and_all_worktrees_narrow_to_the_current_checkout() {
+        assert!(parse(&["--here", "--project", "/x"]).is_err());
+        assert!(parse(&["list", "-W", "--project", "/x"]).is_err());
+        assert!(parse(&["projects", "--worktrees", "-W"]).is_ok(), "the projects flag keeps its name");
+
+        let here = ops::here(&std::env::current_dir().unwrap());
+        let filter = build_filter(&parse(&["list", "--here"]).unwrap()).unwrap();
+        assert_eq!(filter.within, vec![here.worktree.clone()]);
+        let filter = build_filter(&parse(&["-W"]).unwrap()).unwrap();
+        assert_eq!(filter.within, here.worktrees, "every worktree, this one among them");
+        assert!(filter.within.contains(&here.worktree), "--all-worktrees implies --here");
+        assert!(build_filter(&parse(&["list"]).unwrap()).unwrap().within.is_empty());
     }
 
     /// A peer transfer names one peer and, for a push, may say where the

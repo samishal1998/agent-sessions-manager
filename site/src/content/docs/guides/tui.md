@@ -24,6 +24,7 @@ See the complete [key reference](/reference/tui-keys/). The ones to learn first:
 | `⏎` | Resume in the native agent (the TUI steps aside and comes back). |
 | `/` · `s` | Filter the list as you type · full-text search across transcripts. |
 | `A` · `P` | Pick agents (space toggles) · pick a project (type to narrow). |
+| `.` · `w` | Only the worktree asm was started in, or not · switch between that worktree and all of the repository's. |
 | `r` `a` `d` | Rename · archive/unarchive · delete (confirmed, backed up). |
 | `m` `i` `e` | Move · import into the other agent · export IR. |
 | `␣` `*` | Tick this session · tick everything the filter shows. |

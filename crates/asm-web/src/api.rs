@@ -276,7 +276,7 @@ async fn hub_pull_all(Query(flag): Query<AsyncFlag>) -> Result<axum::response::R
     let task = ("pull-all", "pull-all".to_string(), "Pull everything".to_string(), 0, Lane::Hub);
     run_or_submit(flag, task, |progress| {
         let remote = asm_core::hub::client::load().map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
-        let report = asm_core::hub::actions::pull_all(&remote, None, None, progress)
+        let report = asm_core::hub::actions::pull_all(&remote, None, &[], progress)
             .map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
         serde_json::to_value(json!({
             "verb": "Pull",
@@ -581,6 +581,8 @@ async fn search(Query(params): Query<SearchParams>) -> ApiResult<Value> {
                 text: params.q,
                 agent: params.agent.as_deref().and_then(AgentKind::parse),
                 project: params.project.map(std::path::PathBuf::from),
+                within: Vec::new(),
+                without: Vec::new(),
                 limit: params.limit.clamp(1, 200),
                 state: params.status,
             })

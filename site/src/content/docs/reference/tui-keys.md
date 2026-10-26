@@ -23,6 +23,8 @@ Press `?` in the TUI for the same list. The footer shows the keys that fit your 
 | `/` | Filter by title, id, project or agent |
 | `A` | Pick agents (space toggles, `⏎` closes) |
 | `P` | Pick a project (type to narrow) |
+| `.` | Only the worktree asm was started in (its subdirectories too, but not a worktree nested in it), or back to everything. Replaces a `P` project, and `P` replaces it |
+| `w` | Switch between this worktree and every worktree of its repository. On a `P` project (the whole repository) it narrows to the worktree asm runs in when that is one of the project's, else the main checkout. With one worktree it says so |
 | `s` | Search inside every transcript |
 | `esc` | Back out: the selection, the transcript, the filters |
 

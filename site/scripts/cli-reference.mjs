@@ -137,7 +137,9 @@ overview += `Generated from \`${version}\`. Every command is also available as \
 overview += `Run \`asm\` with no command on a terminal to open the [terminal UI](/guides/tui/); piped, it prints the session table.\n\n`
 overview += '## Options every command accepts\n\n' + table(globalRows, ['Option', 'Meaning']) + '\n'
 overview +=
-  'These narrow what a command acts on. `--agent` and `--project` filter the sessions; `--include-children` ' +
+  'These narrow what a command acts on. `--agent` and `--project` filter the sessions; `--here` narrows to the git ' +
+  'worktree you are in and `-W`/`--all-worktrees` to every worktree of its repository (outside git, both mean the ' +
+  'current directory; neither goes with `--project`). `--include-children` ' +
   'adds subagent sessions, which are hidden by default (`asm list` nests them under their parent). On `push` ' +
   'and `pull`, `--all` means everything the filters match.\n\n'
 overview +=

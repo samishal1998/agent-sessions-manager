@@ -94,6 +94,15 @@ pub struct SessionFilter {
     pub agent: Option<AgentKind>,
     /// Only sessions whose project root equals this path.
     pub project: Option<PathBuf>,
+    /// When not empty, only sessions whose project root is one of these
+    /// directories or inside one (`--here`, `--all-worktrees`). A session
+    /// with no recorded root is in none of them.
+    pub within: Vec<PathBuf>,
+    /// Never sessions whose project root is one of these or inside one: the
+    /// other worktrees nested under a `within` root (Claude Code keeps its
+    /// own at `<repo>/.claude/worktrees/<name>`), so "this worktree" is not
+    /// also the worktrees inside it.
+    pub without: Vec<PathBuf>,
     /// Include subagent/child sessions (hidden by default, like the agents'
     /// own pickers).
     pub include_children: bool,
@@ -117,8 +126,19 @@ impl SessionFilter {
         {
             return false;
         }
-        true
+        self.in_scope(&session.project_root)
     }
+
+    /// Whether a project root passes `within` and `without`.
+    pub fn in_scope(&self, root: &Path) -> bool {
+        (self.within.is_empty() || under_any(root, &self.within)) && !under_any(root, &self.without)
+    }
+}
+
+/// Whether `root` is one of `roots` or under one, by path component, so
+/// `/a/proj2` is not under `/a/proj`. An empty root is under nothing.
+pub fn under_any(root: &Path, roots: &[PathBuf]) -> bool {
+    !root.as_os_str().is_empty() && roots.iter().any(|r| root.starts_with(r))
 }
 
 /// Read-side adapter surface (milestone M0/M1 subset; transcript streaming

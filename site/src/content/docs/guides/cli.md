@@ -16,13 +16,29 @@ An ambiguous prefix is an error that lists the candidates; it never picks one.
 
 ## Filters
 
-Three global options narrow what a command acts on, and mean the same everywhere:
+Global options narrow what a command acts on, and mean the same everywhere:
 
 | Option | Effect |
 |---|---|
 | `--agent <name>` | One of `claude-code`, `opencode`, `jcode`, `codex`, `antigravity`. |
 | `--project <dir>` | Sessions of that project (the whole repository, not just the directory — see [Projects](/concepts/projects/)). |
+| `--here` | Sessions of the checkout you are in: the git worktree containing the current directory (a linked worktree, not its main one) and its subdirectories. Outside git, the current directory. |
+| `-W`, `--all-worktrees` | Like `--here`, but every worktree of that repository. Outside git, the same as `--here`. |
 | `--include-children` | Include subagent and child sessions, hidden by default. `asm list` nests them under their parent. |
+
+### Sessions of where you are
+
+`--project` takes a directory and means the whole repository. To see only what was done here, run from the checkout:
+
+```sh
+cd ~/code/mercury-feature    # a linked worktree of ~/code/mercury
+asm --here                   # sessions in this worktree only
+asm -W                       # sessions in every worktree of mercury
+```
+
+A worktree nested inside the one you are in (Claude Code keeps its own at `.claude/worktrees/<name>`) is a checkout of its own: `--here` in the outer one leaves its sessions out, and `-W` brings them in. On `asm projects` and `asm worktrees` the two keep only the project and the worktrees you are in.
+
+Bare `asm --here` or `asm -W` on a terminal opens the [TUI](/guides/tui/) narrowed the same way. Neither goes with `--project`. Paths are resolved first, so a symlinked directory still finds sessions recorded at its real path. On `pull --all` a hub session also matches by git origin, as with `--project`, so `--here` pulls every session of the repository there.
 
 On `push` and `pull`, `--all` means **everything the filters match** — `asm pull --all --agent codex` pulls every Codex session on the hub — and `--include-children` is its own, separate decision.
 

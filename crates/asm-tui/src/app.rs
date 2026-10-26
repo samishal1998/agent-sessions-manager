@@ -2,7 +2,7 @@
 //! goes through the worker.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ratatui::DefaultTerminal;
@@ -153,6 +153,11 @@ pub struct App {
     pub agents: HashSet<AgentKind>,
     /// The project the list is narrowed to, with its descendants.
     pub project: Option<PathBuf>,
+    /// `.` (or `asm --here`): the checkout asm runs in, and with
+    /// `all_worktrees` every checkout of its repository. Exclusive with
+    /// `project`: setting one clears the other.
+    pub here: Option<asm_core::ops::Here>,
+    pub all_worktrees: bool,
     pub picker: Option<Picker>,
     /// A rescan's sessions, held until it finishes: the first scan streams
     /// straight into the list, but replacing rows under the cursor while
@@ -243,6 +248,8 @@ impl App {
             help_scroll: 0,
             agents: HashSet::new(),
             project: None,
+            here: None,
+            all_worktrees: false,
             picker: None,
             incoming: Vec::new(),
             problems: Vec::new(),
@@ -673,6 +680,12 @@ impl App {
         {
             return false;
         }
+        if project
+            && let Some(here) = &self.here
+            && !here.contains(&session.project_root, self.all_worktrees)
+        {
+            return false;
+        }
         let needle = self.filter.to_lowercase();
         needle.is_empty()
             || session.title.as_deref().unwrap_or("").to_lowercase().contains(&needle)
@@ -708,6 +721,13 @@ impl App {
         if let Some(project) = &self.project {
             active.push(crate::ui::shorten(&project.display().to_string(), 40));
         }
+        if let Some(here) = &self.here {
+            let at = crate::ui::shorten(&crate::ui::home_relative(&here.worktree), 40);
+            active.push(match (self.all_worktrees, here.worktrees.len()) {
+                (true, n) if n > 1 => format!("here: {at}, all {n} worktrees"),
+                _ => format!("here: {at} (this worktree)"),
+            });
+        }
         if !self.filter.is_empty() {
             active.push(format!("\"{}\"", self.filter));
         }
@@ -715,9 +735,10 @@ impl App {
     }
 
     pub fn clear_filters(&mut self) -> bool {
-        let had = !self.agents.is_empty() || self.project.is_some() || !self.filter.is_empty();
+        let had = !self.agents.is_empty() || self.project.is_some() || self.here.is_some() || !self.filter.is_empty();
         self.agents.clear();
         self.project = None;
+        self.here = None;
         self.filter.clear();
         if had {
             self.apply_filter();
@@ -850,15 +871,83 @@ impl App {
                     .iter()
                     .map(|p| p.root.clone())
                     .find(|root| crate::ui::home_relative(root) == row.label);
+                self.here = None;
+                self.all_worktrees = false;
                 self.picker = None;
                 self.mode = Mode::Normal;
             }
         }
+        self.refilter();
+    }
+
+    fn refilter(&mut self) {
         self.apply_filter();
         self.status = match self.active_filters().as_slice() {
             [] => self.count_status(),
             filters => format!("{} of {} — {}", self.filtered.len(), self.total_rows(), filters.join(" · ")),
         };
+    }
+
+    /// `.`: narrow to the checkout asm runs in, or stop narrowing to it.
+    fn toggle_here(&mut self) {
+        if self.here.take().is_none() {
+            match std::env::current_dir() {
+                Ok(cwd) => {
+                    self.here = Some(asm_core::ops::here(&cwd));
+                    self.all_worktrees = false;
+                    self.project = None;
+                }
+                Err(e) => return self.set_status(format!("the current directory is unreadable: {e}")),
+            }
+        }
+        self.refilter();
+    }
+
+    /// `w`: between this worktree and all of the repository's. On a project
+    /// picked with `P` (the whole repository) it narrows to the worktree asm
+    /// runs in when that is one of the project's, else the main checkout.
+    fn toggle_worktrees(&mut self) {
+        if self.here.is_none()
+            && let Some(project) = self.project.clone()
+        {
+            let worktrees = self.project_worktrees(&project);
+            if worktrees.len() < 2 {
+                return self.set_status("this project has only one worktree".to_string());
+            }
+            let cwd = std::env::current_dir().ok().map(|cwd| asm_core::ops::here(&cwd).worktree);
+            let worktree = cwd.filter(|c| worktrees.contains(c)).unwrap_or(project);
+            self.here = Some(asm_core::ops::Here { worktree, worktrees });
+            self.all_worktrees = true;
+            self.project = None;
+        }
+        let Some(here) = &self.here else {
+            return self.set_status("w: narrow to a repository first, with . or P".to_string());
+        };
+        if here.worktrees.len() < 2 {
+            return self.set_status("this repository has only one worktree".to_string());
+        }
+        self.all_worktrees = !self.all_worktrees;
+        self.refilter();
+    }
+
+    fn project_worktrees(&self, project: &Path) -> Vec<PathBuf> {
+        self.projects
+            .iter()
+            .find(|p| p.root == project)
+            .map(|p| p.worktrees.iter().map(|w| w.path.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// What `w` would do next, for the footer: `None` where there is no
+    /// second worktree to switch to.
+    pub fn worktrees_hint(&self) -> Option<&'static str> {
+        // On a `P` project, `w` narrows; on a here filter it flips.
+        let (count, widen) = match (&self.here, &self.project) {
+            (Some(here), _) => (here.worktrees.len(), !self.all_worktrees),
+            (None, Some(project)) => (self.project_worktrees(project).len(), false),
+            (None, None) => return None,
+        };
+        (count > 1).then_some(if widen { "worktrees" } else { "this worktree" })
     }
 
     fn on_picker_key(&mut self, key: KeyEvent) {
@@ -1630,6 +1719,8 @@ impl App {
             KeyCode::Char('T') => self.toggle_tree(),
             KeyCode::Char('A') => self.open_picker(PickerKind::Agent),
             KeyCode::Char('P') => self.open_picker(PickerKind::Project),
+            KeyCode::Char('.') => self.toggle_here(),
+            KeyCode::Char('w') => self.toggle_worktrees(),
             KeyCode::Char(' ') => {
                 self.toggle_tick();
                 self.move_down();
@@ -2128,6 +2219,147 @@ mod tests {
                 app.on_normal_key(KeyEvent::from(code));
             }
         }
+    }
+
+    fn here(worktree: &str, worktrees: &[&str]) -> asm_core::ops::Here {
+        asm_core::ops::Here { worktree: worktree.into(), worktrees: worktrees.iter().map(PathBuf::from).collect() }
+    }
+
+    /// `.` narrows to where asm runs and back, and it and `P` replace each other.
+    #[test]
+    fn dot_toggles_the_here_filter_and_p_replaces_it() {
+        let mut app = app();
+        app.project = Some("/w/atlas".into());
+        press(&mut app, KeyCode::Char('.'));
+        let cwd = asm_core::ops::here(&std::env::current_dir().unwrap());
+        assert_eq!(app.here.as_ref(), Some(&cwd));
+        assert!(app.project.is_none(), ". replaces the picked project");
+        assert!(app.active_filters().iter().any(|f| f.starts_with("here: ") && f.ends_with("(this worktree)")));
+        press(&mut app, KeyCode::Char('.'));
+        assert!(app.here.is_none() && app.project.is_none(), "and off again");
+
+        press(&mut app, KeyCode::Char('.'));
+        press(&mut app, KeyCode::Char('P'));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.project.is_some() && app.here.is_none(), "P replaces it");
+    }
+
+    /// `w` widens `here` to every worktree and back, and on a P project
+    /// narrows the whole repository to one checkout.
+    #[test]
+    fn w_switches_between_this_worktree_and_all_of_them() {
+        let mut app = test_app(vec![
+            session(AgentKind::ClaudeCode, "main", "/w/mercury/src"),
+            session(AgentKind::ClaudeCode, "wt", "/w/mercury-wt"),
+            session(AgentKind::ClaudeCode, "near", "/w/mercury2"),
+        ]);
+        app.here = Some(here("/w/mercury-wt", &["/w/mercury", "/w/mercury-wt"]));
+        app.apply_filter();
+        assert_eq!(app.filtered.len(), 1, "only the worktree asm runs in");
+        press(&mut app, KeyCode::Char('w'));
+        assert!(app.all_worktrees);
+        assert_eq!(app.filtered.len(), 2, "both worktrees, and not the look-alike sibling");
+        assert!(app.active_filters().contains(&"here: /w/mercury-wt, all 2 worktrees".to_string()));
+        press(&mut app, KeyCode::Char('w'));
+        assert_eq!(app.filtered.len(), 1);
+
+        // One worktree: nothing to switch between, and the status says so.
+        app.here = Some(here("/w/atlas", &["/w/atlas"]));
+        press(&mut app, KeyCode::Char('w'));
+        assert!(!app.all_worktrees && app.status.contains("only one worktree"), "{}", app.status);
+
+        // A P project is the whole repository; w narrows it to a checkout
+        // (the main one here: the tests do not run inside /w/mercury).
+        let mut repo = project("/w/mercury");
+        repo.worktrees.push(asm_core::model::ProjectWorktree {
+            path: "/w/mercury-wt".into(),
+            branch: None,
+            is_main: false,
+            session_count: 1,
+        });
+        app.projects = vec![repo];
+        app.here = None;
+        app.project = Some("/w/mercury".into());
+        press(&mut app, KeyCode::Char('w'));
+        assert!(app.project.is_none() && !app.all_worktrees);
+        assert_eq!(app.here.as_ref().map(|h| h.worktree.clone()), Some("/w/mercury".into()));
+        assert_eq!(app.filtered.len(), 1);
+        press(&mut app, KeyCode::Char('w'));
+        assert_eq!(app.filtered.len(), 2, "and back out to every worktree");
+    }
+
+    /// A worktree nested in the main checkout (Claude Code's
+    /// `.claude/worktrees/<name>`) is its own: "this worktree" in the main
+    /// one leaves it out, and `w` brings it in.
+    #[test]
+    fn here_in_the_main_checkout_leaves_out_a_worktree_nested_in_it() {
+        let nested = "/w/mercury/.claude/worktrees/x";
+        let mut app = test_app(vec![
+            session(AgentKind::ClaudeCode, "main", "/w/mercury/src"),
+            session(AgentKind::ClaudeCode, "nested", "/w/mercury/.claude/worktrees/x/src"),
+        ]);
+        let ids = |app: &App| -> Vec<String> {
+            app.filtered.iter().map(|&i| app.sessions[i].handle.native_id.clone()).collect()
+        };
+        app.here = Some(here("/w/mercury", &["/w/mercury", nested]));
+        app.apply_filter();
+        assert_eq!(ids(&app), vec!["main"]);
+        press(&mut app, KeyCode::Char('w'));
+        assert_eq!(ids(&app), vec!["main", "nested"]);
+        app.here = Some(here(nested, &["/w/mercury", nested]));
+        app.all_worktrees = false;
+        app.apply_filter();
+        assert_eq!(ids(&app), vec!["nested"]);
+    }
+
+    /// The footer's `w` says what pressing it would do, and is not offered
+    /// where there is no second worktree.
+    #[test]
+    fn the_w_hint_says_what_w_does_next() {
+        let mut app = app();
+        assert_eq!(app.worktrees_hint(), None, "no repository narrowed to");
+        app.here = Some(here("/w/atlas", &["/w/atlas"]));
+        assert_eq!(app.worktrees_hint(), None, "one worktree");
+        app.here = Some(here("/w/mercury", &["/w/mercury", "/w/mercury-wt"]));
+        assert_eq!(app.worktrees_hint(), Some("worktrees"));
+        app.all_worktrees = true;
+        assert_eq!(app.worktrees_hint(), Some("this worktree"));
+
+        // A P project is every worktree already, so w narrows, whatever
+        // the earlier here filter left behind.
+        app.projects[0].worktrees.push(asm_core::model::ProjectWorktree {
+            path: "/w/mercury-wt".into(),
+            branch: None,
+            is_main: false,
+            session_count: 0,
+        });
+        press(&mut app, KeyCode::Char('P'));
+        for c in "merc".chars() {
+            press(&mut app, KeyCode::Char(c));
+        }
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.project.as_deref(), Some(Path::new("/w/mercury")), "{:?}", app.project);
+        assert!(!app.all_worktrees, "P starts over");
+        assert_eq!(app.worktrees_hint(), Some("this worktree"));
+        app.project = Some("/w/atlas".into());
+        assert_eq!(app.worktrees_hint(), None, "a project of one worktree");
+    }
+
+    /// `asm --here` is set before the first scan, so arriving rows are
+    /// narrowed as they come.
+    #[test]
+    fn a_here_filter_from_the_command_line_narrows_the_first_scan() {
+        let mut app = test_app(Vec::new());
+        app.here = Some(here("/w/mercury", &["/w/mercury"]));
+        app.all_worktrees = true;
+        app.take_batch(vec![
+            session(AgentKind::ClaudeCode, "in", "/w/mercury/src"),
+            session(AgentKind::ClaudeCode, "out", "/w/atlas"),
+        ]);
+        assert_eq!(app.filtered.len(), 1);
+        assert_eq!(app.active_filters(), vec!["here: /w/mercury (this worktree)".to_string()], "one worktree is not 'all 1'");
     }
 
     /// Each toggle applies as it is made, so the key that closes the picker

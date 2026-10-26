@@ -5,6 +5,10 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
+## 0.18.0 — 2026-10-26
+
+- **Sessions of where you are.** The global `--here` narrows any command to the git worktree containing the current directory (a linked worktree, not its main one), and `-W`/`--all-worktrees` to every worktree of its repository; outside git both mean the current directory. Bare `asm --here` or `asm -W` opens the TUI narrowed that way. In the TUI, `.` turns it on and off and `w` switches between this worktree and all of them (on a `P` project, `w` narrows to the worktree you are in, else the main one). A worktree nested inside the one you are in, as Claude Code keeps them at `.claude/worktrees/<name>`, is its own: `--here` leaves its sessions out and `-W` brings them in. `asm projects` and `asm worktrees` honour both, keeping only the project and worktrees you are in. The flag is `--all-worktrees` because `asm projects --worktrees` already has the shorter name.
+
 ## 0.17.0 — 2026-10-25
 
 - **The web API can run a push, pull or bulk action as a task.** `POST /api/bulk`, `/api/hub/pull`, `/api/hub/pull-all` and `/api/hub/compare` take `?async=1`: they answer `202 {"job": id}` at once, and `GET /api/tasks` and `/api/tasks/{id}` follow the job through `queued`, `running`, and `ok` with the body the route would have answered or `failed` with its error, counting sessions done as it goes. The same request again while it runs is the same job. Without `?async` nothing changes.

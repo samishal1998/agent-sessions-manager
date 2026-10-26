@@ -14,7 +14,7 @@ fn restore_sigpipe() {}
 fn main() {
     restore_sigpipe();
     let result = match asm_cli::run() {
-        Ok(Some(asm_cli::Frontend::Tui)) => asm_tui::run(),
+        Ok(Some(asm_cli::Frontend::Tui { here })) => asm_tui::run(here),
         Ok(Some(asm_cli::Frontend::Serve { host, port, token })) => asm_web::run(&host, port, token),
         Ok(Some(asm_cli::Frontend::Hub { host, port, max_file_bytes, peer })) => {
             asm_web::hub::run(&host, port, max_file_bytes, peer)

@@ -12,9 +12,15 @@ mod worker;
 
 use app::{App, LoopOutcome};
 
-pub fn run() -> anyhow::Result<()> {
+/// `here` is where to start narrowed to (`asm --here`), and whether to every
+/// worktree of its repository (`asm -W`).
+pub fn run(here: Option<(asm_core::ops::Here, bool)>) -> anyhow::Result<()> {
     let worker = worker::spawn();
     let mut app = App::new(worker);
+    if let Some((here, all)) = here {
+        app.here = Some(here);
+        app.all_worktrees = all;
+    }
     app.request_scan();
 
     loop {

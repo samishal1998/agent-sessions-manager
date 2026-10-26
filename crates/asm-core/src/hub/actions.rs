@@ -427,20 +427,23 @@ pub fn pull(remote: &Remote, query: &str, project_dir: Option<&Path>) -> Result<
 /// belongs to a project by where it lives on THIS machine — the pushing
 /// machine's path resolved against this home — or by sharing its git
 /// origin, so the same repository checked out elsewhere still matches.
-fn head_matches(head: &Head, agent: Option<AgentKind>, project: Option<&Path>) -> bool {
+/// `projects` empty means any project; otherwise any one of them will do.
+fn head_matches(head: &Head, agent: Option<AgentKind>, projects: &[PathBuf]) -> bool {
     let m = &head.manifest;
     if agent.is_some_and(|a| a != m.agent) {
         return false;
     }
-    let Some(project) = project else { return true };
-    let here = PortablePath(m.project_root_portable.clone()).resolve();
-    if here == project || here.starts_with(project) {
+    if projects.is_empty() {
         return true;
     }
-    match (&m.git_origin, crate::git::origin(project)) {
-        (Some(theirs), Some(ours)) => *theirs == ours,
-        _ => false,
-    }
+    let here = PortablePath(m.project_root_portable.clone()).resolve();
+    projects.iter().any(|project| {
+        here.starts_with(project)
+            || match (&m.git_origin, crate::git::origin(project)) {
+                (Some(theirs), Some(ours)) => *theirs == ours,
+                _ => false,
+            }
+    })
 }
 
 /// Pull everything on the hub that the filters match, each session at its
@@ -450,11 +453,11 @@ fn head_matches(head: &Head, agent: Option<AgentKind>, project: Option<&Path>) -
 pub fn pull_all(
     remote: &Remote,
     agent: Option<AgentKind>,
-    project: Option<&Path>,
+    projects: &[PathBuf],
     mut progress: impl FnMut(usize, usize),
 ) -> Result<BulkReport, CoreError> {
     let heads: Vec<Head> =
-        remote.heads()?.into_iter().filter(|h| head_matches(h, agent, project)).collect();
+        remote.heads()?.into_iter().filter(|h| head_matches(h, agent, projects)).collect();
     let mut report = BulkReport::default();
     for head in &heads {
         let (agent, id) = (head.manifest.agent, head.manifest.id.clone());
@@ -1296,16 +1299,16 @@ mod tests {
         let in_mercury = at(AgentKind::ClaudeCode, "a", &mine.join("crates/core"));
         let at_tls = at(AgentKind::OpenCode, "b", &dir.path().join("code/mercury-tls"));
 
-        assert!(head_matches(&in_mercury, None, None), "no filter matches everything");
-        assert!(head_matches(&in_mercury, Some(AgentKind::ClaudeCode), None));
-        assert!(!head_matches(&in_mercury, Some(AgentKind::OpenCode), None));
+        assert!(head_matches(&in_mercury, None, &[]), "no filter matches everything");
+        assert!(head_matches(&in_mercury, Some(AgentKind::ClaudeCode), &[]));
+        assert!(!head_matches(&in_mercury, Some(AgentKind::OpenCode), &[]));
 
         // A subdirectory of the project is in it; a sibling that merely
         // shares a prefix is not.
-        assert!(head_matches(&in_mercury, None, Some(&mine)));
-        assert!(!head_matches(&at_tls, None, Some(&mine)));
+        assert!(head_matches(&in_mercury, None, std::slice::from_ref(&mine)));
+        assert!(!head_matches(&at_tls, None, std::slice::from_ref(&mine)));
         // Both filters have to hold.
-        assert!(!head_matches(&in_mercury, Some(AgentKind::OpenCode), Some(&mine)));
+        assert!(!head_matches(&in_mercury, Some(AgentKind::OpenCode), std::slice::from_ref(&mine)));
 
         // The same repository checked out somewhere else still matches.
         let origin = "https://example.com/acme/mercury.git";
@@ -1319,8 +1322,8 @@ mod tests {
         let mut cloned = at(AgentKind::JCode, "c", std::path::Path::new("/nowhere/at/all"));
         cloned.manifest.git_origin = crate::git::origin(&clone);
         assert!(cloned.manifest.git_origin.is_some(), "git is available to this test");
-        assert!(head_matches(&cloned, None, Some(&mine)), "same origin, different path");
-        assert!(!head_matches(&at_tls, None, Some(&clone)), "no origin, no match");
+        assert!(head_matches(&cloned, None, std::slice::from_ref(&mine)), "same origin, different path");
+        assert!(!head_matches(&at_tls, None, std::slice::from_ref(&clone)), "no origin, no match");
     }
 
     const STATES: [RowState; 7] = [

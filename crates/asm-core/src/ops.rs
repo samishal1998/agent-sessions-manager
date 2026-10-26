@@ -74,6 +74,71 @@ pub fn stream_sessions(
     problems
 }
 
+/// Where a command was run from, as `--here` and `--all-worktrees` mean it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Here {
+    /// The checkout containing the directory (a linked worktree is its own
+    /// checkout), or the directory itself outside git.
+    pub worktree: PathBuf,
+    /// Every checkout of the same repository, `worktree` among them.
+    pub worktrees: Vec<PathBuf>,
+}
+
+impl Here {
+    /// The roots to narrow to: this checkout, or every one of the repository.
+    pub fn roots(&self, all_worktrees: bool) -> Vec<PathBuf> {
+        if all_worktrees { self.worktrees.clone() } else { vec![self.worktree.clone()] }
+    }
+
+    /// The roots to leave out: with one worktree, the repository's other
+    /// worktrees nested inside it, since a session belongs to the deepest
+    /// checkout containing it. Every worktree leaves out none.
+    pub fn without(&self, all_worktrees: bool) -> Vec<PathBuf> {
+        if all_worktrees {
+            return Vec::new();
+        }
+        self.worktrees.iter().filter(|w| self.nests(w)).cloned().collect()
+    }
+
+    /// Whether a session's project root is in these roots, as `roots` and
+    /// `without` together mean it, without building either.
+    pub fn contains(&self, root: &Path, all_worktrees: bool) -> bool {
+        if all_worktrees {
+            return crate::adapter::under_any(root, &self.worktrees);
+        }
+        crate::adapter::under_any(root, std::slice::from_ref(&self.worktree))
+            && !self.worktrees.iter().any(|w| self.nests(w) && root.starts_with(w))
+    }
+
+    fn nests(&self, other: &Path) -> bool {
+        other != self.worktree && other.starts_with(&self.worktree)
+    }
+}
+
+/// Resolve `cwd` to its checkout and the repository's other checkouts.
+///
+/// Paths are canonical: agents record the physical working directory
+/// (`getcwd`), so a symlinked cwd, or macOS's `/var` for `/private/var`,
+/// has to be resolved before it can equal a recorded project root. Session
+/// roots are compared as recorded, which avoids a syscall per session.
+pub fn here(cwd: &Path) -> Here {
+    let canon = |p: PathBuf| p.canonicalize().unwrap_or(p);
+    let cwd = canon(cwd.to_path_buf());
+    let Some(worktree) = crate::git::toplevel(&cwd).map(canon) else {
+        return Here { worktree: cwd.clone(), worktrees: vec![cwd] };
+    };
+    let mut worktrees: Vec<PathBuf> = crate::git::repo_of(&worktree)
+        .and_then(|repo| crate::git::worktrees(&repo.main_worktree).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|w| canon(w.path))
+        .collect();
+    if !worktrees.contains(&worktree) {
+        worktrees.insert(0, worktree.clone());
+    }
+    Here { worktree, worktrees }
+}
+
 pub fn list_projects() -> Result<Vec<Project>, CoreError> {
     let sessions = list_sessions(&SessionFilter::default())?;
     Ok(group_projects(&sessions, crate::git::repo_of, |root| {
@@ -874,6 +939,99 @@ fn resolve_among(sessions: Vec<Session>, query: &str, id_query: &str) -> Result<
 mod tests {
     use super::*;
     use crate::model::{SessionLocation, SessionRef, SessionStatus};
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    /// A linked worktree is its own checkout, a subdirectory resolves to
+    /// the checkout above it, and a symlinked path resolves to the real one.
+    #[test]
+    fn here_is_the_checkout_and_its_sibling_worktrees() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        let main = base.join("proj");
+        std::fs::create_dir_all(main.join("src")).unwrap();
+        git(&main, &["init", "-q"]);
+        git(&main, &["commit", "-q", "--allow-empty", "-m", "x"]);
+        git(&main, &["worktree", "add", "-q", "../proj-wt"]);
+        let wt = base.join("proj-wt");
+
+        let at_main = here(&main.join("src"));
+        assert_eq!(at_main.worktree, main);
+        assert_eq!(at_main.worktrees, vec![main.clone(), wt.clone()]);
+        let at_wt = here(&wt);
+        assert_eq!(at_wt.worktree, wt, "the linked worktree, not the main one");
+        assert_eq!(at_wt.roots(false), vec![wt.clone()]);
+        assert_eq!(at_wt.roots(true), vec![main.clone(), wt.clone()]);
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&wt, base.join("link")).unwrap();
+            assert_eq!(here(&base.join("link")).worktree, wt, "a symlinked cwd is resolved");
+        }
+
+        // Outside git: the directory alone, whether or not -W was asked.
+        let plain = base.join("plain");
+        std::fs::create_dir(&plain).unwrap();
+        let outside = here(&plain);
+        assert_eq!((outside.worktree.clone(), outside.roots(true)), (plain.clone(), vec![plain]));
+    }
+
+    #[test]
+    fn within_is_a_root_or_under_it_by_component() {
+        let filter = SessionFilter { within: vec!["/a/proj".into(), "/a/proj-wt".into()], ..Default::default() };
+        let at = |root: &str| {
+            let mut s = session(AgentKind::ClaudeCode, "x", None, 1);
+            s.project_root = root.into();
+            filter.matches(&s)
+        };
+        assert!(at("/a/proj"));
+        assert!(at("/a/proj/sub/dir"), "a subdirectory");
+        assert!(at("/a/proj-wt"), "a sibling worktree that is listed");
+        assert!(!at("/a/proj2"), "a prefix is not a parent");
+        assert!(!at("/a"));
+        assert!(!at(""), "no recorded root is in no project");
+        let mut rootless = session(AgentKind::ClaudeCode, "x", None, 1);
+        rootless.project_root = PathBuf::new();
+        assert!(SessionFilter::default().matches(&rootless), "an empty within lets everything through");
+    }
+
+    /// Claude Code puts its worktrees inside the repository, at
+    /// `.claude/worktrees/<name>`: "this worktree" in the main checkout is
+    /// not also that one, as a session belongs to the deepest checkout.
+    #[test]
+    fn here_leaves_out_worktrees_nested_in_this_one() {
+        let nested = PathBuf::from("/a/proj/.claude/worktrees/x");
+        let at_main = Here { worktree: "/a/proj".into(), worktrees: vec!["/a/proj".into(), nested.clone()] };
+        assert_eq!(at_main.without(false), vec![nested.clone()]);
+        assert!(at_main.without(true).is_empty(), "-W keeps every worktree");
+        let at_nested = Here { worktree: nested.clone(), ..at_main.clone() };
+        assert!(at_nested.without(false).is_empty(), "nothing is nested in the inner one");
+
+        for (here, all, root, expected) in [
+            (&at_main, false, "/a/proj/src", true),
+            (&at_main, false, "/a/proj/.claude/worktrees/x/src", false),
+            (&at_main, true, "/a/proj/.claude/worktrees/x/src", true),
+            (&at_nested, false, "/a/proj/.claude/worktrees/x/src", true),
+            (&at_nested, false, "/a/proj/src", false),
+        ] {
+            let filter =
+                SessionFilter { within: here.roots(all), without: here.without(all), ..Default::default() };
+            let mut s = session(AgentKind::ClaudeCode, "x", None, 1);
+            s.project_root = root.into();
+            assert_eq!(filter.matches(&s), expected, "{root} from {:?}, all: {all}", here.worktree);
+            assert_eq!(here.contains(Path::new(root), all), expected, "contains agrees with the filter");
+        }
+    }
 
     fn session(agent: AgentKind, id: &str, parent: Option<&str>, updated: i64) -> Session {
         Session {

@@ -45,6 +45,10 @@ pub struct SearchQuery {
     pub text: String,
     pub agent: Option<AgentKind>,
     pub project: Option<PathBuf>,
+    /// As `SessionFilter::within`: these directories and everything under them.
+    pub within: Vec<PathBuf>,
+    /// As `SessionFilter::without`: never these directories or under them.
+    pub without: Vec<PathBuf>,
     pub limit: usize,
     /// `live`, `idle` or `archived`.
     pub state: Option<String>,
@@ -52,7 +56,7 @@ pub struct SearchQuery {
 
 impl Default for SearchQuery {
     fn default() -> Self {
-        SearchQuery { text: String::new(), agent: None, project: None, limit: 30, state: None }
+        SearchQuery { text: String::new(), agent: None, project: None, within: Vec::new(), without: Vec::new(), limit: 30, state: None }
     }
 }
 
@@ -382,11 +386,8 @@ impl Index {
         let (mut sessions, unreadable) = ops::list_sessions_partial(&filter);
         // Archived sessions have left their agent's store but not our
         // archive, and "where did I do that thing" should still find them.
-        sessions.extend(crate::sync::archived_sessions().unwrap_or_default().into_iter().filter(|s| {
-            filter.agent.is_none_or(|a| a == s.handle.agent)
-                && filter.project.as_ref().is_none_or(|p| *p == s.project_root)
-        }));
-        let whole = filter.agent.is_none() && filter.project.is_none();
+        sessions.extend(crate::sync::archived_sessions().unwrap_or_default().into_iter().filter(|s| filter.matches(s)));
+        let whole = filter.agent.is_none() && filter.project.is_none() && filter.within.is_empty() && filter.without.is_empty();
         let mut report = self.refresh_inner(&sessions, ops::export_ir, progress, whole)?;
         // An agent whose store could not be read does not stop the refresh.
         report.failed.extend(unreadable);
@@ -723,6 +724,28 @@ impl Index {
         if let Some(project) = &query.project {
             binds.push(Box::new(project.display().to_string()));
             sql.push_str(&format!(" AND s.project_root = ?{}", binds.len()));
+        }
+        // A root or anything under it; comparing a prefix that ends in `/`
+        // keeps `/a/proj2` out of `/a/proj`, with no LIKE escaping to get wrong.
+        let mut under = |roots: &[PathBuf]| {
+            let mut any = Vec::new();
+            for root in roots {
+                let root = root.display().to_string();
+                let below = if root.ends_with('/') { root.clone() } else { format!("{root}/") };
+                binds.push(Box::new(root));
+                binds.push(Box::new(below));
+                let (r, u) = (binds.len() - 1, binds.len());
+                any.push(format!("s.project_root = ?{r} OR substr(s.project_root, 1, length(?{u})) = ?{u}"));
+            }
+            any.join(" OR ")
+        };
+        if !query.within.is_empty() {
+            let within = under(&query.within);
+            sql.push_str(&format!(" AND ({within})"));
+        }
+        if !query.without.is_empty() {
+            let without = under(&query.without);
+            sql.push_str(&format!(" AND NOT ({without})"));
         }
         if let Some(state) = &query.state {
             binds.push(Box::new(state.clone()));

@@ -481,6 +481,44 @@ fn worktrees_json_carries_the_sessions_of_each() {
     assert!(w["sessions"][0]["ref"]["agent"].is_string());
 }
 
+/// `projects` and `worktrees` list places, and `--here`/`-W` narrow them to
+/// where asm runs: this worktree (not one nested in it), or all of them.
+#[test]
+fn projects_and_worktrees_honour_here() {
+    let home = Home::new(false);
+    let repo = home.path("home/code/app");
+    let git = |args: &[&str]| {
+        let status = Command::new("git").args(args).current_dir(&repo).env_clear().env("PATH", "/usr/bin:/bin").env("HOME", home.path("home"))
+            .env("GIT_CONFIG_GLOBAL", "/dev/null").stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "x"]);
+    git(&["worktree", "add", "-q", ".claude/worktrees/x"]);
+    let elsewhere = home.path("home/elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    let run = |cwd: &PathBuf, args: &[&str]| -> Value {
+        let out = home.command(args).current_dir(cwd).output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+    let paths = |doc: &Value, key: &str| -> Vec<String> {
+        doc.as_array().unwrap().iter().map(|w| w[key].as_str().unwrap().rsplit('/').next().unwrap().to_string()).collect()
+    };
+
+    let here = run(&repo, &["--json", "projects", "--here"]);
+    assert_eq!(paths(&here, "root"), vec!["app"]);
+    assert_eq!(paths(&here[0]["worktrees"], "path"), vec!["app"], "not the worktree nested in it");
+    assert_eq!(here[0]["session_count"], 4);
+    let all = run(&repo, &["--json", "projects", "-W"]);
+    assert_eq!(paths(&all[0]["worktrees"], "path"), vec!["app", "x"]);
+    assert!(run(&elsewhere, &["--json", "projects", "--here"]).as_array().unwrap().is_empty(), "no project here");
+
+    assert_eq!(paths(&run(&repo, &["--json", "worktrees", "--here"]), "path"), vec!["app"]);
+    assert_eq!(paths(&run(&repo, &["--json", "worktrees", "-W"]), "path"), vec!["app", "x"]);
+    assert_eq!(paths(&run(&repo, &["--json", "worktrees"]), "path"), vec!["app", "x"], "without either, every one");
+}
+
 #[test]
 fn update_is_one_document() {
     let home = Home::new(false);

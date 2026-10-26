@@ -166,6 +166,8 @@ const HELP: [(&str, &[(&str, &str)]); 6] = [
             ("/", "filter by title, id, project or agent"),
             ("A", "pick agents (space toggles, ⏎ closes)"),
             ("P", "pick a project (type to narrow)"),
+            (".", "only this worktree (where asm was started), or not"),
+            ("w", "this worktree or all of the repo's (narrows a P project)"),
             ("s", "search inside every transcript"),
             ("esc", "back out: the selection, the transcript, the filters"),
         ],
@@ -669,7 +671,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, filters: &[String]) {
         let mut spans = vec![Span::styled(" showing ", theme::dim())];
         let mut used = 0usize;
         for (i, filter) in filters.iter().enumerate() {
-            let text = shorten(filter, room.saturating_sub(used).min(40));
+            let text = shorten_chip(filter, room.saturating_sub(used));
             if text.chars().count() + used > room {
                 spans.push(Span::styled(" …", theme::dim()));
                 break;
@@ -823,7 +825,11 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect, filters: &[String]) {
             if app.hub_joined() {
                 keys.push(("H", "hub"));
             }
-            keys.extend([("/", "filter"), ("s", "search"), ("c", "reply"), ("?", "help")]);
+            keys.extend([("/", "filter"), ("s", "search"), ("c", "reply"), ("?", "help"), (".", "here")]);
+            // Only where there is a second worktree to switch to.
+            if let Some(next) = app.worktrees_hint() {
+                keys.push(("w", next));
+            }
             (status_line_of(app), keys)
         }
     };
@@ -1074,6 +1080,22 @@ pub fn home_relative(path: &std::path::Path) -> String {
     }
 }
 
+/// A filter chip in at most 40 columns of path and `room` in all. A here
+/// chip shortens only its path, so the label and the worktree count stay.
+fn shorten_chip(chip: &str, room: usize) -> String {
+    let (prefix, rest) = match chip.strip_prefix("here: ") {
+        Some(rest) => ("here: ", rest),
+        None => ("", chip),
+    };
+    let cut = match prefix {
+        "" => rest.len(),
+        _ => rest.rfind(" (this worktree)").or_else(|| rest.rfind(", all ")).unwrap_or(rest.len()),
+    };
+    let (body, suffix) = rest.split_at(cut);
+    let fixed = prefix.len() + suffix.chars().count();
+    format!("{prefix}{}{suffix}", shorten(body, room.saturating_sub(fixed).min(40)))
+}
+
 pub fn shorten(path: &str, max: usize) -> String {
     if path.chars().count() <= max {
         return path.to_string();
@@ -1283,6 +1305,37 @@ mod tests {
         }
     }
 
+    /// `.` and `w` come after `? help`, so a here filter does not push
+    /// help off a line about 105 columns wide.
+    #[test]
+    fn help_stays_in_the_footer_with_a_here_filter() {
+        let mut app = app();
+        app.here = Some(asm_core::ops::Here {
+            worktree: "/home/u/code/mercury".into(),
+            worktrees: vec!["/home/u/code/mercury".into(), "/home/u/code/mercury-wt".into()],
+        });
+        for width in [101u16, 105, 109] {
+            let screen = render(&app, width, 12);
+            let hint = screen.lines().last().unwrap_or_default().to_string();
+            assert!(hint.contains("? help"), "{width}: {hint}");
+        }
+        assert!(render(&app, 200, 12).lines().last().unwrap().contains("w worktrees"));
+    }
+
+    /// A long path gives way inside the here chip; its label and what it
+    /// covers stay.
+    #[test]
+    fn a_here_chip_shortens_only_its_path() {
+        let long = format!("here: /home/u/{}/mercury (this worktree)", "deep/".repeat(12));
+        let chip = shorten_chip(&long, 200);
+        assert!(chip.starts_with("here: …") && chip.ends_with("mercury (this worktree)"), "{chip}");
+        assert_eq!(chip.chars().count(), "here: ".len() + 40 + " (this worktree)".len());
+        let all = shorten_chip(&format!("here: /home/u/{}/mercury, all 3 worktrees", "deep/".repeat(12)), 40);
+        assert!(all.starts_with("here: …") && all.ends_with(", all 3 worktrees"), "{all}");
+        assert_eq!(all.chars().count(), 40, "and within the room there is");
+        assert_eq!(shorten_chip("\"pool\"", 40), "\"pool\"", "other chips as they were");
+    }
+
     #[test]
     fn the_transcript_is_closed_until_it_is_asked_for() {
         let mut app = app();
@@ -1305,7 +1358,7 @@ mod tests {
     fn help_lists_every_key_and_says_how_to_close() {
         let mut app = app();
         app.help_open = true;
-        let screen = render(&app, 100, 48);
+        let screen = render(&app, 100, 50);
         for key in ["rename", "push to the hub", "pick agents", "fold or unfold", "store health", "quit"] {
             assert!(screen.contains(key), "{key} missing:\n{screen}");
         }

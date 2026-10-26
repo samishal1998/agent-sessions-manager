@@ -109,6 +109,14 @@ pub fn repo_of(dir: &Path) -> Option<Repo> {
     Some(Repo { common_dir, main_worktree })
 }
 
+/// The top of the checkout containing `dir`: for a linked worktree, that
+/// worktree, not the main one.
+pub fn toplevel(dir: &Path) -> Option<PathBuf> {
+    let output = Command::new("git").args(["rev-parse", "--show-toplevel"]).current_dir(dir).output().ok()?;
+    let top = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (output.status.success() && !top.is_empty()).then(|| PathBuf::from(top))
+}
+
 pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>, CoreError> {
     let output = std::process::Command::new("git")
         .args(["worktree", "list", "--porcelain"])

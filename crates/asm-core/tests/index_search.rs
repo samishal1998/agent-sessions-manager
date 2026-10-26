@@ -288,6 +288,19 @@ fn filters_narrow_results() {
     assert_eq!(scoped.len(), 1);
     assert_eq!(scoped[0].native_id, "b");
 
+    // `within` is a root and what is under it, never a mere prefix.
+    let within = |roots: &[&str]| -> Vec<String> {
+        let within = roots.iter().map(PathBuf::from).collect();
+        let hits = index.search(&SearchQuery { text: "shared".into(), within, ..Default::default() }).unwrap();
+        hits.into_iter().map(|h| h.native_id).collect()
+    };
+    let mut both = within(&["/proj"]);
+    both.sort();
+    assert_eq!(both, vec!["a", "b"]);
+    assert_eq!(within(&["/proj/one"]), vec!["a"]);
+    assert!(within(&["/proj/on"]).is_empty(), "a prefix is not a parent");
+    assert_eq!(within(&["/proj/on", "/proj/two"]), vec!["b"]);
+
     // No OpenCode sessions were indexed.
     assert!(
         index
@@ -299,6 +312,39 @@ fn filters_narrow_results() {
             .unwrap()
             .is_empty()
     );
+}
+
+/// `--here` in a checkout with a worktree nested inside it (Claude Code's
+/// `.claude/worktrees/<name>`) finds the checkout's sessions, not the
+/// worktree's: a session belongs to the deepest worktree containing it.
+#[test]
+fn without_leaves_out_a_worktree_nested_in_the_root() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ta, tb) = (dir.path().join("a.jsonl"), dir.path().join("b.jsonl"));
+    std::fs::write(&ta, "a").unwrap();
+    std::fs::write(&tb, "b").unwrap();
+    let exporter = Exporter::new();
+    exporter.set("a", ir("a", vec![text_message(IrRole::User, "shared term")]));
+    exporter.set("b", ir("b", vec![text_message(IrRole::User, "shared term")]));
+    let mut index = open_index(dir.path());
+    let sessions =
+        vec![session("a", &ta, "/proj/src"), session("b", &tb, "/proj/.claude/worktrees/x/src")];
+    index.refresh_with(&sessions, |s| exporter.export(s), |_| {}).unwrap();
+
+    let search = |within: &[&str], without: &[&str]| -> Vec<String> {
+        let query = SearchQuery {
+            text: "shared".into(),
+            within: within.iter().map(PathBuf::from).collect(),
+            without: without.iter().map(PathBuf::from).collect(),
+            ..Default::default()
+        };
+        let mut ids: Vec<String> = index.search(&query).unwrap().into_iter().map(|h| h.native_id).collect();
+        ids.sort();
+        ids
+    };
+    assert_eq!(search(&["/proj"], &["/proj/.claude/worktrees/x"]), vec!["a"], "this worktree only");
+    assert_eq!(search(&["/proj/.claude/worktrees/x"], &[]), vec!["b"], "the nested one on its own");
+    assert_eq!(search(&["/proj", "/proj/.claude/worktrees/x"], &[]), vec!["a", "b"], "every worktree");
 }
 
 #[test]
