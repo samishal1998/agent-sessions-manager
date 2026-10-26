@@ -1,43 +1,43 @@
-// The app's theme: a purple-and-rose palette in two modes. The dark set is the
-// one designed in the Hearth theme studio; the light set is its counterpart,
-// written by hand because the studio's export is a single unscoped block of
-// dark colours (see hearth-ui issue #2). Every text pair in both sets is at
-// least 4.5:1 on every surface, and the field border is at least 3:1.
+// The app's theme in two modes. The page and cards are neutral slate; only
+// raised surfaces and panels carry a slight purple tint, so the accent stands
+// out (see hearth-ui issue #3). Every text pair in both sets is at least 4.5:1
+// on every surface and on hover, and the field border is at least 3:1.
 
-// Not colours: shared by both modes.
+// Not colours: shared by both modes. Denser than Hearth's `compact`, with
+// smaller radii to match the smaller controls.
 const SHARED = {
   '--h-motion': '.15s',
-  '--h-control-height': '44px',
-  '--h-control-padding': '16px',
+  '--h-control-height': '36px',
+  '--h-control-padding': '10px',
   '--h-focus-width': '2px',
-  '--h-page-padding': 'clamp(20px, 3vw, 40px)',
-  '--h-separator-space': '20px',
-  '--h-radius-card': '21px',
-  '--h-radius-panel': '25px',
+  '--h-page-padding': 'clamp(12px, 2vw, 24px)',
+  '--h-separator-space': '14px',
+  '--h-radius-card': '16px',
+  '--h-radius-panel': '20px',
   '--h-radius-pill': '999px',
-  '--h-radius-control': '15px',
+  '--h-radius-control': '10px',
   '--h-sidebar-width': '232px',
   '--h-space': '4px',
   '--h-content-max': '1440px',
   '--h-progress-height': '8px',
   '--h-sidebar-height': '420px',
-  '--h-card-padding': '24px',
-  '--h-font-size': '14px',
+  '--h-card-padding': '14px',
+  '--h-font-size': '13px',
   '--h-font-mono': 'ui-monospace, SFMono-Regular, Consolas, monospace',
   '--h-font': 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
 }
 
 const DARK = {
   ...SHARED,
-  '--h-bg': '#1c1726',
-  '--h-surface': '#342659',
-  '--h-raised': '#29223b',
-  '--h-panel': '#201a30e0',
+  '--h-bg': '#111317',
+  '--h-surface': '#181b21',
+  '--h-raised': '#232430',
+  '--h-panel': '#232430e0',
   '--h-border': '#ffffff17',
-  '--h-border-strong': '#536177',
+  '--h-border-strong': '#6b7890',
   '--h-text': '#f7f8fb',
   '--h-muted': '#aeb8ca',
-  '--h-faint': '#91a0b6',
+  '--h-faint': '#9aa7bc',
   '--h-accent': '#a689f5',
   '--h-accent-hover': '#d7c9fa',
   '--h-accent-text': '#cebcf8',
@@ -60,10 +60,10 @@ const DARK = {
 
 const LIGHT = {
   ...SHARED,
-  '--h-bg': '#f6f3fb',
+  '--h-bg': '#f4f5f7',
   '--h-surface': '#ffffff',
-  '--h-raised': '#fbf9fe',
-  '--h-panel': '#ffffffe6',
+  '--h-raised': '#f6f4f9',
+  '--h-panel': '#f6f4f9e6',
   '--h-border': '#2a1f4a24',
   '--h-border-strong': '#7b6f96',
   '--h-text': '#1d1630',

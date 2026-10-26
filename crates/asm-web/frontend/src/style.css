@@ -103,19 +103,11 @@
 /* The page behind the app, per colour mode (set by useTheme on <html>). */
 html,
 body {
-  background:
-    radial-gradient(1100px 560px at 8% -8%, rgba(166, 137, 245, 0.2), transparent 60%),
-    radial-gradient(900px 520px at 100% 0%, rgba(255, 130, 144, 0.1), transparent 55%),
-    #1c1726;
-  background-attachment: fixed;
+  background: #111317;
 }
 html[data-asm-mode='light'],
 html[data-asm-mode='light'] body {
-  background:
-    radial-gradient(1100px 560px at 8% -8%, rgba(109, 63, 200, 0.1), transparent 60%),
-    radial-gradient(900px 520px at 100% 0%, rgba(179, 40, 63, 0.06), transparent 55%),
-    #f6f3fb;
-  background-attachment: fixed;
+  background: #f4f5f7;
 }
 /* Agent colours that are tints of a light colour need a darker text colour on
    a light page. */

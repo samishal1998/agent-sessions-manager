@@ -7,8 +7,10 @@
 .asm-shell {
   --h-content-max: 1400px;
   --h-page-padding: 16px;
-  --s-ctl: 36px;
-  --s-field: 40px;
+  /* Denser than Hearth's `compact`; touch screens keep 44px targets below. */
+  --s-ctl: 32px;
+  --s-field: 34px;
+  --s-row-pad: 6px;
 }
 @media (min-width: 641px) {
   .asm-shell {
@@ -19,6 +21,7 @@
   .asm-shell {
     --s-ctl: 44px;
     --s-field: 44px;
+    --s-row-pad: 10px;
   }
 }
 /* A short top bar and a short top gap, so content starts high. */
@@ -156,6 +159,21 @@
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+/* Hearth pads its fields and sizes the combobox button for 44px; inside a
+   shorter field both have to shrink with it. */
+.s-fields input {
+  padding-block: 0;
+}
+.s-fields .h-combo-line {
+  padding-block: 2px;
+}
+.s-fields .h-combo-line input[role='combobox'] {
+  min-height: 0;
+  padding-block: 0;
+}
+.s-fields .h-combo-action {
+  height: calc(var(--s-field) - 6px);
+}
 .s-fields .h-combobox {
   margin: 0;
   padding: 0;
@@ -236,8 +254,9 @@
   justify-content: space-between;
   gap: 8px;
 }
-.s-bulk .h-checkbox {
-  min-height: 32px;
+.s-bulk .h-checkbox,
+.s-row .h-checkbox {
+  min-height: var(--s-ctl);
 }
 .s-problems {
   margin: 8px 0 0;
@@ -263,7 +282,7 @@
   min-width: 0;
   width: auto;
   min-height: 24px;
-  padding-block: 10px;
+  padding-block: var(--s-row-pad);
 }
 .s-row .h-list-copy {
   flex: 1 1 0;
