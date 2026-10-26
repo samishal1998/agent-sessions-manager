@@ -35,8 +35,16 @@ pub fn tmp_dir() -> Result<PathBuf, crate::CoreError> {
 /// Backups written before every destructive operation:
 /// `<data>/backups/<agent>/<session-id>/<epoch-millis>/`.
 pub fn backup_dir(agent: &str, session_id: &str) -> Option<PathBuf> {
-    let now = jiff::Timestamp::now().as_millisecond();
-    data_dir().map(|d| d.join("backups").join(agent).join(session_id).join(now.to_string()))
+    data_dir().map(|d| d.join("backups").join(agent).join(session_id).join(backup_stamp().to_string()))
+}
+
+/// Now in epoch millis, but never the same twice in this process: two
+/// backups of one session in the same millisecond would share a directory.
+pub fn backup_stamp() -> i64 {
+    static LAST: std::sync::Mutex<i64> = std::sync::Mutex::new(0);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    *last = (*last + 1).max(jiff::Timestamp::now().as_millisecond());
+    *last
 }
 
 /// The archive store (git-friendly; sync-ready): `<data>/archive/<agent>/<id>/`.
@@ -48,4 +56,17 @@ pub fn archive_dir(agent: &str, session_id: &str) -> Option<PathBuf> {
 /// abbreviate them to `~`; hard-coding `/home/<user>` is wrong on macOS.
 pub fn home() -> Option<std::path::PathBuf> {
     etcetera::home_dir().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn backup_stamps_never_repeat_even_across_threads() {
+        let stamps: Vec<i64> = std::thread::scope(|s| {
+            let workers: Vec<_> = (0..4).map(|_| s.spawn(|| (0..1000).map(|_| super::backup_stamp()).collect::<Vec<_>>())).collect();
+            workers.into_iter().flat_map(|w| w.join().unwrap()).collect()
+        });
+        let unique: std::collections::HashSet<_> = stamps.iter().collect();
+        assert_eq!(unique.len(), stamps.len());
+    }
 }

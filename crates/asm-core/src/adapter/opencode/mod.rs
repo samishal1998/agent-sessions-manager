@@ -211,7 +211,7 @@ impl OpenCodeAdapter {
     /// A fresh backup directory for session `id`.
     fn backup_dir(&self, id: &str) -> Option<PathBuf> {
         match &self.backup_root {
-            Some(root) => Some(root.join(id).join(jiff::Timestamp::now().as_millisecond().to_string())),
+            Some(root) => Some(root.join(id).join(crate::paths::backup_stamp().to_string())),
             None => crate::paths::backup_dir("opencode", id),
         }
     }
