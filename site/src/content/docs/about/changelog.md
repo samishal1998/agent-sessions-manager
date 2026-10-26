@@ -5,7 +5,7 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
-## Unreleased
+## 0.18.1 — 2026-10-26
 
 - **A calmer, denser web UI.** The page and cards are neutral slate in both modes (near-white in light, dark slate in dark); only raised surfaces, panels and selected items keep a slight purple tint, so the accent stands out. Fields, buttons, checkboxes and session rows are shorter, radii are smaller, and the purple glow behind the page is gone. Touch screens keep 44px targets.
 
