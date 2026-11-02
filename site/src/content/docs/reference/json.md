@@ -19,7 +19,7 @@ Everything else on this site (table layouts, human text, the order of keys, the 
 
 - **`--json` writes JSON to stdout and nothing else there.** Progress, warnings and notes go to stderr as text. `ASM_JSON=1` in the environment is the same flag.
 - **A document is bare**: an array for a listing, an object for one thing. There is no envelope around results; the existing outputs have always been this way and stay so.
-- **Timestamps** are RFC 3339 (`2026-10-09T10:00:05Z`). **Paths** are absolute strings. **Agent names** are `claude-code`, `opencode`, `jcode`, `codex`, `antigravity`.
+- **Timestamps** are RFC 3339 (`2026-10-09T10:00:05Z`). **Paths** are absolute strings. **Agent names** are `claude-code`, `opencode`, `jcode`, `codex`, `antigravity`, `pi`, `omp`.
 - **A session is addressed** by `agent:id`, a native id, or a unique prefix of one (`asm show 7f3a1c88`). The `id` and `ref.native_id` fields of a session are what to give back.
 - Commands that stream print **NDJSON**: one compact JSON object per line, flushed as it is written. See [streams](#streams).
 
@@ -163,7 +163,7 @@ A stream is flushed a line at a time and ends when its reader goes away.
 
 ### `asm messages`
 
-One object per line, from the session's [IR](/reference/ir-schema/), so every agent that exports has them (Claude Code, OpenCode 1.x and 2.x, jcode, Codex, Antigravity):
+One object per line, from the session's [IR](/reference/ir-schema/), so every agent that exports has them (Claude Code, OpenCode 1.x and 2.x, jcode, Codex, Antigravity, Pi, oh-my-pi):
 
 ```json
 {"index": 1, "role": "assistant", "ts": "2026-10-09T10:00:05Z",

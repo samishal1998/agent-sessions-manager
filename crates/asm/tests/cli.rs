@@ -76,6 +76,8 @@ impl Home {
             .env("XDG_CACHE_HOME", self.path("cache"))
             .env("CLAUDE_CONFIG_DIR", self.path("claude"))
             .env("CODEX_HOME", self.path("codex"))
+            .env("PI_CODING_AGENT_DIR", self.path("pi"))
+            .env("ASM_OMP_ROOT", self.path("omp"))
             .env("JCODE_HOME", self.path("jcode"))
             .env("ASM_ANTIGRAVITY_ROOT", self.path("ag"))
             .env("ASM_MACHINE_UID", "cli-test-machine")
@@ -646,7 +648,7 @@ fn opencode_messages_and_capabilities_in_both_generations() {
         assert_eq!(caps["asm_version"], env!("CARGO_PKG_VERSION"));
         assert!(caps["ir_version"].is_u64() && caps["index_schema_version"].is_u64());
         let agents = caps["agents"].as_array().unwrap();
-        assert_eq!(agents.iter().map(|a| a["agent"].as_str().unwrap()).collect::<Vec<_>>(), ["claude-code", "opencode", "jcode", "codex", "antigravity"]);
+        assert_eq!(agents.iter().map(|a| a["agent"].as_str().unwrap()).collect::<Vec<_>>(), ["claude-code", "opencode", "jcode", "codex", "antigravity", "pi", "omp"]);
         let oc = agents.iter().find(|a| a["agent"] == "opencode").unwrap();
         assert_eq!(oc["schema"], if v2 { "v2" } else { "v1" });
         assert_eq!(oc["unmigrated"], if v2 { Value::Bool(false) } else { Value::Null });

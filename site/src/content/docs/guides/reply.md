@@ -18,4 +18,4 @@ The TUI binds this to `c`, and the web transcript has a composer at the bottom. 
 
 ## Which agents
 
-Claude Code, OpenCode, Codex and Antigravity. **jcode is not supported**: its stream format has not been captured from a real run, and a normalizer written from a flag name is a guess, not support.
+Claude Code, OpenCode, Codex and Antigravity. **jcode is not supported**: its stream format has not been captured from a real run, and a normalizer written from a flag name is a guess, not support. **Pi and oh-my-pi are not supported** either: asm only reads their sessions.

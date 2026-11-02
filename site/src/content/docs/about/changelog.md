@@ -5,6 +5,10 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
+## 0.19.0 — 2026-11-02
+
+- **Pi and oh-my-pi sessions, read-only.** `--agent pi` and `--agent omp` (aliases `pi-coding-agent`; `oh-my-pi`, `ohmypi`) list, show, search, export, convert into Claude Code or OpenCode, resume (`pi --session`, `omp --resume`) and back up to a hub, `--here` included. oh-my-pi's subagents are child sessions. Rename, archive, move, delete, import into them, `send` and a hub pull are not offered, and neither shows as live. Pi's store is `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`; oh-my-pi's is `$ASM_OMP_ROOT`, else `~/.omp/agent` (or the `OMP_PROFILE` profile, or `$XDG_DATA_HOME/omp`). Read against pi 1.5.0 and omp 18.11.3.
+
 ## 0.18.1 — 2026-10-26
 
 - **A calmer, denser web UI.** The page and cards are neutral slate in both modes (near-white in light, dark slate in dark); only raised surfaces, panels and selected items keep a slight purple tint, so the accent stands out. Fields, buttons, checkboxes and session rows are shorter, radii are smaller, and the purple glow behind the page is gone. Touch screens keep 44px targets.

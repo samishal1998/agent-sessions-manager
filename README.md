@@ -2,10 +2,10 @@
 
 One inventory, one set of verbs, for the coding-agent sessions scattered across
 your machine. `asm` reads the on-disk stores that [Claude Code][cc], [OpenCode][oc],
-[jcode][jc], [Codex][cx] and [Antigravity][ag] keep for themselves, presents
-every session in one list, and lets
-you rename, move, archive, delete, export — and **carry a conversation from one
-agent into the other**.
+[jcode][jc], [Codex][cx], [Antigravity][ag], [Pi][pi] and [oh-my-pi][omp] keep for
+themselves, presents every session in one list, and lets you rename, move,
+archive, delete, export — and **carry a conversation from one agent into the
+other**.
 
 ```
 $ asm
@@ -29,6 +29,8 @@ UI (`asm serve`). There is a [tour of it here][site], and [full documentation][d
 [jc]: https://github.com/1jehuang/jcode
 [cx]: https://github.com/openai/codex
 [ag]: https://antigravity.google
+[pi]: https://github.com/earendil-works/pi
+[omp]: https://github.com/can1357/oh-my-pi
 
 ## Why
 
@@ -234,22 +236,25 @@ kept verbatim so the history still reads), and nested subagent transcripts.
 
 ## Agent support
 
-| | Claude Code | OpenCode | jcode | Codex | Antigravity |
-|---|---|---|---|---|---|
-| List, show, search, projects | yes | yes | yes | yes | yes |
-| Liveness | yes | yes | yes | no | no |
-| Resume | yes | yes | yes | yes | yes |
-| Export to Session IR | yes | yes | yes | yes | yes |
-| Rename | yes | yes | yes | no | no |
-| Archive / unarchive | yes | yes | yes | no | no |
-| Delete | yes | yes | yes | no | no |
-| Move to another directory | yes | yes | no | no | no |
-| Import **from** (source) | yes | yes | yes | yes | yes |
-| Import **into** (target) | yes | yes | no | no | no |
-| Send a message into a session | yes | yes | no | yes | yes |
-| Back up to a hub | yes | yes | yes | yes | yes |
-| Restore from a hub | yes | yes | yes | same path | yes |
-| Verified against a real install | 2.1.234 | 1.17.18 | 0.78.0 | 0.151.0 | 1.1.16 |
+| | Claude Code | OpenCode | jcode | Codex | Antigravity | Pi | oh-my-pi |
+|---|---|---|---|---|---|---|---|
+| List, show, search, projects | yes | yes | yes | yes | yes | yes | yes |
+| Liveness | yes | yes | yes | no | no | no | no |
+| Resume | yes | yes | yes | yes | yes | yes | yes |
+| Export to Session IR | yes | yes | yes | yes | yes | yes | yes |
+| Rename | yes | yes | yes | no | no | no | no |
+| Archive / unarchive | yes | yes | yes | no | no | no | no |
+| Delete | yes | yes | yes | no | no | no | no |
+| Move to another directory | yes | yes | no | no | no | no | no |
+| Import **from** (source) | yes | yes | yes | yes | yes | yes | yes |
+| Import **into** (target) | yes | yes | no | no | no | no | no |
+| Send a message into a session | yes | yes | no | yes | yes | no | no |
+| Back up to a hub | yes | yes | yes | yes | yes | yes | yes |
+| Restore from a hub | yes | yes | yes | same path | yes | no | no |
+| Verified against a real install | 2.1.234 | 1.17.18 | 0.78.0 | 0.151.0 | 1.1.16 | 1.5.0* | 18.11.3* |
+
+\* Not a real install: Pi from its documented session format, oh-my-pi from
+files written by omp's own session manager.
 
 Restore through a hub was verified separately, each time between two
 separate homes (every store, config and asm's own state apart) on one host:
@@ -314,6 +319,16 @@ one (`workspace_uris` is empty), and the only mapping on disk,
 `cache/last_conversations.json`, remembers just the most recent conversation
 per directory. Sessions it does not cover are listed with no project rather
 than a guessed one.
+
+Pi (`--agent pi`, alias `pi-coding-agent`) and oh-my-pi, a fork of it with its
+own store (`--agent omp`, aliases `oh-my-pi`, `ohmypi`), are read-only: one
+JSONL file per session, listed, searched, exported and resumed
+(`pi --session <file>`, `omp --resume <file>`), never written. Pi's store is
+`$PI_CODING_AGENT_DIR`, else `~/.pi/agent`. oh-my-pi's is `$ASM_OMP_ROOT` —
+asm's own variable, since omp reads `PI_CODING_AGENT_DIR` too — else
+`~/.omp/agent`, `~/.omp/profiles/<name>/agent` under `OMP_PROFILE`, or
+`$XDG_DATA_HOME/omp/sessions` when that directory exists. oh-my-pi's subagents
+are child sessions; images it stores as blob references are not carried.
 
 Two jcode verbs are missing, for the same reason: its whole session — metadata
 *and* the entire conversation — is one JSON document, and jcode ships no
@@ -442,8 +457,9 @@ stays on the hub as a revision. Timestamps are shown in `remote list` but never
 decide anything — clocks differ between machines, and a rename does not move a
 session's timestamp.
 
-Every agent's sessions are **backed up**; restore works for all five: **Claude Code**,
-**OpenCode**, **jcode**, **Codex** and **Antigravity**. A Claude transcript is append-only, so a
+Every agent's sessions are **backed up**; restore works for **Claude Code**,
+**OpenCode**, **jcode**, **Codex** and **Antigravity**. **Pi** and **oh-my-pi**
+are backed up only: a pull of one is refused. A Claude transcript is append-only, so a
 newer copy is appended to an older one without rewriting a byte. An OpenCode session is rows, with
 its subagent sessions, todos and queued inputs: an older copy here is replaced
 by the hub's only when every row here is also in the hub's copy, and it is

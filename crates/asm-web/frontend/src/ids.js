@@ -8,13 +8,14 @@
 /// characters of the native id are the constant prefix and identify
 /// nothing; its slug is the part a human recognises.
 ///
-/// Codex ids are UUIDv7, whose leading twelve hex digits are a millisecond
-/// timestamp — eight characters is a ~65-second bucket, so sessions started
-/// in the same minute all render alike. Thirteen covers the timestamp.
+/// Codex and omp ids are UUIDv7, whose leading twelve hex digits are a
+/// millisecond timestamp — eight characters is a ~65-second bucket, so
+/// sessions started in the same minute all render alike. Thirteen covers the
+/// timestamp.
 export function shortId(session) {
   const id = session.ref.native_id
   if (session.ref.agent === 'jcode' && session.slug) return session.slug
-  if (session.ref.agent === 'codex') return id.slice(0, 13)
+  if (session.ref.agent === 'codex' || session.ref.agent === 'omp') return id.slice(0, 13)
   const trimmed = id.startsWith('session_') ? id.slice('session_'.length) : id
   return id.startsWith('ses_') ? id.slice(0, 12) : trimmed.slice(0, 8)
 }

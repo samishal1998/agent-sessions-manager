@@ -33,6 +33,8 @@ fn isolate() -> &'static Path {
             ("XDG_CACHE_HOME", "xdg-cache"),
             ("CLAUDE_CONFIG_DIR", "claude"),
             ("CODEX_HOME", "codex"),
+            ("PI_CODING_AGENT_DIR", "pi"),
+            ("ASM_OMP_ROOT", "omp"),
             ("JCODE_HOME", "jcode"),
             ("ASM_ANTIGRAVITY_ROOT", "antigravity"),
         ] {
@@ -117,7 +119,7 @@ async fn meta_says_which_asm_and_what_it_can_do() {
     assert!(meta["home"].is_string(), "what it always had: {meta}");
     assert!(meta.get("hostname").is_some());
     let agents = meta["capabilities"].as_array().unwrap();
-    assert_eq!(agents.len(), 5);
+    assert_eq!(agents.len(), 7);
     let oc = agents.iter().find(|a| a["agent"] == "opencode").unwrap();
     assert_eq!((oc["installed"].clone(), oc["schema"].clone()), (true.into(), "v1".into()));
     assert_eq!(oc["capabilities"]["archive"], true);

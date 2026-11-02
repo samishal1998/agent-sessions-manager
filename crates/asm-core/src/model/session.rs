@@ -141,6 +141,7 @@ pub fn short_id_of<'a>(agent: AgentKind, native_id: &'a str, slug: Option<&'a st
         return name;
     }
     let id = native_id.strip_prefix("session_").unwrap_or(native_id);
-    let width = if agent == AgentKind::Codex { 13 } else { 8 };
+    // UUIDv7 (codex, omp): the first eight characters are a timestamp bucket.
+    let width = if matches!(agent, AgentKind::Codex | AgentKind::Omp) { 13 } else { 8 };
     &id[..id.len().min(width)]
 }

@@ -16,16 +16,24 @@ pub enum AgentKind {
     Codex,
     #[serde(rename = "antigravity")]
     Antigravity,
+    /// Pi (earendil-works/pi), the `pi` command.
+    #[serde(rename = "pi")]
+    Pi,
+    /// oh-my-pi, a fork of Pi with its own store, the `omp` command.
+    #[serde(rename = "omp")]
+    Omp,
 }
 
 impl AgentKind {
     /// Every agent, in the order listings and reports show them.
-    pub const ALL: [AgentKind; 5] = [
+    pub const ALL: [AgentKind; 7] = [
         AgentKind::ClaudeCode,
         AgentKind::OpenCode,
         AgentKind::JCode,
         AgentKind::Codex,
         AgentKind::Antigravity,
+        AgentKind::Pi,
+        AgentKind::Omp,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -35,6 +43,8 @@ impl AgentKind {
             AgentKind::JCode => "jcode",
             AgentKind::Codex => "codex",
             AgentKind::Antigravity => "antigravity",
+            AgentKind::Pi => "pi",
+            AgentKind::Omp => "omp",
         }
     }
 
@@ -47,6 +57,8 @@ impl AgentKind {
             "codex" | "codex-cli" | "cx" => Some(AgentKind::Codex),
             // `agy` is the command the CLI installs, so accept it as a name.
             "antigravity" | "agy" | "ag" => Some(AgentKind::Antigravity),
+            "pi" | "pi-coding-agent" => Some(AgentKind::Pi),
+            "omp" | "oh-my-pi" | "ohmypi" => Some(AgentKind::Omp),
             _ => None,
         }
     }

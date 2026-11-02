@@ -13,7 +13,7 @@ flowchart TB
   end
   CORE --> A1[("Claude Code store")]
   CORE --> A2[("OpenCode SQLite")]
-  CORE --> A3[("jcode, Codex,<br/>Antigravity")]
+  CORE --> A3[("jcode, Codex, Antigravity,<br/>Pi, oh-my-pi")]
   CORE --> DATA[("asm data dir<br/>archive · backups · index · hub state")]
   CORE -. "curl" .-> HUB[("a hub")]
 ```

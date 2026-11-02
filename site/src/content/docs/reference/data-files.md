@@ -37,8 +37,9 @@ hub/sessions/<agent>/<id>/revisions/  every revision's manifest
 | Variable | Effect |
 |---|---|
 | `ASM_DATA_DIR` | Overrides asm's data directory. |
-| `XDG_DATA_HOME` | Parent of asm's directory, and where OpenCode keeps its database. |
-| `CLAUDE_CONFIG_DIR` · `JCODE_HOME` · `CODEX_HOME` · `ASM_ANTIGRAVITY_ROOT` | Where to find each agent's store. |
+| `XDG_DATA_HOME` | Parent of asm's directory, where OpenCode keeps its database, and where oh-my-pi's sessions are read from when `$XDG_DATA_HOME/omp` exists. |
+| `CLAUDE_CONFIG_DIR` · `JCODE_HOME` · `CODEX_HOME` · `ASM_ANTIGRAVITY_ROOT` · `PI_CODING_AGENT_DIR` · `ASM_OMP_ROOT` | Where to find each agent's store. |
+| `OMP_PROFILE` | The oh-my-pi profile whose store is read (`~/.omp/profiles/<name>/agent`), when `ASM_OMP_ROOT` is unset. |
 | `ASM_JOIN_TOKEN` | The token `asm join` uses. |
 | `ASM_VERSION` · `ASM_INSTALL_DIR` · `ASM_BASE_URL` | Used by `install.sh`. |
 

@@ -53,6 +53,7 @@ fn name_for(row: &Row, agent: AgentKind) -> Option<&'static str> {
         // `map_tool` matches the name against every column.
         AgentKind::Codex => None,
         AgentKind::Antigravity => None,
+        AgentKind::Pi | AgentKind::Omp => None,
     }
 }
 

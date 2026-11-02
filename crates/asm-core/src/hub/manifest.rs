@@ -104,6 +104,7 @@ fn layout(agent: AgentKind) -> (&'static [&'static str], &'static [&'static str]
         // `rows.json`: 1.x database rows; `transfer.json`: 2.x session documents.
         AgentKind::OpenCode => (&["rows.json", "transfer.json"], &["session_diff"]),
         AgentKind::Antigravity => (&["conversation.db", "cache.json"], &["brain"]),
+        AgentKind::Pi | AgentKind::Omp => (&[crate::adapter::pi::hub::FILE], &[]),
     }
 }
 

@@ -5,13 +5,13 @@ description: Rename, move, archive, delete and export — what each does per age
 
 All of these refuse a **live** session, and all go through each agent's own mechanism where one exists.
 
-| Verb | Claude Code | OpenCode | jcode | Codex | Antigravity |
-|---|---|---|---|---|---|
-| `rename` | appends a `custom-title` record | native | `jcode session rename` | — | — |
-| `move <ref> <dir>` | relocates the transcript + sidecars; writes a `relocated` marker | native project change | — | — | — |
-| `archive` / `unarchive` | moved into asm's archive store | native flag | moved into asm's archive store | — | — |
-| `delete` | backed up, then removed | backed up, then removed | backed up, then removed | — | — |
-| `export` | yes | yes | yes | yes | yes |
+| Verb | Claude Code | OpenCode | jcode | Codex | Antigravity | Pi | oh-my-pi |
+|---|---|---|---|---|---|---|---|
+| `rename` | appends a `custom-title` record | native | `jcode session rename` | — | — | — | — |
+| `move <ref> <dir>` | relocates the transcript + sidecars; writes a `relocated` marker | native project change | — | — | — | — | — |
+| `archive` / `unarchive` | moved into asm's archive store | native flag | moved into asm's archive store | — | — | — | — |
+| `delete` | backed up, then removed | backed up, then removed | backed up, then removed | — | — | — | — |
+| `export` | yes | yes | yes | yes | yes | yes | yes |
 
 Dashes are deliberate, not oversights: see [Agent support](/reference/agents/) for why each is missing.
 

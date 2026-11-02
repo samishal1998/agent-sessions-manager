@@ -424,6 +424,14 @@ button:hover,
   color: var(--violet);
   background: var(--violet-bg);
 }
+.agent-mark.pi {
+  color: var(--green);
+  background: var(--ok-bg);
+}
+.agent-mark.omp {
+  color: var(--amber);
+  background: var(--warn-bg);
+}
 .agent-mark.unknown {
   color: var(--fg-muted);
   background: var(--bg-hover);

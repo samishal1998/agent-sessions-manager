@@ -34,6 +34,10 @@ pub const TESTED: &[(AgentKind, &str)] = &[
     (AgentKind::Codex, "0.151.0"),
     // `agy version` reports nothing parseable yet; pinned by observation.
     (AgentKind::Antigravity, "1.1.16"),
+    // Read-only, from the session format of pi 1.5.0 and omp 18.11.3's
+    // source; omp's files were written by its own session manager.
+    (AgentKind::Pi, "1.5.0"),
+    (AgentKind::Omp, "18.11.3"),
 ];
 
 fn major(version: &str) -> &str {
@@ -59,6 +63,8 @@ fn binary_name(agent: AgentKind) -> &'static str {
         AgentKind::JCode => "jcode",
         AgentKind::Codex => "codex",
         AgentKind::Antigravity => "agy",
+        AgentKind::Pi => "pi",
+        AgentKind::Omp => "omp",
     }
 }
 

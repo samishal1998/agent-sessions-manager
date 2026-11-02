@@ -3,7 +3,7 @@ title: Restore, per agent
 description: What pulling a session does for each agent, and what was verified.
 ---
 
-Every agent's sessions are **backed up** to a hub; restore works for all five. Each agent's pull respects that agent's own storage model.
+Every agent's sessions are **backed up** to a hub; restore works for all but Pi and oh-my-pi, which are backed up only. Each agent's pull respects that agent's own storage model.
 
 | Agent | What a pull does | Where it lands |
 |---|---|---|
@@ -13,6 +13,7 @@ Every agent's sessions are **backed up** to a hub; restore works for all five. E
 | **jcode** | A snapshot is rewritten whole every turn; an older copy is replaced when its messages are a **prefix** of the hub's, after a backup. | Under this machine's directory; resumed by id. |
 | **Codex** | Append-only like Claude, but Codex writes the absolute working directory into the conversation. | **Only where that directory exists** — the same path on both machines. |
 | **Antigravity** | A database agy rewrites whole: an older copy is replaced when its transcript is a prefix of the hub's, after a backup. | Nothing in it names a directory; it resumes wherever `agy --conversation <id>` is run. |
+| **Pi**, **oh-my-pi** | Backed up only: a pull is refused (`restore` not supported). The hub's admin page still renders their transcripts. | — |
 
 ## Verified against real installs
 

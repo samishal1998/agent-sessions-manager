@@ -1,4 +1,4 @@
-import { Bot, Orbit, Sparkles, SquareTerminal, Terminal, Zap } from 'lucide-vue-next'
+import { Bot, Infinity as InfinityIcon, Orbit, Pi, Sparkles, SquareTerminal, Terminal, Zap } from 'lucide-vue-next'
 
 // The one place an agent's name and icon live.
 //
@@ -39,6 +39,25 @@ export const AGENTS = {
     icon: Orbit,
     resume: (s) => `agy --conversation ${s.ref.native_id}`,
   },
+  // Both resume a session file, and run it in its own directory.
+  pi: {
+    label: 'Pi',
+    icon: Pi,
+    resume: (s) => `pi --session ${sessionFile(s)}`,
+  },
+  omp: {
+    label: 'oh-my-pi',
+    icon: InfinityIcon,
+    resume: (s) => `omp --resume ${sessionFile(s)}`,
+  },
+}
+
+/// A session's file, quoted for a POSIX shell when it needs to be; the id
+/// when the session has no file (one only listed by a hub).
+function sessionFile(s) {
+  const path = s.ref.location?.path
+  if (!path) return s.ref.native_id
+  return /^[\w@%+=:,./-]+$/.test(path) ? path : `'${path.replaceAll("'", `'\\''`)}'`
 }
 
 /// Display order, so the filter and any other list agree.

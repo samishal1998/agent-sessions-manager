@@ -215,6 +215,8 @@ pub fn install_bundle(
                 .ok_or_else(|| invalid("cannot locate the OpenCode store"))?;
             crate::adapter::opencode::hub::install(&adapter, manifest, blob, project_dir, base)
         }
+        // Backed up only: see `bundle::restorable`.
+        AgentKind::Pi | AgentKind::Omp => Err(CoreError::NotSupported { agent: manifest.agent.as_str(), op: "restore" }),
     }
 }
 

@@ -5,30 +5,30 @@ description: What asm can do with each agent's sessions, where they live, and wh
 
 ## Matrix
 
-| | Claude Code | OpenCode | jcode | Codex | Antigravity |
-|---|---|---|---|---|---|
-| List, show, search, projects | yes | yes | yes | yes | yes |
-| Liveness | yes | yes | yes | no | no |
-| Resume | yes | yes | yes | yes | yes |
-| Child sessions (subagents) | inside the parent's transcript | yes, at any depth | yes | yes | no |
-| Export to Session IR | yes | yes | yes | yes | yes |
-| Rename | yes | yes | yes | no | no |
-| Archive / unarchive | yes | yes (1.x only) | yes | no | no |
-| Delete | yes | yes | yes | no | no |
-| Move to another directory | yes | yes (1.x only) | no | no | no |
-| Import **from** (source) | yes | yes | yes | yes | yes |
-| Import **into** (target) | yes | yes | no | no | no |
-| Send a message into a session | yes | yes (1.x only) | no | yes | yes |
-| Back up to a hub | yes | yes | yes | yes | yes |
-| Restore from a hub | yes | yes | yes | same path | yes |
-| Read/import verified against | 2.1.234 | 1.17.18; 2.0.25 (read, rename, delete; import accepted, resume not exercised) | 0.78.0 | 0.151.0 | 1.1.16 |
-| Hub restore verified against | 2.1.278 | 1.18.31; 2.0.25 (same major version only) | 0.83.0 | 0.151.0 | 1.1.22 |
+| | Claude Code | OpenCode | jcode | Codex | Antigravity | Pi | oh-my-pi |
+|---|---|---|---|---|---|---|---|
+| List, show, search, projects | yes | yes | yes | yes | yes | yes | yes |
+| Liveness | yes | yes | yes | no | no | no | no |
+| Resume | yes | yes | yes | yes | yes | yes | yes |
+| Child sessions (subagents) | inside the parent's transcript | yes, at any depth | yes | yes | no | no | yes, at any depth |
+| Export to Session IR | yes | yes | yes | yes | yes | yes | yes |
+| Rename | yes | yes | yes | no | no | no | no |
+| Archive / unarchive | yes | yes (1.x only) | yes | no | no | no | no |
+| Delete | yes | yes | yes | no | no | no | no |
+| Move to another directory | yes | yes (1.x only) | no | no | no | no | no |
+| Import **from** (source) | yes | yes | yes | yes | yes | yes | yes |
+| Import **into** (target) | yes | yes | no | no | no | no | no |
+| Send a message into a session | yes | yes (1.x only) | no | yes | yes | no | no |
+| Back up to a hub | yes | yes | yes | yes | yes | yes | yes |
+| Restore from a hub | yes | yes | yes | same path | yes | no | no |
+| Read/import verified against | 2.1.234 | 1.17.18; 2.0.25 (read, rename, delete; import accepted, resume not exercised) | 0.78.0 | 0.151.0 | 1.1.16 | 1.5.0 | 18.11.3 |
+| Hub restore verified against | 2.1.278 | 1.18.31; 2.0.25 (same major version only) | 0.83.0 | 0.151.0 | 1.1.22 | — | — |
 
-`asm doctor --json` reports each agent's capabilities, and the web UI greys out what an agent cannot do, so the limits are visible rather than discovered by error. Importing a session into an agent warns when the installed version has drifted from the verified one (`asm doctor` does not check this). OpenCode is verified once per major version: an installed 2.x is compared with 2.0.25, a 1.x with 1.17.18. For 2.0.25 "verified" means the real binary accepted the import and the session read back from its store; resuming an imported session was not exercised.
+`asm doctor --json` reports each agent's capabilities, and the web UI greys out what an agent cannot do, so the limits are visible rather than discovered by error. Importing a session into an agent warns when the installed version has drifted from the verified one (`asm doctor` does not check this). OpenCode is verified once per major version: an installed 2.x is compared with 2.0.25, a 1.x with 1.17.18. For 2.0.25 "verified" means the real binary accepted the import and the session read back from its store; resuming an imported session was not exercised. Pi 1.5.0 is read from its documented session format, and oh-my-pi 18.11.3 from files written by omp's own session manager.
 
 ## Child sessions
 
-Where an agent records one session as the child of another, asm groups them (see [Child sessions](/start/concepts/#child-sessions)): OpenCode through `parent_id` (1.x and 2.x, at any depth; 2.x's `fork_session_id` forks are siblings and list as ordinary sessions), jcode through `parent_id`, Codex through its spawn edges. jcode's `is_debug` sessions are not children and stay out of every list. Claude Code's subagents are not sessions: they appear inside the parent's transcript. Antigravity has none.
+Where an agent records one session as the child of another, asm groups them (see [Child sessions](/start/concepts/#child-sessions)): OpenCode through `parent_id` (1.x and 2.x, at any depth; 2.x's `fork_session_id` forks are siblings and list as ordinary sessions), jcode through `parent_id`, Codex through its spawn edges, oh-my-pi through the subagent files in the parent's artifact directory, at any depth. jcode's `is_debug` sessions are not children and stay out of every list. Claude Code's subagents are not sessions: they appear inside the parent's transcript. Antigravity and Pi have none.
 
 ## Where each agent keeps its sessions
 
@@ -39,6 +39,8 @@ Where an agent records one session as the child of another, asm groups them (see
 | jcode | `~/.jcode/sessions/<id>.json` | `JCODE_HOME` |
 | Codex | `~/.codex/state_5.sqlite` (the `threads` table) and `sessions/` rollouts | `CODEX_HOME` |
 | Antigravity | `~/.gemini/antigravity-cli/` (`conversations/`, `brain/`, `cache/`) | `ASM_ANTIGRAVITY_ROOT` |
+| Pi | `~/.pi/agent/sessions/<encoded-dir>/<timestamp>_<id>.jsonl` | `PI_CODING_AGENT_DIR` |
+| oh-my-pi | `~/.omp/agent/sessions/<encoded-dir>/<timestamp>_<id>.jsonl` | `ASM_OMP_ROOT` |
 
 asm reads both schemas of OpenCode's database, told apart each time it looks: 1.x (`session`, `message`, `part`) and 2.x (`session_v2`, `session_message`). A database with neither is skipped as if the agent were not installed.
 
@@ -74,6 +76,17 @@ Antigravity is what Gemini CLI became — Google now refuses Gemini Code Assist 
 :::caution[A real gap]
 **An Antigravity conversation does not record its project directory.** Neither the conversation database nor the summaries index keeps one (`workspace_uris` is empty), and the only mapping on disk, `cache/last_conversations.json`, remembers just the most recent conversation per directory. Sessions it does not cover are listed with no project rather than a guessed one.
 :::
+
+### Pi and oh-my-pi are read-only
+
+[Pi](https://github.com/earendil-works/pi) (`@earendil-works/pi-coding-agent`, the `pi` command; `--agent pi`, alias `pi-coding-agent`) and [oh-my-pi](https://github.com/can1357/oh-my-pi), a fork of it with its own store (`@oh-my-pi/pi-coding-agent`, the `omp` command; `--agent omp`, aliases `oh-my-pi`, `ohmypi`), keep one JSONL file per session. asm lists, shows, searches, exports and resumes them (`pi --session <file>`, `omp --resume <file>`, both run in the session's directory), and pushes them to a hub. Rename, archive, unarchive, move, delete, import into either agent and `send` are not offered, a session never shows as live, and a hub pull of one is refused (`restore` not supported); the hub's admin page still renders their transcripts.
+
+- **Pi's store** is `$PI_CODING_AGENT_DIR` (Pi's own variable), else `~/.pi/agent`. Files directly in `sessions/`, Pi's flat `--session-dir` layout, are read too.
+- **oh-my-pi's store** is `$ASM_OMP_ROOT`, else `~/.omp/agent`, or `~/.omp/profiles/<name>/agent` when `OMP_PROFILE` names a profile. The variable is asm's own because omp reads `PI_CODING_AGENT_DIR` too, so that name cannot tell the two apart. When `$XDG_DATA_HOME/omp` exists (and `ASM_OMP_ROOT` is unset), sessions are read from `$XDG_DATA_HOME/omp/sessions`, as omp does. omp's `PI_CONFIG_DIR` and `--session-dir` are not followed.
+- **A store is detected** when its `sessions` directory exists.
+- **Images** omp stores as `blob:sha256:` references are not carried: asm does not read omp's blob store.
+
+`pidurable` (`@earendil-works/pi-durable`) is a library apps embed, not an agent with a store, and is not supported. Other Pi forks are not scanned yet.
 
 ### jcode: no move, no import-into
 

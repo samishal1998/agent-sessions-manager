@@ -9,11 +9,11 @@ A **session** is one conversation with one agent, stored by that agent in its ow
 
 ## Agent
 
-One of Claude Code, OpenCode, jcode, Codex and Antigravity. What asm can do with an agent's sessions differs — see the [support matrix](/reference/agents/) — and the UIs grey out what an agent cannot do instead of failing when you try it.
+One of Claude Code, OpenCode, jcode, Codex, Antigravity, Pi and oh-my-pi. What asm can do with an agent's sessions differs — see the [support matrix](/reference/agents/) — and the UIs grey out what an agent cannot do instead of failing when you try it.
 
 ## Child sessions
 
-Some agents start a session from inside another one: an OpenCode subagent (which can start subagents of its own), a session jcode spawns, a Codex thread spawned from another. asm calls these **child sessions**. A child is a session in its own right, with its own id, that you can show, resume, rename, search and delete; it is *grouped* under the session it belongs to, and by default folded behind it.
+Some agents start a session from inside another one: an OpenCode subagent (which can start subagents of its own), a session jcode spawns, a Codex thread spawned from another, an oh-my-pi subagent. asm calls these **child sessions**. A child is a session in its own right, with its own id, that you can show, resume, rename, search and delete; it is *grouped* under the session it belongs to, and by default folded behind it.
 
 | Agent | Child sessions |
 |---|---|
@@ -22,6 +22,8 @@ Some agents start a session from inside another one: an OpenCode subagent (which
 | jcode | `parent_id`. jcode's own debug/test sessions are not children: they are never listed, and `--include-children` does not show them. |
 | Codex | Spawn edges (`thread_spawn_edges` in `state_5.sqlite`). A thread whose parent is not in the store is listed as a top-level session. |
 | Antigravity | None. |
+| Pi | None. |
+| oh-my-pi | Subagent files in the parent's artifact directory (`<parent stem>/<agent>.jsonl`), at any depth. |
 
 A child whose parent cannot be found (deleted, archived on its own, filtered out) is shown as a top-level session rather than disappearing.
 

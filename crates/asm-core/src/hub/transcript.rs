@@ -64,6 +64,7 @@ pub fn render(hub: &Hub, agent: &str, id: &str, limit: usize) -> Result<Transcri
         // 1.x bundles hold database rows, 2.x ones session documents.
         AgentKind::OpenCode if manifest.files.iter().any(|f| f.path == V2_TRANSCRIPT) => V2_TRANSCRIPT,
         AgentKind::OpenCode => "rows.json",
+        AgentKind::Pi | AgentKind::Omp => crate::adapter::pi::hub::FILE,
     };
     manifest.files.retain(|f| f.path == keep);
     if manifest.files.is_empty() {
@@ -136,6 +137,11 @@ pub fn render(hub: &Hub, agent: &str, id: &str, limit: usize) -> Result<Transcri
             here.project_root_portable = here.project_root.clone();
             crate::adapter::codex::hub::install(&adapter, &here, &blob, Some(&project), None)?;
             export_restored(&adapter, id)?
+        }
+        // The session file is the whole session, read where it lies.
+        AgentKind::Pi | AgentKind::Omp => {
+            let path = blob_of(crate::adapter::pi::hub::FILE)?;
+            crate::adapter::pi::export_ir::ir_of_file(manifest.agent, &path)?
         }
     };
     ir.project_path = PortablePath(manifest.project_root_portable.clone());

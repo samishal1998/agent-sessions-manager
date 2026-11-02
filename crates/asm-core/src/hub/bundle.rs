@@ -135,6 +135,7 @@ pub fn collect(session: &Session) -> Result<Bundle, CoreError> {
         Adapter::JCode(a) => crate::adapter::jcode::hub::collect(a, session),
         Adapter::OpenCode(a) => crate::adapter::opencode::hub::collect(a, session),
         Adapter::Antigravity(a) => crate::adapter::antigravity::hub::collect(a, session),
+        Adapter::Pi(a) => crate::adapter::pi::hub::collect(a, session),
     }
 }
 
@@ -304,6 +305,7 @@ pub fn relate(
         Adapter::JCode(a) => crate::adapter::jcode::hub::relate(a, session, manifest, blob),
         Adapter::OpenCode(a) => crate::adapter::opencode::hub::relate(a, session, manifest, blob),
         Adapter::Antigravity(a) => crate::adapter::antigravity::hub::relate(a, session, manifest, blob),
+        Adapter::Pi(_) => crate::adapter::pi::hub::relate(session, manifest, blob),
     }
 }
 
@@ -337,8 +339,8 @@ pub(crate) fn target_dir(manifest: &super::manifest::Manifest, project_dir: Opti
 /// Agents whose pull asm can perform today. The rest are backed up only;
 /// each is added once its own CLI has been seen to resume a restored copy.
 pub fn restorable(agent: AgentKind) -> bool {
-    // Every agent, now. Kept as a function: an agent added later starts out
-    // backed up only, until its own CLI has resumed a restored copy.
+    // Every agent but pi and omp, which are backed up only until their own
+    // CLIs have resumed a restored copy.
     matches!(
         agent,
         AgentKind::ClaudeCode | AgentKind::OpenCode | AgentKind::JCode | AgentKind::Codex | AgentKind::Antigravity

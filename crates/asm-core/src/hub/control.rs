@@ -867,6 +867,7 @@ mod tests {
     fn which_agents_can_be_moved_does_not_depend_on_what_is_installed() {
         assert!(can_archive(AgentKind::ClaudeCode) && can_archive(AgentKind::OpenCode) && can_archive(AgentKind::JCode));
         assert!(!can_archive(AgentKind::Codex) && !can_archive(AgentKind::Antigravity));
+        assert!(!can_archive(AgentKind::Pi) && !can_archive(AgentKind::Omp), "read-only, and backed up only");
     }
 
     #[test]

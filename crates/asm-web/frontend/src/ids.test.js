@@ -42,3 +42,8 @@ test('codex sessions started in the same minute stay distinguishable', () => {
   expect(shortId(b)).toBe('01a020ab-1f35')
   expect(shortId(a)).not.toBe(shortId(b))
 })
+
+test('omp ids are UUIDv7 too; pi ids are random and eight is enough', () => {
+  expect(shortId({ ref: { agent: 'omp', native_id: '01a19e5a-44b5-755e-9374-a9b367ad5f65' } })).toBe('01a19e5a-44b5')
+  expect(shortId({ ref: { agent: 'pi', native_id: '0b6e9a52-3f1c-4d7e-9a11-2c5d8e7f6a01' } })).toBe('0b6e9a52')
+})

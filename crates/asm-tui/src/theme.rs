@@ -22,6 +22,8 @@ pub fn agent(agent: AgentKind) -> Color {
         AgentKind::JCode => Color::Green,
         AgentKind::Codex => Color::Gray,
         AgentKind::Antigravity => Color::Magenta,
+        AgentKind::Pi => Color::LightGreen,
+        AgentKind::Omp => Color::LightMagenta,
         _ => Color::Gray,
     }
 }

@@ -14,7 +14,7 @@ asm peer sessions desk                      # what desk has, as `asm list` there
 
 ## What it does, and does not
 
-- **It compares the two copies on the spot.** Identical → nothing happens. One copy extends the other → the longer one is applied exactly as a hub pull would for that agent: appended for Claude Code and Codex; replaced after a backup for jcode, OpenCode and Antigravity, or, for OpenCode, only renamed when nothing but titles differ. Both changed → **refused**, and nothing is written on either side.
+- **It compares the two copies on the spot.** Identical → nothing happens. One copy extends the other → the longer one is applied exactly as a hub pull would for that agent: appended for Claude Code and Codex; replaced after a backup for jcode, OpenCode and Antigravity, or, for OpenCode, only renamed when nothing but titles differ. Both changed → **refused**, and nothing is written on either side. Pi and oh-my-pi sessions cannot be applied yet, as a hub cannot restore them: a transfer of one is refused.
 - **It has no history.** There are no revisions, no sync record and no `--force`: a peer transfer never replaces a copy. If the two copies diverged, `asm archive` the one you do not want on one side and transfer again, or sync both machines through a hub, where `asm push --force` keeps the loser as a revision.
 - **One session at a time.** `--all`, `--force` and `--move` are the hub's; `asm push --to` and `asm pull --from` take one session.
 - **Nothing runs unattended.** No daemon, no remote control toward a peer.

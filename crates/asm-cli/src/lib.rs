@@ -98,7 +98,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// Restrict to one agent: claude-code, opencode, jcode, codex or antigravity.
+    /// Restrict to one agent: claude-code, opencode, jcode, codex, antigravity, pi or omp.
     #[arg(long, global = true)]
     agent: Option<String>,
 
@@ -839,7 +839,13 @@ fn search(
         return Ok(());
     }
     let short = |agent: &str, id: &str| -> String {
-        id.chars().take(if agent == "opencode" { 12 } else { 8 }).collect()
+        // As the listing shortens them: a UUIDv7 needs 13 to get past its timestamp.
+        let width = match agent {
+            "opencode" => 12,
+            "codex" | "omp" => 13,
+            _ => 8,
+        };
+        id.chars().take(width).collect()
     };
     for hit in &hits {
         let id = short(&hit.agent, &hit.native_id);
@@ -1166,7 +1172,7 @@ fn build_filter(cli: &Cli) -> anyhow::Result<SessionFilter> {
             Some(agent) => Some(agent),
             None => fail!(
                 Usage,
-                "unknown agent '{name}' (try: claude-code, opencode, jcode, codex, antigravity)"
+                "unknown agent '{name}' (try: claude-code, opencode, jcode, codex, antigravity, pi, omp)"
             ),
         },
         None => None,

@@ -10,6 +10,7 @@ pub mod claude;
 pub mod codex;
 pub mod jcode;
 pub mod opencode;
+pub mod pi;
 
 use std::path::{Path, PathBuf};
 
@@ -219,6 +220,8 @@ pub enum Adapter {
     JCode(jcode::JCodeAdapter),
     Codex(codex::CodexAdapter),
     Antigravity(antigravity::AntigravityAdapter),
+    /// Pi and omp: one adapter that knows which of the two it reads.
+    Pi(pi::PiAdapter),
 }
 
 impl Adapter {
@@ -231,6 +234,7 @@ impl Adapter {
             AgentKind::JCode => jcode::JCodeAdapter::with_root("").capabilities(),
             AgentKind::Codex => codex::CodexAdapter::with_root("").capabilities(),
             AgentKind::Antigravity => antigravity::AntigravityAdapter::with_root("").capabilities(),
+            AgentKind::Pi | AgentKind::Omp => pi::PiAdapter::with_root(kind, "").capabilities(),
         }
     }
 
@@ -252,6 +256,11 @@ impl Adapter {
         if let Some(antigravity) = antigravity::AntigravityAdapter::detect_default() {
             adapters.push(Adapter::Antigravity(antigravity));
         }
+        for kind in [AgentKind::Pi, AgentKind::Omp] {
+            if let Some(pi) = pi::PiAdapter::detect_default(kind) {
+                adapters.push(Adapter::Pi(pi));
+            }
+        }
         adapters
     }
 }
@@ -264,6 +273,7 @@ macro_rules! dispatch {
             Adapter::JCode($a) => $body,
             Adapter::Codex($a) => $body,
             Adapter::Antigravity($a) => $body,
+            Adapter::Pi($a) => $body,
         }
     };
 }

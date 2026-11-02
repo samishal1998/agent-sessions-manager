@@ -491,6 +491,8 @@ pub fn doctor_with(
             // One database per conversation, never written by asm, so no
             // divergence and no shared lock to contend for.
             Adapter::Antigravity(_) => {}
+            // One file per session, never written by asm.
+            Adapter::Pi(_) => {}
             // 2.x does not use the 1.x lock directory: what is left in it is
             // not about this store, and busy sessions are found per session.
             Adapter::OpenCode(opencode) if opencode.is_v2() => {
@@ -1255,7 +1257,7 @@ mod tests {
     #[test]
     fn only_opencode_takes_a_sessions_children_with_it() {
         assert!(deletes_descendants(AgentKind::OpenCode));
-        for agent in [AgentKind::ClaudeCode, AgentKind::JCode, AgentKind::Codex, AgentKind::Antigravity] {
+        for agent in [AgentKind::ClaudeCode, AgentKind::JCode, AgentKind::Codex, AgentKind::Antigravity, AgentKind::Pi, AgentKind::Omp] {
             assert!(!deletes_descendants(agent), "{agent}");
         }
     }

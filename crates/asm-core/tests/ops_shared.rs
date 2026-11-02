@@ -26,6 +26,8 @@ fn isolate() -> &'static Path {
             ("XDG_CACHE_HOME", "xdg-cache"),
             ("CLAUDE_CONFIG_DIR", "claude"),
             ("CODEX_HOME", "codex"),
+            ("PI_CODING_AGENT_DIR", "pi"),
+            ("ASM_OMP_ROOT", "omp"),
             ("JCODE_HOME", "jcode"),
             ("ASM_ANTIGRAVITY_ROOT", "antigravity"),
         ] {

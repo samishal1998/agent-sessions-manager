@@ -38,3 +38,10 @@ test('an unknown agent is still named and offered', () => {
 test('duplicates and blanks collapse', () => {
   expect(agentOptions(['codex', 'codex', '', null]).map((o) => o.value)).toEqual(['codex'])
 })
+
+/// Pi and omp resume a session file; a path a shell would split is quoted.
+test('pi and omp resume their session file', () => {
+  const at = (agent, path) => ({ ref: { agent, native_id: 'ID', location: { kind: 'jsonl_file', path } } })
+  expect(resumeCommand(at('pi', '/home/u/.pi/agent/sessions/--w--/a_ID.jsonl'))).toBe('pi --session /home/u/.pi/agent/sessions/--w--/a_ID.jsonl')
+  expect(resumeCommand(at('omp', "/tmp/my dir/it's.jsonl"))).toBe(`omp --resume '/tmp/my dir/it'\\''s.jsonl'`)
+})

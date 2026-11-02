@@ -20,7 +20,7 @@ Global options narrow what a command acts on, and mean the same everywhere:
 
 | Option | Effect |
 |---|---|
-| `--agent <name>` | One of `claude-code`, `opencode`, `jcode`, `codex`, `antigravity`. |
+| `--agent <name>` | One of `claude-code`, `opencode`, `jcode`, `codex`, `antigravity`, `pi`, `omp`. |
 | `--project <dir>` | Sessions of that project (the whole repository, not just the directory — see [Projects](/concepts/projects/)). |
 | `--here` | Sessions of the checkout you are in: the git worktree containing the current directory (a linked worktree, not its main one) and its subdirectories. Outside git, the current directory. |
 | `-W`, `--all-worktrees` | Like `--here`, but every worktree of that repository. Outside git, the same as `--here`. |

@@ -608,3 +608,16 @@ after unarchive → jcode resolves it      after delete  → jcode does not
 - **One SQLite database per conversation**, `conversations/<id>.db`, with steps as protobuf blobs against an unpublished schema. asm does not decode them: it reads `brain/<id>/.system_generated/logs/`, the JSONL rendering agy writes alongside.
 - **No project directory is recorded.** `cache/last_conversations.json` maps a directory to its *most recent* conversation only.
 - **Restore** writes the database (a `VACUUM INTO` snapshot taken on a read-only connection) plus `brain/<id>/` and one metadata entry; it never writes `last_conversations.json`, which would clobber another conversation's binding.
+
+## Pi and oh-my-pi
+
+- **Base:** Pi: `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`. oh-my-pi: `$ASM_OMP_ROOT`, else `~/.omp/agent` (`~/.omp/profiles/<name>/agent` under `OMP_PROFILE`), or `$XDG_DATA_HOME/omp/sessions` when `$XDG_DATA_HOME/omp` exists. Sessions are `sessions/<encoded cwd>/<timestamp>_<id>.jsonl`; Pi's flat `--session-dir` files directly in `sessions/` are read too. Read against pi 1.5.0's documented format and files omp 18.11.3's own session manager wrote.
+- **One JSONL file per session.** The header line is `{"type":"session","version":3,"id","timestamp","cwd"}`; every later line is an entry whose `id`/`parentId` form a tree. The conversation shown is the branch from the last entry back to its root (in omp, a trailing `model_usage` with `activeLeafId` names the leaf). Version-1 files, without ids, are read in file order.
+- **The project directory is the header's `cwd`**, never the folder name: Pi encodes `/home/u/proj` as `--home-u-proj--`, omp as `-proj` relative to home, and both are lossy.
+- **Title:** omp's first line is a fixed 256-byte title slot (`{"type":"title",...}`) that omp rewrites in place on a rename; it wins, then the header's `title`. Pi names a session with `session_info` entries, the latest winning and an empty name clearing it. With no name, the first line of the first user message. omp's `title_change` entries are history.
+- **Usage** is the assistant messages' usage plus the side-call entries, `usage` in Pi and `model_usage` in omp.
+- **Images** in omp may be `blob:sha256:<hash>` references into `~/.omp/agent/blobs/`; asm does not carry blobs.
+- **omp subagents** are separate files in the parent's artifact directory, `<parent stem>/<agent>.jsonl` (nested for their own subagents), listed as child sessions. `__advisor*` files, `.tombstone`, `.bak` and hidden lock files are skipped.
+- **Resume:** `pi --session <file>` and `omp --resume <file>`, both run in the session's directory.
+- **Short ids:** omp ids are UUIDv7, so they are shown 13 characters wide, like Codex's; Pi's 8.
+- **Hub bundle:** one file, `session.jsonl`. Identity and comparison ignore omp's title slot, so a rename is not a divergence. A pull is refused.
