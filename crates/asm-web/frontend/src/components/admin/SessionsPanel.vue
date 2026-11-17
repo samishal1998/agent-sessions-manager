@@ -93,7 +93,7 @@ const rows = computed(() => shown.value.map((s) => ({ id: key(s), title: name(s)
         </span>
       </li>
     </ul>
-    <HDataTable v-if="shown.length" class="admin-table sp-table" label="Sessions stored on this hub" :rows="rows" :columns="cols">
+    <HDataTable v-if="shown.length" class="admin-table sp-table" layout="auto" label="Sessions stored on this hub" :rows="rows" :columns="cols">
       <template v-for="r in rows" :key="r.id" #[tableCellSlot(r.id,'title')]>
         <span class="admin-session">
           <AgentMark :agent="byKey[r.id].agent" :size="16" />
@@ -121,6 +121,6 @@ const rows = computed(() => shown.value.map((s) => ({ id: key(s), title: name(s)
 .sp-cell { display: block; max-width: 16ch; }
 .sp-two { display: grid; min-width: 0; }
 /* Four actions in one row squeeze the title column to nothing: let them wrap into two rows. */
-.admin-table.sp-table td:last-child .admin-actions { flex-wrap: wrap; max-width: 20rem; }
+.admin-table.sp-table td:last-child .admin-actions { flex-wrap: wrap; min-width: 18rem; }
 .admin-table .admin-session { max-width: 26rem; }
 </style>

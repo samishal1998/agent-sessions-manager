@@ -1,20 +1,7 @@
 <script setup>
 import { computed, onMounted, onUpdated, ref } from 'vue'
 import { HBadge, HButton, HCheckbox, HDropdownMenu, HListItem } from '@hearth-ui/vue'
-import {
-  Archive,
-  ArchiveRestore,
-  ArrowLeftRight,
-  ChevronDown,
-  ChevronRight,
-  CloudDownload,
-  CloudUpload,
-  Download,
-  FolderInput,
-  Pencil,
-  Play,
-  Trash2,
-} from 'lucide-vue-next'
+import { ArchiveRestore, ArrowLeftRight } from 'lucide-vue-next'
 import AgentMark from './AgentMark.vue'
 import IconButton from './IconButton.vue'
 import { ago, bytes, hubTone } from '../format.js'
@@ -179,11 +166,11 @@ function choose(id) {
         variant="ghost"
         size="compact"
         :aria-label="foldLabel"
+        icon-only
+        :icon="open ? 'down' : 'right'"
         :aria-expanded="open ? 'true' : 'false'"
         @click="emit('fold')"
-      >
-        <component :is="open ? ChevronDown : ChevronRight" :size="16" aria-hidden="true" />
-      </HButton>
+      />
       <span v-else-if="grouped" class="s-fold s-slot" aria-hidden="true" />
       <HCheckbox
         class="s-tick"
@@ -192,21 +179,21 @@ function choose(id) {
         @change="emit('tick')"
       />
       <span class="s-actions" :class="{ 'is-compact': compact }">
-        <IconButton label="Copy resume command" :icon="Play" @click="emit('copy')" />
+        <IconButton label="Copy resume command" icon="play" @click="emit('copy')" />
         <template v-if="compact">
-          <HDropdownMenu class="s-more" :label="`More actions for ${title}`" :items="menu" placement="bottom" @select="choose" />
+          <HDropdownMenu class="s-more" :label="`More actions for ${title}`" icon="more" icon-only :items="menu" placement="bottom" @select="choose" />
         </template>
         <template v-else>
-          <IconButton v-if="pushing" :label="doing === 'Pushing…' ? doing : push.label" :icon="CloudUpload" :disabled="!push.ok" :busy="doing === 'Pushing…'" @click="emit('push')" />
+          <IconButton v-if="pushing" :label="doing === 'Pushing…' ? doing : push.label" icon="upload" :disabled="!push.ok" :busy="doing === 'Pushing…'" @click="emit('push')" />
           <span v-else class="s-slot" aria-hidden="true" />
-          <IconButton v-if="pulling" :label="doing === 'Pulling…' ? doing : pullLabel" :disabled="!hub?.connected" :icon="CloudDownload" :busy="doing === 'Pulling…'" @click="emit('pull')" />
+          <IconButton v-if="pulling" :label="doing === 'Pulling…' ? doing : pullLabel" :disabled="!hub?.connected" icon="download" :busy="doing === 'Pulling…'" @click="emit('pull')" />
           <span v-else class="s-slot" aria-hidden="true" />
-          <IconButton label="Rename" :icon="Pencil" :disabled="!can('rename')" @click="emit('rename')" />
-          <IconButton :label="archiveLabel" :icon="state === 'archived' ? ArchiveRestore : Archive" :disabled="!can('archive')" @click="emit('archive')" />
-          <IconButton label="Move to another project" :icon="FolderInput" :disabled="!can('relocate')" @click="emit('move')" />
+          <IconButton label="Rename" icon="edit" :disabled="!can('rename')" @click="emit('rename')" />
+          <IconButton :label="archiveLabel" :icon="state === 'archived' ? ArchiveRestore : 'archive'" :disabled="!can('archive')" @click="emit('archive')" />
+          <IconButton label="Move to another project" icon="folder" :disabled="!can('relocate')" @click="emit('move')" />
           <IconButton label="Import into the other agent" :icon="ArrowLeftRight" :disabled="!can('export_ir')" @click="emit('import')" />
-          <IconButton label="Export Session IR" :icon="Download" :href="irHref" :download="`${shortId(s)}.ir.json`" />
-          <IconButton label="Delete" :icon="Trash2" danger :disabled="!can('delete')" @click="emit('delete')" />
+          <IconButton label="Export Session IR" icon="save" :href="irHref" :download="`${shortId(s)}.ir.json`" />
+          <IconButton label="Delete" icon="trash" danger :disabled="!can('delete')" @click="emit('delete')" />
         </template>
       </span>
     </template>

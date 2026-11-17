@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { TriangleAlert } from 'lucide-vue-next'
+import Icon from '../Icon.vue'
 import ClampText from './ClampText.vue'
 import { asked, moreDetail, resultText } from '../../commands.js'
 
@@ -24,7 +24,7 @@ const silent = computed(() => {
   <span class="rt">
     <ClampText v-if="text" :text="text" :whole="text !== c.detail" />
     <ClampText v-if="more" :text="more" small />
-    <span v-if="silent" class="rt-warn" role="note"><TriangleAlert :size="14" aria-hidden="true" /><span>{{ silent }}</span></span>
+    <span v-if="silent" class="rt-warn" role="note"><Icon icon="alert" :size="14" /><span>{{ silent }}</span></span>
   </span>
 </template>
 

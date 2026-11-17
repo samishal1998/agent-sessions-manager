@@ -1,6 +1,7 @@
 <script setup>
 import { HButton, HTooltip } from '@hearth-ui/vue'
-import { Monitor, Moon, Sun } from 'lucide-vue-next'
+import { Monitor } from 'lucide-vue-next'
+import Icon from './Icon.vue'
 import { useTheme } from '../useTheme.js'
 
 // Light / dark / follow the system, as three icon buttons in one labelled
@@ -8,8 +9,8 @@ import { useTheme } from '../useTheme.js'
 // icons are never the only thing telling a screen reader what they do.
 const { preference, setPreference } = useTheme()
 const modes = [
-  { value: 'light', label: 'Light', icon: Sun },
-  { value: 'dark', label: 'Dark', icon: Moon },
+  { value: 'light', label: 'Light', icon: 'sun' },
+  { value: 'dark', label: 'Dark', icon: 'moon' },
   { value: 'system', label: 'Match the system', icon: Monitor },
 ]
 </script>
@@ -26,7 +27,7 @@ const modes = [
         :aria-pressed="preference === m.value"
         @click="setPreference(m.value)"
       >
-        <component :is="m.icon" :size="16" aria-hidden="true" />
+        <Icon :icon="m.icon" :size="16" />
       </HButton>
     </HTooltip>
   </div>

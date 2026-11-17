@@ -1,92 +1,20 @@
-// The app's theme in two modes. The page and cards are neutral slate; only
-// raised surfaces and panels carry a slight purple tint, so the accent stands
-// out (see hearth-ui issue #3). Every text pair in both sets is at least 4.5:1
-// on every surface and on hover, and the field border is at least 3:1.
-
-// Not colours: shared by both modes. Denser than Hearth's `compact`, with
-// smaller radii to match the smaller controls.
-const SHARED = {
-  '--h-motion': '.15s',
-  '--h-control-height': '36px',
-  '--h-control-padding': '10px',
-  '--h-focus-width': '2px',
-  '--h-page-padding': 'clamp(12px, 2vw, 24px)',
-  '--h-separator-space': '14px',
-  '--h-radius-card': '16px',
-  '--h-radius-panel': '20px',
-  '--h-radius-pill': '999px',
-  '--h-radius-control': '10px',
-  '--h-sidebar-width': '232px',
-  '--h-space': '4px',
-  '--h-content-max': '1440px',
-  '--h-progress-height': '8px',
-  '--h-sidebar-height': '420px',
-  '--h-card-padding': '14px',
-  '--h-font-size': '13px',
-  '--h-font-mono': 'ui-monospace, SFMono-Regular, Consolas, monospace',
-  '--h-font': 'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-}
+// The app's accent in two modes, over Hearth's own palette: its page and cards
+// are neutral, and raised surfaces and panels take a slight tint of this accent.
+// Sizes come from Hearth's `high` density (set on HTheme). Every accent text
+// pair is at least 4.5:1 on every surface.
 
 const DARK = {
-  ...SHARED,
-  '--h-bg': '#111317',
-  '--h-surface': '#181b21',
-  '--h-raised': '#232430',
-  '--h-panel': '#232430e0',
-  '--h-border': '#ffffff17',
-  '--h-border-strong': '#6b7890',
-  '--h-text': '#f7f8fb',
-  '--h-muted': '#aeb8ca',
-  '--h-faint': '#9aa7bc',
   '--h-accent': '#a689f5',
   '--h-accent-hover': '#d7c9fa',
   '--h-accent-text': '#cebcf8',
   '--h-on-accent': '#211735',
-  '--h-accent-subtle': 'color-mix(in srgb, #a689f5 10%, transparent)',
-  '--h-success': '#24c978',
-  '--h-warning': '#f4b21a',
-  '--h-danger': '#ff8290',
-  '--h-info': '#86b8f5',
-  '--h-focus': '#cebcf8',
-  '--h-shadow': '0 12px 40px #0000002e',
-  '--h-shadow-soft': '0 4px 14px #0000001a',
-  '--h-scene-text': '#f7f8fb',
-  '--h-scene-muted': '#b5bfd1',
-  '--h-scene-bg': 'linear-gradient(145deg, #302443, #1a1429 65%, #44334f)',
-  '--h-mountain-back': '#61516f',
-  '--h-mountain-mid': '#3e3053',
-  '--h-mountain-front': '#1c152b',
 }
 
 const LIGHT = {
-  ...SHARED,
-  '--h-bg': '#f4f5f7',
-  '--h-surface': '#ffffff',
-  '--h-raised': '#f6f4f9',
-  '--h-panel': '#f6f4f9e6',
-  '--h-border': '#2a1f4a24',
-  '--h-border-strong': '#7b6f96',
-  '--h-text': '#1d1630',
-  '--h-muted': '#52476b',
-  '--h-faint': '#645a7f',
   '--h-accent': '#6d3fc8',
   '--h-accent-hover': '#5b2fb0',
   '--h-accent-text': '#5b2fb0',
   '--h-on-accent': '#ffffff',
-  '--h-accent-subtle': 'color-mix(in srgb, #6d3fc8 9%, transparent)',
-  '--h-success': '#0b6a3e',
-  '--h-warning': '#734d00',
-  '--h-danger': '#a11d36',
-  '--h-info': '#1d5189',
-  '--h-focus': '#5b2fb0',
-  '--h-shadow': '0 12px 40px #2a1f4a1f',
-  '--h-shadow-soft': '0 4px 14px #2a1f4a14',
-  '--h-scene-text': '#1d1630',
-  '--h-scene-muted': '#52476b',
-  '--h-scene-bg': 'linear-gradient(145deg, #ece4fa, #f6f3fb 65%, #f8e6ee)',
-  '--h-mountain-back': '#cbbfe6',
-  '--h-mountain-mid': '#b4a4da',
-  '--h-mountain-front': '#9b88c9',
 }
 
 export const TOKENS = { dark: DARK, light: LIGHT }

@@ -243,29 +243,9 @@ body {
   padding: var(--space-2) var(--space-3) var(--space-2) 34px;
 }
 
-input,
-button,
-.control {
-  background: var(--bg-raised);
-  color: var(--fg);
-  border: 1px solid var(--field-border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-2) var(--space-3);
-  font: inherit;
-  transition: border-color 0.12s ease, background 0.12s ease;
-}
 input::placeholder,
 textarea::placeholder {
   color: var(--fg-faint);
-}
-button,
-.control {
-  cursor: pointer;
-}
-button:hover,
-.control:hover {
-  border-color: var(--border-strong);
-  background: var(--bg-hover);
 }
 :focus-visible {
   /* A real outline, not a shadow: it survives forced-colors mode, where
@@ -351,47 +331,14 @@ button:hover,
   }
 }
 
-/* Icon buttons -------------------------------------------------------- */
-.h-button.icon-btn,
-.icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border-radius: var(--radius-sm);
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--fg-muted);
-}
-.icon-btn:hover {
-  background: var(--bg-hover);
-  border-color: var(--border-strong);
-  color: var(--fg);
-}
-.icon-btn.disabled,
-.icon-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-.icon-btn:disabled:hover {
-  background: transparent;
-  border-color: transparent;
-  color: var(--fg-muted);
-}
-.icon-btn.danger:disabled:hover {
-  color: var(--red);
-}
+/* Icon buttons: Hearth's icon-only buttons. Delete is set apart from the
+   others so it is not hit by a slip. */
 .icon-btn.danger {
-  color: var(--red);
-  /* Set apart from the others so it is not hit by a slip. */
   margin-inline-start: var(--space-2);
 }
-.icon-btn.danger:hover {
-  color: var(--red);
-  border-color: var(--danger-border);
-  background: var(--danger-bg);
+.h-button.icon-btn.danger:not(:hover) {
+  background: transparent;
+  border-color: transparent;
 }
 
 /* Agent + status marks ------------------------------------------------ */
@@ -687,10 +634,6 @@ button:hover,
   .row {
     padding: var(--space-3);
   }
-  .icon-btn {
-    width: 34px;
-    height: 34px;
-  }
 }
 .tick {
   flex-shrink: 0;
@@ -855,21 +798,6 @@ button:hover,
   }
 }
 
-/* Hearth buttons carry a 40px minimum height; the row's icon buttons are
-   squares of their own. */
-.h-button.icon-btn {
-  min-height: 30px;
-  min-width: 30px;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-}
-@media (max-width: 640px) {
-  .h-button.icon-btn {
-    width: 34px;
-    height: 34px;
-  }
-}
 
 /* Hearth badges at the app's type floor, and last-known state shown by a
    dashed edge rather than a dimmer colour. */

@@ -5,7 +5,7 @@
     "": {
       "name": "asm-frontend",
       "dependencies": {
-        "@hearth-ui/vue": "^0.6.0",
+        "@hearth-ui/vue": "^0.11.0",
         "lucide-vue-next": "^1.0.0",
         "vue": "^3.5.13",
       },
@@ -77,7 +77,7 @@
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
 
-    "@hearth-ui/vue": ["@hearth-ui/vue@0.6.0", "", { "peerDependencies": { "vue": "^3.5.0" } }, "sha512-a2Im6ZX023OL8uiHacq10HDkYafFGK9vEqvL0y+RZHonj8SC5mKiI2JVE90jPw0j86AJbxitihCZlDSDLHEWyQ=="],
+    "@hearth-ui/vue": ["@hearth-ui/vue@0.11.0", "", { "peerDependencies": { "vue": "^3.5.0" } }, "sha512-Rl8eNj0HooIVf4K1FM4YZa9SGNRHXit+yBCjVUc6de8T0JsOCgZ2CQe7sCPZqqZocOKF8OYJQnHHCNtloHVT8A=="],
 
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
 

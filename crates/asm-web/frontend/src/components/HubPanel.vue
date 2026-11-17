@@ -1,7 +1,6 @@
 <script setup>
 import { HAlert, HBadge, HButton, HChipGroup } from '@hearth-ui/vue'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { ArrowDown, ArrowRight, ArrowUp, LoaderCircle, RefreshCw } from 'lucide-vue-next'
 
 // How this machine stands with the hub, in one place: whether it answered,
 // what is out of step, and what is on the hub that is not here yet. The
@@ -125,36 +124,34 @@ const daemonTitle = computed(() =>
         :title="daemonTitle"
       />
       <span class="s-hub-actions">
-        <HButton variant="ghost" size="compact" class="s-hub-check" :disabled="checking" aria-label="Check the hub" title="Check the hub" @click="emit('check')">
-          <RefreshCw :size="14" aria-hidden="true" />
+        <HButton variant="ghost" size="compact" class="s-hub-check" icon="refresh" :disabled="checking" aria-label="Check the hub" title="Check the hub" @click="emit('check')">
           <span class="s-hub-check-text">Check</span>
         </HButton>
         <HButton
           v-if="summary.to_push"
           variant="secondary"
           size="compact"
-          :disabled="!fresh || pushing"
+          icon="upload"
+          :loading="pushing"
+          :disabled="!fresh"
           :title="fresh ? 'Push every session that is new or changed here' : 'The hub cannot be reached'"
           @click="emit('push-needed')"
         >
-          <LoaderCircle v-if="pushing" :size="14" class="spin" aria-hidden="true" />
-          <ArrowUp v-else :size="14" aria-hidden="true" />
           <span>{{ pushing ? 'Pushing…' : `Push ${summary.to_push}` }}</span>
         </HButton>
         <HButton
           v-if="summary.to_pull"
           variant="secondary"
           size="compact"
-          :disabled="!fresh || pulling"
+          icon="download"
+          :loading="pulling"
+          :disabled="!fresh"
           :title="fresh ? 'Pull every session that is new or newer on the hub' : 'The hub cannot be reached'"
           @click="emit('pull-all')"
         >
-          <LoaderCircle v-if="pulling" :size="14" class="spin" aria-hidden="true" />
-          <ArrowDown v-else :size="14" aria-hidden="true" />
           <span>{{ pulling ? 'Pulling…' : `Pull ${summary.to_pull}` }}</span>
         </HButton>
-        <HButton variant="secondary" size="compact" @click="emit('open')">
-          <ArrowRight :size="14" aria-hidden="true" />
+        <HButton variant="secondary" size="compact" icon="arrow" @click="emit('open')">
           <span>Hub view<span v-if="newOnHub.length" class="s-hub-new"> · {{ newOnHub.length }} new</span></span>
         </HButton>
       </span>

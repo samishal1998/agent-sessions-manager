@@ -1,7 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import { HButton } from '@hearth-ui/vue'
-import { ListChecks, RefreshCw } from 'lucide-vue-next'
+import Icon from './Icon.vue'
 import { isOpen, panel, tasks } from '../tasks.js'
 
 // What the server is doing in the background, in a word; opens the task panel.
@@ -16,8 +16,7 @@ const aria = computed(() =>
 
 <template>
   <HButton v-if="tasks.length" class="s-tasks" :variant="open.length ? 'secondary' : 'ghost'" size="compact" :aria-label="aria" @click="panel.open = true">
-    <RefreshCw v-if="open.length" :size="13" class="spin" aria-hidden="true" />
-    <ListChecks v-else :size="13" aria-hidden="true" />
+    <Icon :icon="open.length ? 'refresh' : 'list'" :size="14" :class="{ spin: open.length }" />
     <span class="s-tasks-text">{{ text }}</span>
   </HButton>
 </template>

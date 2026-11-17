@@ -1,6 +1,5 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ArrowLeft, LoaderCircle, RefreshCw } from 'lucide-vue-next'
 import {
   HAlert,
   HBadge,
@@ -834,7 +833,7 @@ function scrollToOpened() {
 </script>
 
 <template>
-  <HTheme class="asm-root" theme="dusk" :mode="resolved" :data-asm-mode="resolved" :tokens="tokens">
+  <HTheme class="asm-root" theme="dusk" density="high" :mode="resolved" :data-asm-mode="resolved" :tokens="tokens">
     <HDashboardShell
       class="asm-shell"
       brand="asm"
@@ -904,16 +903,14 @@ function scrollToOpened() {
             <!-- Full-text results -->
             <template v-if="hits !== null">
               <div class="s-results-head">
-                <HButton variant="secondary" size="compact" @click="clearSearch">
-                  <ArrowLeft :size="15" aria-hidden="true" />
+                <HButton variant="secondary" size="compact" icon="left" @click="clearSearch">
                   <span>Back to sessions</span>
                 </HButton>
                 <span>
                   {{ hits.length }} match{{ hits.length === 1 ? '' : 'es' }} for
                   <strong>“{{ searchedFor }}”</strong>
                 </span>
-                <HButton variant="secondary" size="compact" class="s-push-end" @click="reindex">
-                  <RefreshCw :size="15" aria-hidden="true" />
+                <HButton variant="secondary" size="compact" class="s-push-end" icon="refresh" @click="reindex">
                   <span>Reindex</span>
                 </HButton>
               </div>
@@ -985,10 +982,9 @@ function scrollToOpened() {
                         v-if="b.action !== 'push' || hub?.joined"
                         :variant="b.action === 'delete' ? 'danger' : 'secondary'"
                         size="compact"
-                        :disabled="bulkBusy(b.action)"
+                        :loading="bulkBusy(b.action)"
                         @click="b.run"
                       >
-                        <LoaderCircle v-if="bulkBusy(b.action)" :size="14" class="spin" aria-hidden="true" />
                         <span>{{ b.label }}</span>
                       </HButton>
                     </template>

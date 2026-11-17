@@ -147,7 +147,7 @@ const rows = computed(() => shown.value.map((c) => ({ id: c.id, state: STATE_LAB
         </li>
       </ul>
 
-      <HDataTable v-if="shown.length" class="admin-table cp-table" label="Remote commands and plans" :rows="rows" :columns="cols">
+      <HDataTable v-if="shown.length" class="admin-table cp-table" layout="auto" label="Remote commands and plans" :rows="rows" :columns="cols">
         <template v-for="r in rows" :key="r.id + 's'" #[tableCellSlot(r.id,'state')]>
           <span v-if="byId[r.id].plan" class="cp-status">
             <StatusBadge :tone="STATE_TONE[byId[r.id].state]" :label="STATE_LABEL[byId[r.id].state]" :icon="STATE_ICON[byId[r.id].state]" />

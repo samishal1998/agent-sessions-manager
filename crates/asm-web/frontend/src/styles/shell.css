@@ -7,21 +7,10 @@
 .asm-shell {
   --h-content-max: 1400px;
   --h-page-padding: 16px;
-  /* Denser than Hearth's `compact`; touch screens keep 44px targets below. */
-  --s-ctl: 32px;
-  --s-field: 34px;
-  --s-row-pad: 6px;
 }
 @media (min-width: 641px) {
   .asm-shell {
     --h-page-padding: 24px;
-  }
-}
-@media (pointer: coarse) {
-  .asm-shell {
-    --s-ctl: 44px;
-    --s-field: 44px;
-    --s-row-pad: 10px;
   }
 }
 /* A short top bar and a short top gap, so content starts high. */
@@ -103,48 +92,17 @@
   gap: 8px;
 }
 
-/* Heading row: the h1 and the two page controls on one line. */
-.s-head .h-page-copy {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 16px;
-  width: 100%;
-}
-/* One h1 size for both screens (Hearth's default is 38px). */
-.s-head h1 {
-  align-self: flex-start;
-}
-.s-head h1,
-.s-hubwrap .h-page-header h1 {
-  margin: 0;
-  font-size: 28px;
-  line-height: 1.2;
-}
+/* The heading is Hearth's 28px `md`, a little smaller on a phone. */
 @media (max-width: 640px) {
-  .s-head .h-page-copy,
-  .s-head .h-header-actions {
-    gap: 8px;
-  }
-  .s-head h1,
-  .s-hubwrap .h-page-header h1 {
+  .s-page .h-page-title,
+  .s-hubwrap .h-page-title {
     font-size: 24px;
   }
-}
-.s-head .h-header-actions {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  margin: 0 0 0 auto;
-}
-.s-head .h-button {
-  min-height: var(--s-ctl);
 }
 
 /* Filter, transcript search and project on one row; their labels stay as
    accessible names, the placeholders explain. */
 .s-fields {
-  --h-control-height: var(--s-field);
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
   gap: 8px;
@@ -158,21 +116,6 @@
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
-}
-/* Hearth pads its fields and sizes the combobox button for 44px; inside a
-   shorter field both have to shrink with it. */
-.s-fields input {
-  padding-block: 0;
-}
-.s-fields .h-combo-line {
-  padding-block: 2px;
-}
-.s-fields .h-combo-line input[role='combobox'] {
-  min-height: 0;
-  padding-block: 0;
-}
-.s-fields .h-combo-action {
-  height: calc(var(--s-field) - 6px);
 }
 .s-fields .h-combobox {
   margin: 0;
@@ -230,9 +173,6 @@
   gap: 8px;
   margin-inline-start: auto;
 }
-.s-hub .h-button {
-  min-height: var(--s-ctl);
-}
 @media (max-width: 640px) {
   .s-hub-check-text,
   .s-hub-new {
@@ -253,10 +193,6 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-}
-.s-bulk .h-checkbox,
-.s-row .h-checkbox {
-  min-height: var(--s-ctl);
 }
 .s-problems {
   margin: 8px 0 0;
@@ -282,7 +218,7 @@
   min-width: 0;
   width: auto;
   min-height: 24px;
-  padding-block: var(--s-row-pad);
+  padding-block: var(--h-row-padding);
 }
 .s-row .h-list-copy {
   flex: 1 1 0;
@@ -328,12 +264,6 @@
 .s-fold {
   order: -2;
   flex: 0 0 auto;
-  box-sizing: border-box;
-  width: 30px;
-  min-width: 30px;
-  height: 30px;
-  min-height: 30px;
-  padding: 0;
 }
 /* The tick's label names the checkbox without being shown beside it. */
 .s-tick strong {
@@ -350,56 +280,26 @@
   gap: 4px;
   flex: 0 0 auto;
 }
-.s-actions .icon-btn,
-.s-actions .s-more .h-button,
-.s-slot {
-  position: relative;
-  box-sizing: border-box;
-  width: 30px;
-  min-width: 30px;
-  height: 30px;
-  min-height: 30px;
-  padding: 0;
-}
+/* An empty slot holds a hidden action's place, at an icon button's size. */
 .s-slot {
   display: inline-block;
+  width: var(--h-compact-control-height);
+  height: var(--h-compact-control-height);
+}
+@media (pointer: coarse) {
+  .s-slot {
+    width: 44px;
+    height: 44px;
+  }
 }
 .s-actions .s-more {
   display: inline-flex;
 }
-/* The menu button is Hearth's: a text button. Show a kebab; the label stays as
-   its accessible name. */
-.s-more > .h-button {
+/* The menu trigger is a secondary button; in a row it reads like the icon
+   buttons beside it. */
+.s-more > .h-button:not(:hover) {
   background: transparent;
   border-color: transparent;
-}
-.s-more > .h-button > svg {
-  display: none;
-}
-.s-more > .h-button [part='label'] {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-}
-.s-more > .h-button::before {
-  content: '\22EF' / '';
-  font-size: 20px;
-  line-height: 1;
-}
-/* 30px to look at, 44px to hit on a touchscreen. */
-@media (pointer: coarse) {
-  .s-actions.is-compact {
-    gap: 14px;
-  }
-  .s-actions .icon-btn::after,
-  .s-actions .s-more .h-button::after {
-    content: '';
-    position: absolute;
-    inset: -7px;
-  }
 }
 
 /* Search hit: the snippet goes under the title, in the row's own button. */

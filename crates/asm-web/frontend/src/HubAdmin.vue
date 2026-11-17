@@ -4,7 +4,7 @@ import {
   HAlert, HBadge, HButton, HCard, HCopyField, HDataTable, HInput, HPageHeader, HSkeleton, HTabs, HTheme, HTimeline,
   HToaster, tableCellSlot,
 } from '@hearth-ui/vue'
-import { Ban, Check, Power, TriangleAlert } from 'lucide-vue-next'
+import { Ban } from 'lucide-vue-next'
 import ColorModeSwitch from './components/ColorModeSwitch.vue'
 import SessionsPanel from './components/admin/SessionsPanel.vue'
 import CommandsPanel from './components/admin/CommandsPanel.vue'
@@ -190,7 +190,7 @@ const machineCols = [
   { key: 'name', label: 'Name' }, { key: 'remote', label: 'Remote control' }, { key: 'sessions', label: 'Sessions pushed' }, { key: 'joined', label: 'Joined' },
   { key: 'seen', label: 'Last seen' }, { key: 'actions', label: 'Actions' },
 ]
-const REMOTE_ICON = { on: Check, stale: TriangleAlert, off: Power, unknown: Ban }
+const REMOTE_ICON = { on: 'check', stale: 'alert', off: 'power', unknown: Ban }
 const remote = (m) => ({ ...remoteStatus(m.remote), ops: m.remote?.enabled && m.remote.ops?.length ? `Allowed: ${m.remote.ops.join(', ')}` : '' })
 const machineRows = computed(() => machines.value.map((m) => ({ id: m.id, name: m.name, sessions: m.sessions, joined: ago(m.joined), seen: m.last_seen ? ago(m.last_seen) : 'never', remote: remote(m).label, actions: '' })))
 const byMachine = computed(() => Object.fromEntries(machines.value.map((m) => [m.id, m])))
@@ -200,9 +200,9 @@ onMounted(() => token.value && load())
 </script>
 
 <template>
-  <HTheme class="asm-root" theme="dusk" :mode="resolved" :data-asm-mode="resolved" :tokens="tokens">
+  <HTheme class="asm-root" theme="dusk" density="high" :mode="resolved" :data-asm-mode="resolved" :tokens="tokens">
     <main class="admin">
-      <HPageHeader title="asm hub administration" :description="`Machines, the join token and stored sessions on ${host}.`">
+      <HPageHeader title="asm hub administration" size="md" :description="`Machines, the join token and stored sessions on ${host}.`">
         <div class="admin-bar">
           <span v-if="signedIn && refreshed" class="admin-stamp">Updated {{ refreshed.toLocaleTimeString() }}</span>
           <ColorModeSwitch />

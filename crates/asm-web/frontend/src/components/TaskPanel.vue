@@ -1,7 +1,6 @@
 <script setup>
 import { nextTick, onUnmounted, ref, watch } from 'vue'
 import { HProgress, HSheet } from '@hearth-ui/vue'
-import { TriangleAlert } from 'lucide-vue-next'
 import StatusBadge from './admin/StatusBadge.vue'
 import { STATE_ICON } from './admin/state-icons.js'
 import { STATE_TONE } from '../commands.js'
@@ -11,7 +10,7 @@ import { isOpen, panel, tasks } from '../tasks.js'
 // and what it said. A failure, or a report with problems, opens to show them.
 const LABEL = { queued: 'Queued', running: 'Running', ok: 'Done', failed: 'Failed' }
 const TONE = { ...STATE_TONE, failed: 'danger' }
-const ICON = { ...STATE_ICON, failed: TriangleAlert }
+const ICON = { ...STATE_ICON, failed: 'error' }
 
 // Elapsed time ticks only while the panel is open.
 const now = ref(Date.now())

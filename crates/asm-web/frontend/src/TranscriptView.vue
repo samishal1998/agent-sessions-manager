@@ -2,20 +2,11 @@
 import { HAccordion, HAlert, HBadge, HButton, HCodeBlock, HEmptyState, HInput, HSkeleton, HTextarea } from '@hearth-ui/vue'
 import './styles/transcript.css'
 import { computed, onBeforeUnmount, onMounted, nextTick, ref, watch } from 'vue'
-import {
-  Brain,
-  Check,
-  Copy,
-  CornerDownRight,
-  Paperclip,
-  SendHorizontal,
-  Square,
-  Wrench,
-  X,
-} from 'lucide-vue-next'
+import { Brain, CornerDownRight, Paperclip, Wrench } from 'lucide-vue-next'
 import api from './api.js'
 import { hasMarkup, parseMarkup } from './markup.js'
 import AgentMark from './components/AgentMark.vue'
+import Icon from './components/Icon.vue'
 import IconButton from './components/IconButton.vue'
 import MarkupBlock from './components/MarkupBlock.vue'
 
@@ -271,7 +262,7 @@ watch(
       <div class="tv-head-row">
         <AgentMark :agent="session.ref.agent" />
         <strong class="tv-title" :title="session.title || 'Untitled session'">{{ session.title || 'Untitled session' }}</strong>
-        <IconButton label="Close transcript" :icon="X" @click="$emit('close')" />
+        <IconButton label="Close transcript" icon="close" @click="$emit('close')" />
       </div>
       <div class="tv-idline">
         <button
@@ -281,7 +272,7 @@ watch(
           :title="session.ref.native_id"
           @click="copyId"
         >
-          <component :is="copied ? Check : Copy" :size="14" aria-hidden="true" />
+          <Icon :icon="copied ? 'check' : 'copy'" :size="14" />
           <span class="tv-id">{{ session.ref.native_id }}</span>
         </button>
         <span v-if="session.size_bytes != null">{{ size }}</span>
@@ -313,12 +304,12 @@ watch(
           </template>
 
           <div v-else-if="p.type === 'reasoning'" class="tv-part">
-            <Brain :size="14" aria-hidden="true" />
+            <Icon :icon="Brain" :size="14" />
             <span>{{ reasoningText(p) }}</span>
           </div>
 
           <div v-else-if="p.type === 'tool_call'" class="tv-part">
-            <Wrench :size="14" aria-hidden="true" />
+            <Icon :icon="Wrench" :size="14" />
             <strong>{{ p.name }}</strong>
             <span class="tv-arg">{{ inputSummary(p.input) }}</span>
           </div>
@@ -338,12 +329,12 @@ watch(
           </HAccordion>
 
           <div v-else-if="p.type === 'file'" class="tv-part">
-            <Paperclip :size="14" aria-hidden="true" />
+            <Icon :icon="Paperclip" :size="14" />
             <span>{{ p.path || 'Attached file' }}</span>
           </div>
 
           <div v-else-if="p.type === 'agent'" class="tv-part">
-            <CornerDownRight :size="14" aria-hidden="true" />
+            <Icon :icon="CornerDownRight" :size="14" />
             <span>
               Subagent <strong>{{ p.name }}</strong> — {{ p.transcript.length }} turn{{
                 p.transcript.length === 1 ? '' : 's'
@@ -361,11 +352,11 @@ watch(
         <template v-for="(e, ei) in streaming" :key="ei">
           <div v-if="e.event === 'text'" class="tv-text">{{ e.text }}</div>
           <div v-else-if="e.event === 'reasoning'" class="tv-part">
-            <Brain :size="14" aria-hidden="true" />
+            <Icon :icon="Brain" :size="14" />
             <span>{{ firstLine(e.text) }}</span>
           </div>
           <div v-else-if="e.event === 'tool_call'" class="tv-part">
-            <Wrench :size="14" aria-hidden="true" />
+            <Icon :icon="Wrench" :size="14" />
             <strong>{{ e.name }}</strong>
             <span class="tv-arg">{{ e.detail }}</span>
           </div>
@@ -403,11 +394,11 @@ watch(
             {{ busy ? 'The agent is working. It can read and edit files in this project.'
                     : 'Enter sends · Shift+Enter for a new line' }}
           </span>
-          <HButton v-if="busy" type="button" variant="danger" size="compact" @click="stopSending">
-            <Square :size="14" aria-hidden="true" /> Stop
+          <HButton v-if="busy" type="button" variant="danger" size="compact" icon="stop" @click="stopSending">
+            Stop
           </HButton>
-          <HButton v-else type="submit" variant="secondary" size="compact" :disabled="!draft.trim()">
-            <SendHorizontal :size="14" aria-hidden="true" /> Send
+          <HButton v-else type="submit" variant="secondary" size="compact" icon="send" :disabled="!draft.trim()">
+            Send
           </HButton>
         </div>
       </template>

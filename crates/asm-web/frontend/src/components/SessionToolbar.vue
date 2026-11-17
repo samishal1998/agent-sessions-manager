@@ -4,7 +4,8 @@ import { HBadge, HButton, HChipGroup, HCombobox, HInput, HPageHeader, HSwitch } 
 import ColorModeSwitch from './ColorModeSwitch.vue'
 import TasksButton from './TasksButton.vue'
 import { tasks } from '../tasks.js'
-import { FilterX, GitBranch, RefreshCw } from 'lucide-vue-next'
+import { FilterX, GitBranch } from 'lucide-vue-next'
+import Icon from './Icon.vue'
 
 // The Sessions page head and its filters. The filter values belong to the
 // screen (they decide what the list shows); this only edits them.
@@ -39,13 +40,12 @@ const chipOptions = computed(() =>
 
 <template>
   <div class="s-toolbar">
-    <HPageHeader class="s-head" title="Sessions">
+    <HPageHeader class="s-head" title="Sessions" size="md" actions-placement="end">
       <!-- The shell's mobile drawer has no footer, so on phones the colour mode lives here. -->
       <ColorModeSwitch class="s-theme-mobile" />
       <HSwitch v-if="subagents" v-model="tree" label="Show subagent sessions as a tree" />
       <HSwitch v-model="archived" label="Archived" />
-      <HButton variant="secondary" size="compact" @click="emit('refresh')">
-        <RefreshCw :size="15" aria-hidden="true" />
+      <HButton variant="secondary" size="compact" icon="refresh" @click="emit('refresh')">
         <span>Refresh</span>
       </HButton>
     </HPageHeader>
@@ -81,23 +81,23 @@ const chipOptions = computed(() =>
       <!-- Push, pull and bulk work going on in the server; opens the task panel. -->
       <TasksButton />
       <HBadge v-if="scanning" tone="info" title="Reading the agents' stores">
-        <RefreshCw :size="12" class="spin" aria-hidden="true" /> Reading… {{ found }}
+        <Icon icon="refresh" :size="12" class="spin" /> Reading… {{ found }}
       </HBadge>
       <HBadge
         v-if="indexing"
         tone="info"
         :title="`Search reads an index of every transcript; it is being built now${indexing.note ? ' — ' + indexing.note : ''}`"
       >
-        <RefreshCw :size="12" class="spin" aria-hidden="true" />
+        <Icon icon="refresh" :size="12" class="spin" />
         <template v-if="indexing.total"> Indexing {{ indexing.done }}/{{ indexing.total }}</template>
         <template v-else> Indexing…</template>
       </HBadge>
       <!-- A project spans checkouts; name them when there is more than one. -->
       <HBadge v-for="w in worktrees" :key="w.path" tone="neutral" :title="w.path">
-        <GitBranch v-if="!w.is_main" :size="12" aria-hidden="true" /> {{ w.branch || 'detached' }} · {{ w.session_count }}
+        <Icon v-if="!w.is_main" :icon="GitBranch" :size="12" /> {{ w.branch || 'detached' }} · {{ w.session_count }}
       </HBadge>
       <HButton v-if="anyFilter" variant="ghost" size="compact" title="Show every session again" @click="emit('clear')">
-        <FilterX :size="15" aria-hidden="true" />
+        <template #icon><Icon :icon="FilterX" :size="15" /></template>
         <span>Clear filters</span>
       </HButton>
     </div>

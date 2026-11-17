@@ -16,9 +16,6 @@
 @media (forced-colors: active) { .hv-open:focus-visible { outline-color: Highlight; } }
 .hv-faint { color: var(--h-faint); }
 .hv-sheet { display: flex; flex-direction: column; gap: 1rem; }
-.hv-spin { animation: hv-spin 1s linear infinite; }
-@keyframes hv-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .hv-spin { animation: none; } }
 
 .hv-proj { display: block; max-width: 28ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hv-rowact { flex-wrap: nowrap; white-space: nowrap; }

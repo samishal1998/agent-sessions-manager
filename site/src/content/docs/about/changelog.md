@@ -5,6 +5,12 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
+## 0.20.0 — 2026-11-17
+
+- **The web UI is on Hearth UI 0.11** (from 0.6), at its `high` density: 32px controls, 34px fields, tighter rows and smaller radii, still 44px targets on a touchscreen. The page and cards take Hearth's neutral palette, with asm's purple only on the accent and a slight tint on raised surfaces.
+- **Hearth's icons** for the everyday actions (resume, push, pull, rename, archive, move, export, delete, refresh, send, stop…) and states; lucide stays only for the agent marks and a few glyphs Hearth has no match for.
+- Buttons that are working show Hearth's spinner and stay put; the row's "more" menu, the page headers and the hub admin's tables use Hearth's own options instead of asm overrides, so the Sessions and Hub headings keep their actions on the same line again, and the hub admin's session actions sit two to a line rather than one.
+
 ## 0.19.0 — 2026-11-02
 
 - **Pi and oh-my-pi sessions, read-only.** `--agent pi` and `--agent omp` (aliases `pi-coding-agent`; `oh-my-pi`, `ohmypi`) list, show, search, export, convert into Claude Code or OpenCode, resume (`pi --session`, `omp --resume`) and back up to a hub, `--here` included. oh-my-pi's subagents are child sessions. Rename, archive, move, delete, import into them, `send` and a hub pull are not offered, and neither shows as live. Pi's store is `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`; oh-my-pi's is `$ASM_OMP_ROOT`, else `~/.omp/agent` (or the `OMP_PROFILE` profile, or `$XDG_DATA_HOME/omp`). Read against pi 1.5.0 and omp 18.11.3.
