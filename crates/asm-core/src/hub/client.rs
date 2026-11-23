@@ -307,6 +307,76 @@ pub fn join(url: &str, token: &str, name: &str, insecure_http: bool) -> Result<R
 /// The join exchange alone: a credential for this machine, remembered by
 /// the caller (`join` keeps it as the hub; a peer keeps it in `peers.json`).
 pub(super) fn exchange(url: &str, token: &str, name: &str, insecure_http: bool) -> Result<Remote, CoreError> {
+    let url = checked_url(url, insecure_http)?;
+    // The last registration's credential goes only to the hub that issued it:
+    // it is how that hub recognises this machine rather than adding another.
+    let previous = load().ok().filter(|r| r.url == url).map(|r| r.credential);
+    let uid = super::identity::machine_uid();
+    let body =
+        serde_json::to_vec(&serde_json::json!({ "token": token, "name": name, "uid": uid, "previous": previous }))
+            .unwrap();
+    let response =
+        run_curl(&format!("{url}/hub/v1/join"), None, "POST", Body::Json(body), Profile::Once, None)?;
+    if response.status == 401 {
+        return Err(invalid(
+            "the hub did not accept that join token; `asm hub token` on the hub prints the \
+             current one",
+        ));
+    }
+    if response.status != 201 {
+        not_a_web_page(&url, &response)?;
+    }
+    let response = expect(response, &[201], "joining the hub")?;
+    let joined: Joined = parse(&response, "joining the hub")?;
+    Ok(Remote { url, machine: joined.machine, credential: joined.credential, quick: false })
+}
+
+/// Point this machine at its hub's new address, keeping its registration:
+/// the same hub reached another way (a new name, `tailscale serve`, another
+/// port). The hub has to accept this machine's credential at the new
+/// address, which only the hub that issued it does; a different hub is
+/// joined with its own token instead. What this machine recorded about
+/// syncing carries over, since the revisions are that hub's.
+pub fn relocate(url: &str, insecure_http: bool) -> Result<Remote, CoreError> {
+    let current = load()?;
+    let url = checked_url(url, insecure_http)?;
+    if url == current.url {
+        return Ok(current);
+    }
+    let from = current.url.clone();
+    let moved = Remote { url, ..current };
+    let response = moved.call("GET", "/hub/v1/machines", Body::None, Profile::Probe)?;
+    if response.status == 401 {
+        return Err(invalid(format!(
+            "{} did not accept this machine's credential: it is not the hub this machine \
+             joined, or this machine was revoked there. To use another hub, join it with its \
+             join token",
+            moved.url
+        )));
+    }
+    not_a_web_page(&moved.url, &response)?;
+    // A hub's own answer, not just any 200: a machine list.
+    let response = expect(response, &[200], "reaching the hub at its new address")?;
+    parse::<Vec<Machine>>(&response, "reaching the hub at its new address")?;
+    moved.save()?;
+    // Not fatal: without the records the next listing compares afresh.
+    let _ = super::state::rehome(&from, &moved.url);
+    Ok(moved)
+}
+
+/// A web page instead of the hub's JSON: usually `asm serve` (7433) given for the hub (7434).
+fn not_a_web_page(url: &str, response: &Response) -> Result<(), CoreError> {
+    if response.body.trim_ascii_start().starts_with(b"<") {
+        return Err(invalid(format!(
+            "{url} answered with a web page, not an asm hub. Is that the web UI (`asm serve`, \
+             port 7433 by default)? The hub is `asm hub serve`, port 7434 by default"
+        )));
+    }
+    Ok(())
+}
+
+/// A hub URL this machine may send its credential and transcripts to.
+fn checked_url(url: &str, insecure_http: bool) -> Result<String, CoreError> {
     let url = normalize_url(url)?;
     // A name this machine cannot look up is not "outside the VPN"; say what it is.
     if url.starts_with("http://") && !insecure_http && !resolves(&url) {
@@ -325,31 +395,7 @@ pub(super) fn exchange(url: &str, token: &str, name: &str, insecure_http: bool) 
              you accept that"
         )));
     }
-    // The last registration's credential goes only to the hub that issued it:
-    // it is how that hub recognises this machine rather than adding another.
-    let previous = load().ok().filter(|r| r.url == url).map(|r| r.credential);
-    let uid = super::identity::machine_uid();
-    let body =
-        serde_json::to_vec(&serde_json::json!({ "token": token, "name": name, "uid": uid, "previous": previous }))
-            .unwrap();
-    let response =
-        run_curl(&format!("{url}/hub/v1/join"), None, "POST", Body::Json(body), Profile::Once, None)?;
-    if response.status == 401 {
-        return Err(invalid(
-            "the hub did not accept that join token; `asm hub token` on the hub prints the \
-             current one",
-        ));
-    }
-    // A web page instead of the hub's JSON: usually `asm serve` (7433) given for the hub (7434).
-    if response.status != 201 && response.body.trim_ascii_start().starts_with(b"<") {
-        return Err(invalid(format!(
-            "{url} answered with a web page, not an asm hub. Is that the web UI (`asm serve`, \
-             port 7433 by default)? The hub is `asm hub serve`, port 7434 by default"
-        )));
-    }
-    let response = expect(response, &[201], "joining the hub")?;
-    let joined: Joined = parse(&response, "joining the hub")?;
-    Ok(Remote { url, machine: joined.machine, credential: joined.credential, quick: false })
+    Ok(url)
 }
 
 /// Whether this machine has joined a hub at all, apart from whether the

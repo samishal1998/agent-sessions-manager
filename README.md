@@ -136,6 +136,8 @@ ASM_JOIN_TOKEN=asmj_… asm join https://hub.example.ts.net   # on each of the o
 asm push --all               # upload what changed since the last push (honours --agent, --project)
 asm pull --all --agent codex # pull everything on the hub that the filters match
 asm remote list              # this machine and the hub, grouped by project
+asm remote recompare --all   # re-check sync states from content, not from the last record
+asm remote set-url https://new.example.ts.net   # the same hub at a new address
 asm pull 7f3a1c88            # install a session from another machine here
 asm push 7f3a1c88 --move     # hand a session to another machine: push, then archive here
 asm daemon                   # keep pushing whatever changes to the hub

@@ -82,6 +82,8 @@ const api = {
   },
   indexStats: () => request('/api/index'),
   indexRefresh: () => post('/api/index/refresh'),
+  // Move to the hub's new address, or join one when a token is given.
+  hubConnect: (url, token) => post('/api/hub/connect', { url, token: token || null }),
   ir: (s) => request(sessionPath(s, 'ir')),
   // The hub this machine joined, with every session here and there side by
   // side; {joined:false} when there is none.

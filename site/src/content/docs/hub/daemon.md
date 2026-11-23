@@ -23,6 +23,7 @@ flowchart LR
 - A session that changed and then **held still for a whole interval** is pushed, so a streamed turn goes up when it ends rather than on every write.
 - One that **never holds still** (a long agent run) goes up anyway every ten passes.
 - Closing the lid therefore loses up to two intervals of a session at rest, and up to ten of one still being written.
+- Each pass reads the hub's address afresh, so [a changed address](/hub/setup/#when-the-hubs-address-changes) or a join to another hub applies without restarting the daemon.
 
 ## Run it
 

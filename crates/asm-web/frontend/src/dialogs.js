@@ -5,6 +5,7 @@ import { reactive } from 'vue'
 //
 //   if (await confirmDialog({ title: 'Delete?', description: '…', confirmLabel: 'Delete', danger: true })) …
 //   const dir = await promptDialog({ title: 'Move to', label: 'Directory', value: '/a' })   // string | null
+//   const v = await formDialog({ title: 'Hub', fields: [{ name: 'url', label: 'URL', value: '' }] })   // { url } | null
 export const dialogState = reactive({ current: null })
 
 function open(spec) {
@@ -26,3 +27,8 @@ export const confirmDialog = ({ title, description = '', confirmLabel = 'OK', da
 
 export const promptDialog = ({ title, description = '', label, value = '', confirmLabel = 'OK' }) =>
   open({ kind: 'prompt', title, description, label, value, confirmLabel })
+
+// Several fields at once: `fields` is [{ name, label, value, hint, type, placeholder }];
+// the answer is { [name]: text } or null. `error` shows above the fields.
+export const formDialog = ({ title, description = '', error = '', fields, confirmLabel = 'OK' }) =>
+  open({ kind: 'form', title, description, error, fields, confirmLabel })

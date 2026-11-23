@@ -24,10 +24,12 @@ const props = defineProps({
   // A push-everything or pull-everything is under way on the server.
   pushing: { type: Boolean, default: false },
   pulling: { type: Boolean, default: false },
+  // A recompare of everything is under way.
+  recomparing: { type: Boolean, default: false },
   // What is being done to a row right now ('Pushing…'), or ''.
   doing: { type: Function, default: () => '' },
 })
-const emit = defineEmits(['check', 'push', 'pull', 'compare', 'push-needed', 'pull-all'])
+const emit = defineEmits(['check', 'push', 'pull', 'compare', 'push-needed', 'pull-all', 'recompare-all', 'connect'])
 
 const now = ref(Date.now())
 let clock = null
@@ -251,6 +253,14 @@ const detailItems = computed(() => {
         >
           <span>{{ pulling ? 'Pulling…' : `Pull ${summary.to_pull}` }}</span>
         </HButton>
+        <HButton
+          v-if="hub?.joined" variant="secondary" size="compact" :loading="recomparing" :disabled="!fresh"
+          :title="fresh ? 'Compare every session here and on the hub by its content, whatever this machine recorded about it' : 'The hub cannot be reached'"
+          @click="emit('recompare-all')"
+        >
+          <template v-if="!recomparing" #icon><Icon :icon="Scale" :size="15" /></template>
+          <span>{{ recomparing ? 'Recomparing…' : 'Recompare all' }}</span>
+        </HButton>
         <TasksButton />
       </div>
     </HPageHeader>
@@ -263,6 +273,7 @@ const detailItems = computed(() => {
           <div class="hv-stack">
             <HConnectionState :state="connState" :label="connLabel" :retryable="!fresh && !checking" @retry="emit('check')" />
             <HDescriptionList :items="connItems" />
+            <div><HButton variant="ghost" size="compact" icon="edit" @click="emit('connect')">Change address</HButton></div>
             <HAlert
               v-if="hub.error && !checking" tone="warning"
               :description="hub.error + (hub.stale ? ` The sessions below are as of ${when(checkedAt)}.` : '')"
@@ -372,6 +383,12 @@ const detailItems = computed(() => {
         <template #footer>
           <HButton v-if="detail && buttonOf(detail) && !buttonOf(detail).resolve" variant="primary" :disabled="!!buttonOf(detail).off || buttonOf(detail).busy" :title="buttonOf(detail).off" @click="press(detail)">
             {{ buttonOf(detail).text }}
+          </HButton>
+          <HButton
+            v-if="detail?.here && detail?.on_hub" variant="secondary" :disabled="!!doing(detail)"
+            title="Compare by content again, whatever this machine recorded about it" @click="emit('compare', detail)"
+          >
+            Compare again
           </HButton>
           <HButton variant="ghost" @click="detailKey = null">Close</HButton>
         </template>

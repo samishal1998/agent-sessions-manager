@@ -95,6 +95,16 @@ A machine that registered several times with an older asm is recognised by prese
 
 What this machine has synced is remembered per hub and per machine identity, not per registration, so joining again does not make synced sessions show *Not compared*.
 
+### When the hub's address changes
+
+When the same hub is reached another way (a new name, `tailscale serve` in front of it, another port), point each machine at the new address. In the web UI that is **Change address** on the Hub view's Connection card; from a terminal:
+
+```sh
+asm remote set-url https://hub.example.ts.net
+```
+
+No token is needed: the machine keeps its registration and its credential, and what it has synced carries over, so nothing shows as *Not compared* afterwards. The hub has to accept this machine's credential at the new address, which only the hub that issued it does; another hub, or a machine that was revoked, is refused and nothing changes. To move to **another hub**, join it with its own token (`asm join`, or the join token field in the same dialog). A running [daemon](/hub/daemon/) uses the new address from its next pass.
+
 ## Limits
 
 `asm hub serve --max-file-mb 4096` caps the largest single file the hub accepts (default 4 GiB). Uploads stream to disk and are verified by hash before they are kept, so a transcript of hundreds of megabytes costs the hub a few megabytes of memory.

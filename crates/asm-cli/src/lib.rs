@@ -548,6 +548,25 @@ enum RemoteCommand {
     List,
     /// The machines on the hub this one joined.
     Machines,
+    /// Compare sessions with the hub's copies by their content, whatever this
+    /// machine recorded about them, and keep what that shows: in sync, ahead,
+    /// behind or diverged. Each REF names one (as `asm show` takes it); --all
+    /// takes every session the filters match that is here and on the hub.
+    Recompare {
+        refs: Vec<String>,
+        #[arg(long, conflicts_with = "refs")]
+        all: bool,
+    },
+    /// Use the hub this machine joined at a new address (another name, port
+    /// or proxy). The hub has to accept this machine's credential there;
+    /// another hub is joined with `asm join` and its token instead.
+    SetUrl {
+        url: String,
+        /// Allow plain HTTP to an address outside loopback, a private LAN or
+        /// a VPN. Every transcript would cross the network unencrypted.
+        #[arg(long)]
+        insecure_http: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2197,8 +2216,44 @@ fn hub_send(query: &str) -> anyhow::Result<()> {
 }
 
 fn remote(command: RemoteCommand, filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
+    if let RemoteCommand::SetUrl { url, insecure_http } = &command {
+        let moved = asm_core::hub::client::relocate(url, *insecure_http)?;
+        if json {
+            return print_json(&serde_json::json!({ "url": moved.url, "machine": moved.machine }));
+        }
+        println!("This machine now reaches its hub at {}, still as {}.", moved.url, moved.machine.name);
+        return Ok(());
+    }
     let remote = asm_core::hub::client::load()?;
     match command {
+        RemoteCommand::SetUrl { .. } => unreachable!("handled above"),
+        RemoteCommand::Recompare { refs, all } => {
+            if refs.is_empty() && !all {
+                fail!(Usage, "name the sessions to recompare, or pass --all");
+            }
+            let only = refs
+                .iter()
+                .map(|r| resolve(r, filter).map(|s| (s.handle.agent, s.handle.native_id)))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let local = ops::list_sessions(filter)?;
+            let report = asm_core::hub::actions::recompare_all(&remote, &local, &only, |_, _| {})?;
+            if json {
+                print_json(&report)?;
+            } else {
+                for item in &report.items {
+                    if let asm_core::bulk::ItemOutcome::Ok { note } = &item.outcome {
+                        println!("{}: {note}", item.label);
+                    }
+                }
+                println!("{}", report.summary("Recompare"));
+                for line in report.problems() {
+                    eprintln!("  {line}");
+                }
+            }
+            if report.failed() > 0 {
+                std::process::exit(1);
+            }
+        }
         RemoteCommand::List => {
             let local = ops::list_sessions(filter)?;
             let rows = asm_core::hub::actions::remote_list(&remote, &local)?;

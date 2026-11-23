@@ -92,6 +92,20 @@ impl SyncState {
     // ponytail: re-read-then-write narrows the race between two asm
     // processes to a few microseconds; a lock file if that ever matters.
     pub fn record(&mut self, key: &str, tracked: Tracked) -> Result<(), CoreError> {
+        self.update(|sessions| {
+            sessions.insert(key.to_string(), tracked);
+        })
+    }
+
+    /// Drop one session's record: what is known about it now came from its
+    /// content, and the record says otherwise.
+    pub fn forget(&mut self, key: &str) -> Result<(), CoreError> {
+        self.update(|sessions| {
+            sessions.remove(key);
+        })
+    }
+
+    fn update(&mut self, change: impl FnOnce(&mut BTreeMap<String, Tracked>)) -> Result<(), CoreError> {
         let path = path()?;
         // The file on disk is the base, so another process's newer record
         // for a different session survives; only this key is ours to set.
@@ -102,9 +116,24 @@ impl SyncState {
         {
             self.sessions = on_disk.sessions;
         }
-        self.sessions.insert(key.to_string(), tracked);
+        change(&mut self.sessions);
         fsutil::write_atomic(&path, &serde_json::to_vec_pretty(self).unwrap())
     }
+}
+
+/// Carry the records over when the hub this machine joined is reached at a
+/// new address. It is the same hub (it accepted this machine's credential
+/// there), so the revisions recorded against it still hold; without this the
+/// state would start over as if it were another hub.
+pub(super) fn rehome(from: &str, to: &str) -> Result<(), CoreError> {
+    let path = path()?;
+    let Ok(bytes) = std::fs::read(&path) else { return Ok(()) };
+    let Ok(mut state) = serde_json::from_slice::<SyncState>(&bytes) else { return Ok(()) };
+    if state.hub != from {
+        return Ok(());
+    }
+    state.hub = to.to_string();
+    fsutil::write_atomic(&path, &serde_json::to_vec_pretty(&state).unwrap())
 }
 
 #[cfg(test)]

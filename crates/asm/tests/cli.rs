@@ -246,6 +246,8 @@ fn cases() -> Vec<(&'static str, Vec<&'static str>)> {
         ("pull", vec!["pull", "--all"]),
         ("remote list", vec!["remote", "list"]),
         ("remote machines", vec!["remote", "machines"]),
+        ("remote recompare", vec!["remote", "recompare", "--all"]),
+        ("remote set-url", vec!["remote", "set-url", "http://127.0.0.1:1"]),
         ("peer add", vec!["peer", "add", "p", "http://127.0.0.1:1", "--token", "t", "--as", "m"]),
         ("peer remove", vec!["peer", "remove", "p"]),
         ("peer list", vec!["peer", "list"]),

@@ -217,6 +217,8 @@ fn routes() -> axum::Router {
         .route("/api/hub", get(hub))
         .route("/api/hub/pull", post(hub_pull))
         .route("/api/hub/compare", post(hub_compare))
+        .route("/api/hub/recompare", post(hub_recompare))
+        .route("/api/hub/connect", post(hub_connect))
         .route("/api/hub/pull-all", post(hub_pull_all))
         .route("/api/tasks", get(tasks))
         .route("/api/tasks/{id}", get(task_one))
@@ -319,11 +321,12 @@ fn short(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
 
-/// Compare one session here with the hub's copy without installing anything:
-/// identical copies are recorded as synced, and a difference has the hub's
-/// copy read (up to 256 MiB) to say which side is ahead (`relation`), or, when
-/// it cannot be proven, an advisory `lean` from times and sizes. This is the
-/// "Compare" button.
+/// Compare one session here with the hub's copy by content, whatever this
+/// machine recorded about it (`actions::recompare`), without installing
+/// anything: identical copies are recorded as synced, and a difference has the
+/// hub's copy read (up to 256 MiB) to say which side is ahead (`relation`),
+/// or, when it cannot be proven, an advisory `lean` from times and sizes. This
+/// is the "Compare" button.
 async fn hub_compare(Query(flag): Query<AsyncFlag>, Json(body): Json<PullBody>) -> Result<axum::response::Response, ApiError> {
     let task = ("compare", format!("compare:{}:{}", body.agent, body.id), format!("Compare {} {}", body.agent, short(&body.id)), 0, crate::tasks::Lane::Hub);
     run_or_submit(flag, task, move |_| {
@@ -340,10 +343,91 @@ async fn hub_compare(Query(flag): Query<AsyncFlag>, Json(body): Json<PullBody>) 
             .find(|s| s.handle.agent.as_str() == body.agent && s.handle.native_id == body.id)
             .ok_or_else(|| err(StatusCode::NOT_FOUND, "this machine does not have that session"))?;
         let mut state = SyncState::load(&remote).map_err(internal)?;
-        let found = actions::compare_session(&remote, &mut state, &session, head).map_err(internal)?;
+        let found = actions::recompare(&remote, &mut state, &session, head).map_err(internal)?;
         serde_json::to_value(found).map_err(internal)
     })
     .await
+}
+
+#[derive(Deserialize)]
+struct SessionRef {
+    agent: String,
+    id: String,
+}
+
+#[derive(Deserialize, Default)]
+struct RecompareBody {
+    /// None or empty: every session both here and on the hub.
+    #[serde(default)]
+    sessions: Vec<SessionRef>,
+}
+
+/// Recompare many sessions by content (`asm remote recompare`), reporting
+/// like a bulk action.
+async fn hub_recompare(Query(flag): Query<AsyncFlag>, Json(body): Json<RecompareBody>) -> Result<axum::response::Response, ApiError> {
+    use crate::tasks::Lane;
+    let only = body
+        .sessions
+        .iter()
+        .map(|r| AgentKind::parse(&r.agent).map(|a| (a, r.id.clone())).ok_or_else(|| err(StatusCode::BAD_REQUEST, format!("unknown agent {}", r.agent))))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut refs: Vec<String> = only.iter().map(|(a, id)| format!("{a}:{id}")).collect();
+    refs.sort();
+    let (key, label) = match refs.len() {
+        0 => ("recompare:all".to_string(), "Recompare everything".to_string()),
+        1 => (format!("recompare:{}", refs[0]), format!("Recompare {} {}", only[0].0, short(&only[0].1))),
+        n => (format!("recompare:{}", refs.join(",")), format!("Recompare {n} sessions")),
+    };
+    run_or_submit(flag, ("recompare", key, label, only.len() as u64, Lane::Hub), move |progress| {
+        let remote = asm_core::hub::client::load().map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+        let local = ops::list_sessions(&SessionFilter::default()).map_err(internal)?;
+        let report = asm_core::hub::actions::recompare_all(&remote, &local, &only, progress)
+            .map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
+        serde_json::to_value(json!({
+            "verb": "Recompare",
+            "summary": report.summary("Recompare"),
+            "problems": report.problems(),
+            "ok": report.ok(),
+            "skipped": report.skipped(),
+            "failed": report.failed(),
+            "items": report.items,
+        }))
+        .map_err(internal)
+    })
+    .await
+}
+
+#[derive(Deserialize)]
+struct ConnectBody {
+    url: String,
+    /// A join token: join this hub (another one, or the first). Without it the
+    /// hub this machine already joined is moved to `url`.
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    insecure_http: bool,
+}
+
+/// Change where this machine's hub is: "Change address" on the Hub screen.
+async fn hub_connect(Json(body): Json<ConnectBody>) -> ApiResult<Value> {
+    blocking(move || {
+        use asm_core::hub::client;
+        let token = body.token.as_deref().map(str::trim).filter(|t| !t.is_empty());
+        let remote = match token {
+            Some(token) => {
+                // Joining again keeps this machine's name on the hub.
+                let name = client::load()
+                    .map(|r| r.machine.name)
+                    .unwrap_or_else(|_| asm_core::process::hostname().unwrap_or_else(|| "asm".into()));
+                client::join(&body.url, token, &name, body.insecure_http)
+            }
+            None => client::relocate(&body.url, body.insecure_http),
+        }
+        .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+        Ok(json!({ "url": remote.url, "machine": remote.machine.name }))
+    })
+    .await
+    .map(Json)
 }
 
 #[derive(Deserialize)]

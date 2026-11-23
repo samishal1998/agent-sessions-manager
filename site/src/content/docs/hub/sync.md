@@ -65,6 +65,35 @@ When the content could not be read, a row that still says **Differs** may carry 
 
 Each listing compares at most 25 sessions, and remembers what it found, so a machine with thousands of uncompared sessions settles over a few refreshes instead of stalling the first. In the web UI's [Hub view](/guides/web-ui/#the-hub-view) a row's **Compare** button does one immediately.
 
+## Recomparing
+
+A session this machine *has* a record for is not read on every listing: its state comes from [the base](#the-base), and "changed here" means its size or modification time moved. That is cheap, and almost always right, but a record can be wrong:
+
+- the file was **touched without changing** (a backup restored it, a sync tool rewrote it, an editor saved it unchanged): **Needs push**, though the hub has exactly this copy;
+- another machine **pushed the same conversation again**: **Needs pull**, though there is nothing to pull;
+- both of those at once, or a touched file under a hub copy that went on: **Diverged**, though the hub's copy simply extends this one.
+
+**Recompare** answers from content instead, whatever the record says: the same two steps as [comparing without pulling](#comparing-without-pulling), reading the hub's copy up to 256 MiB, and nothing installed. Its answer replaces the record:
+
+| Content shows | Afterwards |
+|---|---|
+| the same conversation | **Synced**, recorded against the hub's current head |
+| this copy extends the hub's | **Needs push**, with the hub's head as the base, so the push is accepted |
+| the hub's copy extends this one | **Needs pull**: the record is dropped, and the pull compares both copies itself |
+| each has something the other lacks | **Diverged**: the record is dropped, so a plain push is refused rather than built on a stale base |
+| unknown (the hub's copy could not be read) | nothing changes, and the session is reported as skipped |
+
+With the record dropped, a later listing works those two out again the way it does for any [uncompared session](#comparing-without-pulling): the web UI remembers the answer while it runs, but a new `asm remote list` reads the hub's copy again only up to 2 MiB, so a larger one shows **Differs** until it is pulled.
+
+Recompare from the web UI (**Recompare all** on the Hub view, **Compare again** in a row's details, or **Recompare** on sessions ticked in the list), or from a terminal:
+
+```sh
+asm remote recompare <id> [<id>…]   # these sessions
+asm remote recompare --all          # every session here and on the hub that the filters match
+```
+
+A session that is only on one side has nothing to compare, and is reported as skipped when named.
+
 ## Diverged
 
 Both machines continued the same session. Nothing is merged, and a pull of a diverged session installs nothing — it reports that it diverged. You choose which side wins:

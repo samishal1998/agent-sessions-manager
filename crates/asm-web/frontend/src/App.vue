@@ -17,7 +17,7 @@ import {
 import api from './api.js'
 import { agentOptions, resumeCommand } from './agents.js'
 import { below as underOf, deletedWith, deletesDescendants, flip, keyOf, reveal, rows as groupRows } from './children.js'
-import { confirmDialog, promptDialog } from './dialogs.js'
+import { confirmDialog, formDialog, promptDialog } from './dialogs.js'
 import { shortId, shortProject } from './ids.js'
 import { uniqueTails } from './paths.js'
 import { useTheme } from './useTheme.js'
@@ -251,16 +251,19 @@ const hubRow = (s) => hubRows.value[`${s.ref.agent}:${s.ref.native_id}`]
 
 // Push, pull, compare and the bulk verbs run as tasks on the server
 // (./tasks.js), keyed by what they do: `bulk:<action>:<agent:id,…>` with the
-// sessions sorted, `pull:<agent:id>`, `compare:<agent:id>`, `pull-all`.
+// sessions sorted, `pull:<agent:id>`, `compare:<agent:id>`, `pull-all`,
+// `recompare:<agent:id,…>` (sorted) or `recompare:all`.
 const refOf = (s) => `${s.ref.agent}:${s.ref.native_id}`
-const bulkKey = (action, batch) => `bulk:${action}:${batch.map(refOf).sort().join(',')}`
+const bulkKey = (action, batch) =>
+  action === 'recompare' ? `recompare:${batch.map(refOf).sort().join(',')}` : `bulk:${action}:${batch.map(refOf).sort().join(',')}`
 const pushingAny = computed(() => busyUnder('bulk:push:'))
 // What the server is doing to one session right now, as its row says it.
 function doing(agent, id) {
   const ref = `${agent}:${id}`
   if (covers('bulk:push:', ref)) return 'Pushing…'
   if (busy(`pull:${ref}`) || (busy('pull-all') && hubRows.value[ref]?.action === 'pull')) return 'Pulling…'
-  if (busy(`compare:${ref}`)) return 'Comparing…'
+  const both = hubRows.value[ref]?.here && hubRows.value[ref]?.on_hub
+  if (busy(`compare:${ref}`) || covers('recompare:', ref) || (busy('recompare:all') && both)) return 'Comparing…'
   return ''
 }
 // Where this session stands with the hub, as the core words it: the label,
@@ -584,6 +587,7 @@ const bulkButtons = [
   { action: 'move', label: 'Move', run: bulkMove },
   { action: 'export', label: 'Export', run: bulkExport },
   { action: 'push', label: 'Push', run: bulkPush },
+  { action: 'recompare', label: 'Recompare', run: () => bulkRecompare() },
   { action: 'delete', label: 'Delete', run: bulkDelete },
 ]
 
@@ -685,6 +689,68 @@ async function doPull(row, projectDir) {
       if (dir?.trim()) return doPull(row, dir.trim())
     }
     fail(`Pull failed: ${e.message}`)
+  }
+}
+
+// Compare sessions with the hub by their content, whatever this machine
+// recorded about them: every one on both sides, or the ticked ones.
+async function recompare(sessions, after) {
+  progress(sessions.length ? `Recomparing ${sessions.length}…` : 'Recomparing everything…')
+  try {
+    const body = { sessions: sessions.map((s) => ({ agent: s.ref.agent, id: s.ref.native_id })) }
+    const report = await run('/api/hub/recompare', body)
+    if (!report) return
+    say(report.summary)
+    if (report.problems?.length) bulkProblems.value = report
+    after?.()
+  } catch (e) {
+    fail(`Recompare failed: ${e.message}`)
+  }
+  await loadHub()
+}
+const recompareAll = () => recompare([])
+const bulkRecompare = () => recompare(tickedSessions.value, clearTicks)
+
+// Where this machine's hub is: its new address (the same hub, which must
+// still know this machine), or another hub with that hub's join token. An
+// answer the server refuses reopens the form with the reason.
+async function connectHub() {
+  const joined = !!hub.value?.joined
+  let values = { url: hub.value?.url || '', token: '' }
+  let error = ''
+  for (;;) {
+    const got = await formDialog({
+      title: joined ? 'Change hub address' : 'Join a hub',
+      description: joined
+        ? 'The same hub at a new address keeps this machine and what it has synced. For another hub, add its join token.'
+        : 'The hub\'s address, and the join token that asm hub serve printed.',
+      error,
+      fields: [
+        { name: 'url', label: 'Hub address', value: values.url, type: 'url', placeholder: 'https://hub.example.ts.net' },
+        {
+          name: 'token',
+          label: joined ? 'Join token (only for another hub)' : 'Join token',
+          value: values.token,
+          type: 'password',
+          hint: 'Run asm hub token on the hub to see it.',
+        },
+      ],
+      confirmLabel: joined ? 'Save' : 'Join',
+    })
+    if (!got) return
+    values = got
+    if (!values.url.trim()) {
+      error = 'Give the hub\'s address.'
+      continue
+    }
+    try {
+      const r = await api.hubConnect(values.url.trim(), values.token.trim())
+      say(`This machine now uses the hub at ${r.url}, as ${r.machine}.`)
+      await loadHub()
+      return
+    } catch (e) {
+      error = e.message
+    }
   }
 }
 
@@ -860,6 +926,7 @@ function scrollToOpened() {
             :home="home"
             :pushing="pushingAny"
             :pulling="busy('pull-all')"
+            :recomparing="busy('recompare:all')"
             :doing="(r) => doing(r.agent, r.id)"
             @check="loadHub"
             @push="pushRow"
@@ -867,6 +934,8 @@ function scrollToOpened() {
             @compare="doCompare"
             @push-needed="pushNeeded"
             @pull-all="pullAll"
+            @recompare-all="recompareAll"
+            @connect="connectHub"
           />
           </div>
 
@@ -979,7 +1048,7 @@ function scrollToOpened() {
                   <HButtonBar v-if="ticked.size" label="Actions for the selected sessions" align="end">
                     <template v-for="b in bulkButtons" :key="b.action">
                       <HButton
-                        v-if="b.action !== 'push' || hub?.joined"
+                        v-if="(b.action !== 'push' && b.action !== 'recompare') || hub?.joined"
                         :variant="b.action === 'delete' ? 'danger' : 'secondary'"
                         size="compact"
                         :loading="bulkBusy(b.action)"

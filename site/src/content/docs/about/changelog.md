@@ -5,6 +5,11 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
+## 0.21.0 — 2026-11-23
+
+- **Change the hub's address from the web UI.** The Hub view's Connection card has **Change address**: the same hub at a new name, port or proxy keeps this machine's registration and everything it has synced, with no join token (the hub must accept this machine's credential there, so another hub is refused). Give a join token in the same dialog to move to another hub. From a terminal it is `asm remote set-url <url>`. A running daemon picks the new address up on its next pass.
+- **Recompare.** A session this machine has a record for got its state from that record, which is wrong when a file was touched without changing (**Needs push**), the same conversation was pushed again (**Needs pull**), or both (**Diverged**). Recompare reads both copies and lets the content decide, replacing the record: **Recompare all** on the Hub view, **Compare again** in a row's details, **Recompare** on ticked sessions, or `asm remote recompare <id>… | --all`. The row's **Compare** button now always compares afresh too.
+
 ## 0.20.0 — 2026-11-17
 
 - **The web UI is on Hearth UI 0.11** (from 0.6), at its `high` density: 32px controls, 34px fields, tighter rows and smaller radii, still 44px targets on a touchscreen. The page and cards take Hearth's neutral palette, with asm's purple only on the accent and a slight tint on raised surfaces.

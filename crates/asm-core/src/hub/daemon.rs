@@ -290,6 +290,16 @@ pub fn run(
         }
     };
     loop {
+        // The hub's address can change under a running daemon (the web UI's
+        // "Change address", a join again): each pass uses the saved one.
+        let saved = super::client::load().ok();
+        let remote = saved.as_ref().unwrap_or(remote);
+        if remote.url != info.hub {
+            let line = format!("the hub is now {}", remote.url);
+            say(&line);
+            note(&mut info, true, &line);
+            info.hub = remote.url.clone();
+        }
         match cycle(remote, filter, window.map(|w| w.as_secs()), now_secs(), &mut seen) {
             Ok(Pass { report, pending, idle }) => {
                 info.pending = pending;

@@ -889,6 +889,91 @@ pub fn compare_session(
     compare_within(remote, state, session, head, RELATE_COMPARE_MAX, &std::cell::Cell::new(false))
 }
 
+/// Compare a session from its content alone, whatever this machine recorded
+/// about it, and let the answer replace the record: "Recompare". A listing
+/// trusts the record (the hub revision last agreed on, and a size-and-mtime
+/// fingerprint), which is wrong when a file was touched without changing, or
+/// another machine pushed the same conversation again. Identical copies, and
+/// a copy ahead of the hub's, are recorded as [`compare_session`] records
+/// them; a hub copy that is ahead, or one that moved on both sides, drops the
+/// record, so listings say what the content says (a pull then compares both
+/// copies itself; a push is refused as unknown rather than built on a stale
+/// base). When the hub's copy cannot be read nothing is proven, and the
+/// record stays.
+pub fn recompare(remote: &Remote, state: &mut SyncState, session: &Session, head: &Head) -> Result<Compare, CoreError> {
+    let k = key(session.handle.agent, &session.handle.native_id);
+    // Forced: an answer worked out earlier in this process is not reused.
+    if let Ok(mut cache) = compare_cache().lock() {
+        cache.remove(&k);
+    }
+    let found = compare_session(remote, state, session, head)?;
+    if matches!(found.relation, Some(Relation::HubAhead | Relation::Diverged)) {
+        state.forget(&k)?;
+    }
+    Ok(found)
+}
+
+/// [`recompare`] every session both this machine and the hub have, or only
+/// those named in `only` (agent and id). One named that is not on both sides
+/// is reported as skipped. `progress(done, total)` follows each session.
+pub fn recompare_all(
+    remote: &Remote,
+    local: &[Session],
+    only: &[(AgentKind, String)],
+    mut progress: impl FnMut(usize, usize),
+) -> Result<BulkReport, CoreError> {
+    let heads = remote.heads()?;
+    let heads: HashMap<String, &Head> = heads.iter().map(|h| (key(h.manifest.agent, &h.manifest.id), h)).collect();
+    let wanted = |s: &&Session| {
+        only.is_empty() || only.iter().any(|(a, id)| *a == s.handle.agent && *id == s.handle.native_id)
+    };
+    let pairs: Vec<(&Session, &Head)> = local
+        .iter()
+        .filter(wanted)
+        .filter_map(|s| heads.get(&key(s.handle.agent, &s.handle.native_id)).map(|h| (s, *h)))
+        .collect();
+    let mut state = SyncState::load(remote)?;
+    let mut report = BulkReport::default();
+    for (agent, id) in only {
+        if !pairs.iter().any(|(s, _)| s.handle.agent == *agent && s.handle.native_id == *id) {
+            report.items.push(BulkItem {
+                agent: *agent,
+                native_id: id.clone(),
+                label: format!("{agent} {}", short_id_of(*agent, id, None)),
+                outcome: ItemOutcome::Skipped { reason: "not both here and on the hub: nothing to compare".into() },
+            });
+        }
+    }
+    for (done, (session, head)) in pairs.iter().enumerate() {
+        let outcome = match recompare(remote, &mut state, session, head) {
+            Ok(found) => match recompared(found) {
+                Ok(note) => ItemOutcome::Ok { note: note.into() },
+                Err(reason) => ItemOutcome::Skipped { reason: reason.into() },
+            },
+            Err(e) => ItemOutcome::Failed { error: e.to_string() },
+        };
+        report.items.push(BulkItem {
+            agent: session.handle.agent,
+            native_id: session.handle.native_id.clone(),
+            label: format!("{} {}", session.handle.agent, session.short_id()),
+            outcome,
+        });
+        progress(done + 1, pairs.len());
+    }
+    Ok(report)
+}
+
+/// What a recompare found, in a few words; `Err` when it proved nothing.
+fn recompared(found: Compare) -> Result<&'static str, &'static str> {
+    match (found.verdict, found.relation) {
+        (Shallow::Identical, _) | (_, Some(Relation::Same)) => Ok("in sync"),
+        (_, Some(Relation::LocalAhead)) => Ok("this machine is ahead: push it"),
+        (_, Some(Relation::HubAhead)) => Ok("the hub is ahead: pull it"),
+        (_, Some(Relation::Diverged)) => Ok("diverged: changed here and on the hub"),
+        (_, None) => Err("the copies differ, and the hub's copy could not be read to tell which is ahead"),
+    }
+}
+
 /// `compare_session`, reading the hub's copy only up to `cap` bytes.
 /// `unreachable` is set when a request to the hub failed, so a listing can stop
 /// asking one that is not answering.
