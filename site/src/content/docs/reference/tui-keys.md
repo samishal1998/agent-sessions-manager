@@ -15,6 +15,7 @@ Press `?` in the TUI for the same list. The footer shows the keys that fit your 
 | `⇥` | Move between the list and the transcript |
 | `PgUp` `PgDn` | Scroll the transcript |
 | `⏎` | Resume the session in its own agent |
+| `x` | Quit, printing the command that resumes it |
 
 ## Narrowing the list
 

@@ -61,7 +61,8 @@ A child needs no flag to be named: `asm show ses_71c4`, `asm delete ses_71c4` an
 asm list --agent opencode
 asm projects --worktrees        # each repository and its checkouts
 asm show 4c93a826
-asm resume 4c93a826             # hands off to the native agent, in the right directory
+asm resume 4c93a826             # becomes the native agent, in the right directory
+asm resume --print 4c93a826     # or just print that command: cd <project> && claude --resume …
 asm rename 4c93a826 "New title"
 asm move 4c93a826 ~/projects/renamed-dir
 asm archive 4c93a826

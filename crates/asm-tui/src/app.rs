@@ -19,6 +19,8 @@ pub enum LoopOutcome {
     Quit,
     /// Leave the TUI, run this interactively, come back.
     RunCommand(std::process::Command),
+    /// Leave the TUI and print this: a resume command to run by hand.
+    Print(String),
 }
 
 #[derive(Debug, PartialEq)]
@@ -1787,6 +1789,14 @@ impl App {
                 if let Some(session) = self.selected_session() {
                     match ops::resume_command(session) {
                         Ok(command) => return Some(LoopOutcome::RunCommand(command)),
+                        Err(e) => self.status = format!("error: {e}"),
+                    }
+                }
+            }
+            KeyCode::Char('x') => {
+                if let Some(session) = self.selected_session() {
+                    match ops::resume_command(session) {
+                        Ok(command) => return Some(LoopOutcome::Print(ops::shell_line(&command))),
                         Err(e) => self.status = format!("error: {e}"),
                     }
                 }

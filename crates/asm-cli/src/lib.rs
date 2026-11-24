@@ -197,10 +197,16 @@ enum Command {
         /// Session to act on: a native id, a unique id prefix, or `agent:id-prefix`.
         r#ref: String,
     },
-    /// Resume a session interactively in its native agent.
+    /// Resume a session interactively in its native agent. asm becomes the
+    /// agent, so the agent owns the terminal: its title, signals, job control
+    /// and exit status.
     Resume {
         /// Session to act on: a native id, a unique id prefix, or `agent:id-prefix`.
         r#ref: String,
+        /// Print the command that resumes it (`cd <project> && <agent> …`) and
+        /// exit, instead of running it.
+        #[arg(long)]
+        print: bool,
     },
     /// Set a session's title (uses the agent's native mechanism).
     Rename {
@@ -756,7 +762,7 @@ pub fn run() -> anyhow::Result<Option<Frontend>> {
         Command::Capabilities => capabilities(cli.json),
         Command::Projects { worktrees } => projects(cli.json, worktrees, &filter),
         Command::Show { r#ref } => show(&r#ref, &filter, cli.json),
-        Command::Resume { r#ref } => resume(&r#ref, &filter),
+        Command::Resume { r#ref, print } => resume(&r#ref, print, &filter, cli.json),
         Command::Rename { r#ref, title } => rename(&r#ref, &title, &filter, cli.json),
         Command::Move { r#ref, new_dir } => move_session(&r#ref, &new_dir, &filter, cli.json),
         Command::Archive { r#ref } => archive(&r#ref, &filter, cli.json),
@@ -1673,16 +1679,41 @@ fn delete(query: &str, yes: bool, filter: &SessionFilter, json: bool) -> anyhow:
     Ok(())
 }
 
-fn resume(query: &str, filter: &SessionFilter) -> anyhow::Result<()> {
+fn resume(query: &str, print: bool, filter: &SessionFilter, json: bool) -> anyhow::Result<()> {
     let session = resolve(query, filter)?;
     let mut cmd = ops::resume_command(&session)?;
+    if print {
+        if json {
+            let value = serde_json::json!({
+                "cwd": cmd.get_current_dir(),
+                "program": cmd.get_program().to_string_lossy(),
+                "args": cmd.get_args().map(|a| a.to_string_lossy()).collect::<Vec<_>>(),
+                "command": ops::shell_line(&cmd),
+            });
+            println!("{}", serde_json::to_string_pretty(&value)?);
+        } else {
+            println!("{}", ops::shell_line(&cmd));
+        }
+        return Ok(());
+    }
     let program = cmd.get_program().to_string_lossy().into_owned();
-    let status = cmd
-        .status()
-        .with_context(|| format!("failed to launch '{program}' — is it on PATH?"))?;
-    match status.code() {
-        Some(0) | None => Ok(()),
-        Some(code) => std::process::exit(code),
+    // Become the agent rather than wait on it: the terminal's process name,
+    // its title, Ctrl-C and Ctrl-Z, and the exit status are then the agent's
+    // own, with no asm left in between.
+    #[cfg(unix)]
+    {
+        let error = std::os::unix::process::CommandExt::exec(&mut cmd);
+        Err(error).with_context(|| format!("failed to launch '{program}' — is it on PATH?"))
+    }
+    #[cfg(not(unix))]
+    {
+        let status = cmd
+            .status()
+            .with_context(|| format!("failed to launch '{program}' — is it on PATH?"))?;
+        match status.code() {
+            Some(0) | None => Ok(()),
+            Some(code) => std::process::exit(code),
+        }
     }
 }
 
@@ -2077,8 +2108,7 @@ fn report_pulled(
         && let Ok(session) = ops::resolve_ref(&format!("{}:{}", pulled.agent, pulled.id), &SessionFilter::default())
         && let Ok(cmd) = ops::resume_command(&session)
     {
-        let args: Vec<_> = cmd.get_args().map(|a| a.to_string_lossy()).collect();
-        println!("Resume with: cd {project} && {} {}", cmd.get_program().to_string_lossy(), args.join(" "));
+        println!("Resume with: {}", ops::shell_line(&cmd));
     }
     Ok(())
 }

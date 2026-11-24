@@ -742,3 +742,31 @@ fn a_reader_that_goes_away_stops_the_stream_even_with_nothing_to_say() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
+
+#[test]
+fn resume_prints_its_command_or_becomes_the_agent() {
+    let home = Home::new(false);
+    let project = home.path("home/code/app").display().to_string();
+
+    let out = home.run(&["resume", "--print", CLAUDE_A]);
+    assert_eq!((out.code, out.stdout.trim()), (0, format!("cd {project} && claude --resume {CLAUDE_A}").as_str()), "{}", out.stderr);
+    let doc = home.run(&["--json", "resume", "--print", CLAUDE_A]).json();
+    assert_eq!((doc["cwd"].as_str(), doc["program"].as_str()), (Some(project.as_str()), Some("claude")));
+    assert_eq!(doc["args"], serde_json::json!(["--resume", CLAUDE_A]));
+
+    // A fake agent that says where it runs, with what, and as which process.
+    let bin = home.path("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let agent = bin.join("claude");
+    fs::write(&agent, "#!/bin/sh\necho \"$PWD|$*|$$\"\nexit 7\n").unwrap();
+    fs::set_permissions(&agent, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let mut cmd = home.command(&["resume", CLAUDE_A]);
+    cmd.env("PATH", format!("{}:/usr/bin:/bin", bin.display())).stdout(Stdio::piped());
+    let child = cmd.spawn().unwrap();
+    let pid = child.id();
+    let out = child.wait_with_output().unwrap();
+    // asm became the agent: same process, so the agent's exit status is the
+    // command's, and nothing of asm runs after it.
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), format!("{project}|--resume {CLAUDE_A}|{pid}"));
+    assert_eq!(out.status.code(), Some(7));
+}

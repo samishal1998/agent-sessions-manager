@@ -5,6 +5,11 @@ description: What changed in each release.
 
 Releases are tagged on [GitHub](https://github.com/samishal1998/agent-sessions-manager/releases). Dates are tag dates.
 
+## 0.21.1 — 2026-11-24
+
+- **Resume hands the terminal to the agent.** `asm resume` now *becomes* the agent instead of waiting on it, so the terminal names the agent, its title and Ctrl-C / Ctrl-Z are its own, and its exit status is the command's. The TUI's `⏎` runs the agent as a shell runs a job, in a process group of its own that owns the terminal, and comes back when it exits: Ctrl-C reached asm too before, and could close the TUI under a running agent.
+- **Resume by hand.** `asm resume --print <ref>` prints the command that resumes a session (`cd <project> && <agent> …`, quoted for the shell) and exits; with `--json` it is `{cwd, program, args, command}`. In the TUI, `x` quits and prints it.
+
 ## 0.21.0 — 2026-11-23
 
 - **Change the hub's address from the web UI.** The Hub view's Connection card has **Change address**: the same hub at a new name, port or proxy keeps this machine's registration and everything it has synced, with no join token (the hub must accept this machine's credential there, so another hub is refused). Give a join token in the same dialog to move to another hub. From a terminal it is `asm remote set-url <url>`. A running daemon picks the new address up on its next pass.

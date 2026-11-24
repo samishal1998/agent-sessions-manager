@@ -158,6 +158,7 @@ const HELP: [(&str, &[(&str, &str)]); 6] = [
             ("⇥", "move between the list and the transcript"),
             ("PgUp / PgDn", "scroll the transcript"),
             ("⏎", "resume the session in its own agent"),
+            ("x", "quit, printing the command that resumes it"),
         ],
     ),
     (

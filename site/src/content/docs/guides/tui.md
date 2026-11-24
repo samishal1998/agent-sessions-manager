@@ -21,7 +21,8 @@ See the complete [key reference](/reference/tui-keys/). The ones to learn first:
 | Key | |
 |---|---|
 | `?` | Every key, grouped. |
-| `⏎` | Resume in the native agent (the TUI steps aside and comes back). |
+| `⏎` | Resume in the native agent (the TUI steps aside and comes back). The agent gets the terminal to itself: its title, Ctrl-C and Ctrl-Z are its own. |
+| `x` | Quit, printing the command that resumes the session, to run it yourself (in another pane, with other flags). |
 | `/` · `s` | Filter the list as you type · full-text search across transcripts. |
 | `A` · `P` | Pick agents (space toggles) · pick a project (type to narrow). |
 | `.` · `w` | Only the worktree asm was started in, or not · switch between that worktree and all of the repository's. |

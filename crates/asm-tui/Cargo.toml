@@ -11,3 +11,6 @@ anyhow = { workspace = true }
 ratatui = { workspace = true }
 jiff = { workspace = true }
 serde_json = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }

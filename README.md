@@ -108,7 +108,8 @@ asm                          # interactive TUI on a terminal; plain table when p
 asm list --agent opencode    # filter by agent, --project, --include-children (subagents, under their parent)
 asm projects --worktrees     # projects are repositories; show each one's checkouts
 asm show 4c93a826            # metadata card; refs are unique id prefixes or agent:prefix
-asm resume 4c93a826          # hands off to the native agent, in the right directory
+asm resume 4c93a826          # becomes the native agent, in the right directory
+asm resume --print 4c93a826  # or just print that command, to run it yourself
 
 asm rename 4c93a826 "New title"
 asm move 4c93a826 ~/projects/renamed-dir
@@ -176,6 +177,7 @@ view of the CLI:
 |---|---|
 | `?` | every key, grouped — the footer shows the ones that fit |
 | `⏎` | resume in the native agent (the TUI steps aside and comes back) |
+| `x` | quit, printing the command that resumes it |
 | `→` `←` `⇥` | open the transcript · close it · move between the two panes |
 | `A` `P` | pick agents (space toggles) · pick a project (type to narrow) |
 | `/` `s` | filter the list as you type · full-text search across transcripts |

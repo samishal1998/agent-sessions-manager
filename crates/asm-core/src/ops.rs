@@ -543,6 +543,28 @@ pub fn resume_command(session: &Session) -> Result<std::process::Command, Resolv
     Err(ResolveError::NotFound { query: session.handle.native_id.clone() })
 }
 
+/// `command` as one line to paste into a POSIX shell: `cd <dir> && <agent> <args>`,
+/// each word quoted where the shell would otherwise split or expand it.
+pub fn shell_line(command: &std::process::Command) -> String {
+    fn quote(word: &std::ffi::OsStr) -> String {
+        let word = word.to_string_lossy();
+        let plain = |c: char| c.is_ascii_alphanumeric() || "-_./:=@%+,".contains(c);
+        if !word.is_empty() && word.chars().all(plain) {
+            word.into_owned()
+        } else {
+            format!("'{}'", word.replace('\'', r"'\''"))
+        }
+    }
+    let words: Vec<String> = std::iter::once(command.get_program())
+        .chain(command.get_args())
+        .map(quote)
+        .collect();
+    match command.get_current_dir() {
+        Some(dir) => format!("cd {} && {}", quote(dir.as_os_str()), words.join(" ")),
+        None => words.join(" "),
+    }
+}
+
 /// The adapter that owns a session's store, for callers outside `ops`.
 pub fn adapter_for(agent: AgentKind) -> Option<Adapter> {
     Adapter::available().into_iter().find(|a| a.kind() == agent)
@@ -1260,5 +1282,15 @@ mod tests {
         for agent in [AgentKind::ClaudeCode, AgentKind::JCode, AgentKind::Codex, AgentKind::Antigravity, AgentKind::Pi, AgentKind::Omp] {
             assert!(!deletes_descendants(agent), "{agent}");
         }
+    }
+
+    #[test]
+    fn a_shell_line_quotes_only_what_the_shell_would_split_or_expand() {
+        let mut cmd = std::process::Command::new("claude");
+        cmd.arg("--resume").arg("7f3a-1c88").current_dir("/home/me/it's my $repo");
+        assert_eq!(shell_line(&cmd), r"cd '/home/me/it'\''s my $repo' && claude --resume 7f3a-1c88");
+        let mut cmd = std::process::Command::new("agy");
+        cmd.arg("--conversation").arg("");
+        assert_eq!(shell_line(&cmd), "agy --conversation ''");
     }
 }

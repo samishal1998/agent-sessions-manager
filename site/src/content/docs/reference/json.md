@@ -54,7 +54,7 @@ Exit status 0 is success. A command that prints a document and then exits nonzer
 
 - `asm control push|pull|send|move --wait` keeps the statuses it has always had, because scripts test them: **0** ok, **1** not ok, **2** still waiting, **3** could not reach the hub. It prints the job or plan document on stdout; a failure it cannot recover from is still reported as an error object on stderr, but exits with these statuses rather than the table's.
 - `asm push` and `asm pull` print their report and exit **1** if any item failed, and `push --to` / `pull --from` exit **1** after printing a diverged result. The report is the place to read what failed.
-- `asm resume` exits with the status of the agent it started.
+- `asm resume` exits with the status of the agent it started (it becomes that agent). `asm resume --print --json` is `{cwd, program, args, command}`.
 - A command killed by a signal has the shell's status for it.
 
 **Prompts.** A command that would ask a question (`asm delete`, `asm control move`) never prompts under `--json`: without `--yes` it fails with `usage` and the message `confirmation required: pass --yes`.
@@ -126,7 +126,7 @@ Exit status 0 is success. A command that prints a document and then exits nonzer
 | `control jobs` | Array of jobs. |
 | `send REF MESSAGE` | NDJSON of the reply's events; see [streams](#streams). |
 
-Commands with no document, by nature: `asm tui`, `asm serve`, `asm hub serve`, the foreground `asm daemon`, `asm resume` (it hands over the terminal), and the two ssh ends of a peer transfer (`hub receive`, `hub send`, whose stdout is their protocol). `asm events` and `asm list --follow` are streams. A test in the repository walks the command tree and fails if a command is neither in this list nor answers `--json` with JSON or an error object, so this page cannot quietly fall behind.
+Commands with no document, by nature: `asm tui`, `asm serve`, `asm hub serve`, the foreground `asm daemon`, `asm resume` without `--print` (it hands over the terminal), and the two ssh ends of a peer transfer (`hub receive`, `hub send`, whose stdout is their protocol). `asm events` and `asm list --follow` are streams. A test in the repository walks the command tree and fails if a command is neither in this list nor answers `--json` with JSON or an error object, so this page cannot quietly fall behind.
 
 ### Capabilities
 
